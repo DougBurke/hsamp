@@ -9,6 +9,23 @@
 -- SAMP access tests
 --
 
+{-
+
+I think we will want some sort of SampProfile typeclass - e.g.
+
+class SampProfile a where
+  getProfile :: IO a -- is this possible
+  sendMessage :: a -> String -> [(String,String)] -> IO () -- not sure about the return value
+  ... etc
+
+and then 
+
+registerClient :: (SampProfile a, SampClient b) => a -> ... -> IO b
+  
+hmmm, this looks a bit messy
+
+-}
+
 module Test (SampClient,
              getHubInfo, pingHub,
              registerClient,
@@ -142,7 +159,7 @@ instance XmlRpcType SAMPValue where
 
     -- TODO: need the fromValues for arrays and structs otherwise this
     --  is rather pointless
-    fromValue (ValueString s) = return $ (SAMPString s)
+    fromValue (ValueString s) = return $ SAMPString s
     -- fromValue (ValueArray a)  = return $ SAMPList $ mapM fromValue a
     -- fromValue (ValueStruct a)  = return $ SAMPMap $ mapM (CA.second fromValue) a
     fromValue v = fail $ "Unable to convert '" ++ show v ++ "' to a SAMPValue"
@@ -164,25 +181,19 @@ data SampClient = SampClient {
                              } deriving (Eq, Show)
 
 
--- TODO: when this is called there's a problem with types
-pingHub' :: (SampSecret, SampHubURL) -> IO Bool
-pingHub' (s,u) = do
-    putStrLn "Calling samp.app.ping"
-    v <- remote u "samp.app.ping" s :: IO String -- what type should the return be?
-    return $ v == "1"
-
-{-
-    putStrLn $ "Ping returned " ++ (show v)
-    case v of
-      ValueString "1" -> return True
-      _               -> return False
--}
+-- You do not need the secret to ping the hub, but for now
+-- we require it.
+--
+pingHub' :: SampHubURL -> SampSecret  -> IO Bool
+pingHub' u s = do
+    v <- remote u "samp.hub.ping" s :: IO String
+    return $ v == ""
 
 pingHub :: IO Bool
 pingHub = do
     hInfo <- getHubInfo
     case hInfo of
-      Just hi -> pingHub' hi
+      Just hi -> pingHub' (snd hi) (fst hi)
       _       -> return False
 
 {-
