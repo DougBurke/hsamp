@@ -197,6 +197,12 @@ data SampClient = SampClient {
 -- IO (Either String SAMPValue).
 --
 
+-- XXX TODO: re-write since SampSecret is only used when registering;
+-- for other calls you use the private key
+
+-- XXX work out how to send in an array of values
+--
+
 callHub :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> IO (Either String Value)
 callHub url ms method args = handleError (return . Left)
                              (call url method arglist >>= return . Right)
@@ -223,9 +229,8 @@ ValueStruct [("samp.hub-id",ValueString "hub"),("samp.self-id",ValueString "c1")
 -}
 
 registerClient :: (SampSecret, SampHubURL) -> IO (Maybe SampClient)
-registerClient (s,u) = do
-    vs <- remote u "samp.hub.register" s :: IO Value
-    return $ mkClient vs
+registerClient (s,u) = callHub u (Just s) "samp.hub.register" [] >>=
+                       return . either (\_ -> Nothing) (mkClient)
         where
             mkClient (ValueStruct v) = do
                 pkey <- xlookup "samp.private-key" v
@@ -252,20 +257,23 @@ registerClient (s,u) = do
 -- We do not worry if there is an error un-registering the client
 
 unregisterClient :: SampClient -> IO ()
-unregisterClient sc = do
-    _ <- remote (sampHubURL sc) "samp.hub.unregister" (sampPrivateKey sc) :: IO Value
-    return ()
+unregisterClient sc = callHub u (Just s) "samp.hub.unregister" [] >> return ()
+    where
+      u = sampHubURL sc
+      s = sampPrivateKey sc -- this is BAD since callHub needs to be re-written to better reflect this usage
 
 -- Name, description, and version: may want a generic one which
 -- takes in a map and ensures necessary fields
 --
-setClientMetadata :: SampClient -> String -> String -> String -> IO ()
-setClientMetadata sc name desc version = do
-   let mdata = [("samp.name", name), ("samp.description.text", desc), ("internal.version", version)]
-   v <- remote (sampHubURL sc) "samp.hub.declareMetadata" (sampPrivateKey sc) mdata :: IO Value
-   case v of
-     ValueString "" -> return ()
-     _ -> fail $ "ERROR: samp.hub.declareMetadata failed with " ++ show v
+-- do we want the return to be () or Bool (say?)
+--
+setClientMetadata :: SampClient -> String -> String -> String -> IO Bool
+setClientMetadata sc name desc version = callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.declareMetadata"  [mdata] >>= 
+                                         return . either (\_ -> False) (\_ -> True)
+    where
+      mdata = ValueStruct [("samp.name", ValueString name),
+                           ("samp.description.text", ValueString desc),
+                           ("internal.version", ValueString version)]
 
 {-   
    # Store metadata in hub for use by other applications.
