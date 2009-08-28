@@ -26,6 +26,15 @@ hmmm, this looks a bit messy
 
 -}
 
+{-
+The SAMP hubs may return invalid XML-RPC responses on error: I have seen
+cases with both JSAMP and SAMPY. Mark has fixed JSAMP but not formally released,
+and I have sent a patch to SAMPY to Luigi to fix this, but it does mean we
+may have to deal with errors thrown because the error response can not be
+deconstructed (so losing the actual error message).
+
+-}
+
 module Test (SampClient,
              getHubInfo, pingHub,
              registerClient,
@@ -181,20 +190,30 @@ data SampClient = SampClient {
                              } deriving (Eq, Show)
 
 
--- You do not need the secret to ping the hub, but for now
--- we require it.
+-- Just in case we want the error value, we wrap the call method
+-- rather than use remote. This is specialized to the standard SAMP
+-- profile. Once I get the SAMPValue data type to be an instance of
+-- XmlRpcType (ie get fromValue working) then this can return
+-- IO (Either String SAMPValue).
 --
-pingHub' :: SampHubURL -> SampSecret  -> IO Bool
-pingHub' u s = do
-    v <- remote u "samp.hub.ping" s :: IO String
-    return $ v == ""
+
+callHub :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> IO (Either String Value)
+callHub url ms method args = handleError (return . Left)
+                             (call url method arglist >>= return . Right)
+    where
+      arglist = case ms of
+                  Just s -> ValueString s : args
+                  _ -> args
+
+pingHub' :: SampHubURL -> IO Bool
+pingHub' u = callHub u Nothing "samp.hub.ping" [] >>= return . either (\_ -> False) (\_ -> True)
 
 pingHub :: IO Bool
 pingHub = do
     hInfo <- getHubInfo
     case hInfo of
-      Just hi -> pingHub' (snd hi) (fst hi)
-      _       -> return False
+      Just (_,url) -> pingHub' url
+      _            -> return False
 
 {-
 JSAMP return from samp.hub.register call
