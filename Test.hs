@@ -219,15 +219,14 @@ data SampClient = SampClient {
 --
 
 callHub' :: SampHubURL -> String -> [Value] -> IO (Either String Value)
-callHub' url method args = handleError (return . Left)
-                           (call url method args >>= return . Right)
+callHub' url method = handleError (return . Left) . CM.liftM Right . call url method
 
 callHub :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> IO (Either String Value)
 callHub url (Just s) method args = callHub' url method (ValueString s : args)
 callHub url _        method args = callHub' url method args
 
 pingHub' :: SampHubURL -> IO Bool
-pingHub' u = callHub u Nothing "samp.hub.ping" [] >>= return . either (const False) (const True)
+pingHub' u = CM.liftM (either (const False) (const True)) (callHub u Nothing "samp.hub.ping" [])
 
 pingHub :: IO Bool
 pingHub = do
@@ -244,8 +243,7 @@ ValueStruct [("samp.hub-id",ValueString "hub"),("samp.self-id",ValueString "c1")
 -}
 
 registerClient :: (SampSecret, SampHubURL) -> IO (Maybe SampClient)
-registerClient (s,u) = callHub u (Just s) "samp.hub.register" [] >>=
-                       return . either (const Nothing) mkClient
+registerClient (s,u) = CM.liftM (either (const Nothing) mkClient) (callHub u (Just s) "samp.hub.register" [])
         where
             mkClient (ValueStruct v) = do
                 pkey <- xlookup "samp.private-key" v
@@ -283,8 +281,8 @@ unregisterClient sc = callHub u (Just s) "samp.hub.unregister" [] >> return ()
 -- do we want the return to be () or Bool (say?)
 --
 setClientMetadata :: SampClient -> String -> String -> String -> IO Bool
-setClientMetadata sc name desc version = callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.declareMetadata"  [mdata] >>= 
-                                         return . either (const False) (const True)
+setClientMetadata sc name desc version = CM.liftM (either (const False) (const True))
+                                         (callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.declareMetadata"  [mdata])
     where
       mdata = ValueStruct [("samp.name", ValueString name),
                            ("samp.description.text", ValueString desc),
