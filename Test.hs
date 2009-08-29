@@ -24,6 +24,20 @@ registerClient :: (SampProfile a, SampClient b) => a -> ... -> IO b
   
 hmmm, this looks a bit messy
 
+I think the SampProfile shoule be able to
+
+  ping the hub
+  register a client
+  send a message
+
+  notify options
+  .... other stuff ....
+
+Except that this suggests it's really a SampProfileClient.
+
+Since the client registration returns information we need, I think it does look like there's
+a SampProfile and a SampClient.
+
 -}
 
 {-
@@ -198,21 +212,22 @@ data SampClient = SampClient {
 --
 
 -- XXX TODO: re-write since SampSecret is only used when registering;
--- for other calls you use the private key
+-- for other calls you use the private key; so move to callHub' and then
+-- some wrappers around this
 
 -- XXX work out how to send in an array of values
 --
 
+callHub' :: SampHubURL -> String -> [Value] -> IO (Either String Value)
+callHub' url method args = handleError (return . Left)
+                           (call url method args >>= return . Right)
+
 callHub :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> IO (Either String Value)
-callHub url ms method args = handleError (return . Left)
-                             (call url method arglist >>= return . Right)
-    where
-      arglist = case ms of
-                  Just s -> ValueString s : args
-                  _ -> args
+callHub url (Just s) method args = callHub' url method (ValueString s : args)
+callHub url _        method args = callHub' url method args
 
 pingHub' :: SampHubURL -> IO Bool
-pingHub' u = callHub u Nothing "samp.hub.ping" [] >>= return . either (\_ -> False) (\_ -> True)
+pingHub' u = callHub u Nothing "samp.hub.ping" [] >>= return . either (const False) (const True)
 
 pingHub :: IO Bool
 pingHub = do
@@ -230,7 +245,7 @@ ValueStruct [("samp.hub-id",ValueString "hub"),("samp.self-id",ValueString "c1")
 
 registerClient :: (SampSecret, SampHubURL) -> IO (Maybe SampClient)
 registerClient (s,u) = callHub u (Just s) "samp.hub.register" [] >>=
-                       return . either (\_ -> Nothing) (mkClient)
+                       return . either (const Nothing) mkClient
         where
             mkClient (ValueStruct v) = do
                 pkey <- xlookup "samp.private-key" v
@@ -269,7 +284,7 @@ unregisterClient sc = callHub u (Just s) "samp.hub.unregister" [] >> return ()
 --
 setClientMetadata :: SampClient -> String -> String -> String -> IO Bool
 setClientMetadata sc name desc version = callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.declareMetadata"  [mdata] >>= 
-                                         return . either (\_ -> False) (\_ -> True)
+                                         return . either (const False) (const True)
     where
       mdata = ValueStruct [("samp.name", ValueString name),
                            ("samp.description.text", ValueString desc),
