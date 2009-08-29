@@ -64,7 +64,7 @@ import qualified Data.Map as M
 import Data.Maybe
 
 import qualified Control.Arrow as CA
-import qualified Control.Monad as CM
+import Control.Monad (liftM)
 -- import Control.Monad.Trans
 
 import System.Environment (getEnv)
@@ -219,14 +219,18 @@ data SampClient = SampClient {
 --
 
 callHub' :: SampHubURL -> String -> [Value] -> IO (Either String Value)
-callHub' url method = handleError (return . Left) . CM.liftM Right . call url method
+callHub' url method = handleError (return . Left) . liftM Right . call url method
+
+-- An alternative to callHub' which is not specific to the Either monad
+
+cH url method = handleError (return . fail) . liftM return . call url method
 
 callHub :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> IO (Either String Value)
 callHub url (Just s) method args = callHub' url method (ValueString s : args)
 callHub url _        method args = callHub' url method args
 
 pingHub' :: SampHubURL -> IO Bool
-pingHub' u = CM.liftM (either (const False) (const True)) (callHub u Nothing "samp.hub.ping" [])
+pingHub' u = either (const False) (const True) `liftM` callHub u Nothing "samp.hub.ping" []
 
 pingHub :: IO Bool
 pingHub = do
@@ -243,7 +247,7 @@ ValueStruct [("samp.hub-id",ValueString "hub"),("samp.self-id",ValueString "c1")
 -}
 
 registerClient :: (SampSecret, SampHubURL) -> IO (Maybe SampClient)
-registerClient (s,u) = CM.liftM (either (const Nothing) mkClient) (callHub u (Just s) "samp.hub.register" [])
+registerClient (s,u) = either (const Nothing) mkClient `liftM` callHub u (Just s) "samp.hub.register" []
         where
             mkClient (ValueStruct v) = do
                 pkey <- xlookup "samp.private-key" v
@@ -281,8 +285,9 @@ unregisterClient sc = callHub u (Just s) "samp.hub.unregister" [] >> return ()
 -- do we want the return to be () or Bool (say?)
 --
 setClientMetadata :: SampClient -> String -> String -> String -> IO Bool
-setClientMetadata sc name desc version = CM.liftM (either (const False) (const True))
-                                         (callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.declareMetadata"  [mdata])
+setClientMetadata sc name desc version = either (const False) (const True)
+                                         `liftM`
+                                         callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.declareMetadata"  [mdata]
     where
       mdata = ValueStruct [("samp.name", ValueString name),
                            ("samp.description.text", ValueString desc),
