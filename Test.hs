@@ -53,7 +53,7 @@ module Test (SampClient,
              getHubInfo, pingHub,
              registerClient,
              unregisterClient,
-             setClientMetadata
+             declareMetadata
             ) where
 
 import Network.XmlRpc.Client
@@ -272,6 +272,7 @@ registerClient (s,u) = either (const Nothing) mkClient `liftM` callHub u (Just s
 
 
 -- We do not worry if there is an error un-registering the client
+-- but perhaps we should
 
 unregisterClient :: SampClient -> IO ()
 unregisterClient sc = callHub u (Just s) "samp.hub.unregister" [] >> return ()
@@ -284,14 +285,30 @@ unregisterClient sc = callHub u (Just s) "samp.hub.unregister" [] >> return ()
 --
 -- do we want the return to be () or Bool (say?)
 --
-setClientMetadata :: SampClient -> String -> String -> String -> IO Bool
-setClientMetadata sc name desc version = either (const False) (const True)
-                                         `liftM`
-                                         callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.declareMetadata"  [mdata]
+declareMetadata :: SampClient -> String -> String -> String -> IO Bool
+declareMetadata sc name desc version = either (const False) (const True)
+                                       `liftM`
+                                       callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.declareMetadata"  [mdata]
     where
       mdata = ValueStruct [("samp.name", ValueString name),
                            ("samp.description.text", ValueString desc),
                            ("internal.version", ValueString version)]
+
+-- Returns a map; should encode that in the type?
+
+getMetadata :: SampClient -> String -> IO (Maybe Value)
+getMetadata sc clientId = either (const Nothing) Just
+                          `liftM`
+                          callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.getMetadata" [toValue clientId]
+
+-- need to come up with a better type for the subsctiptions
+declareSubscriptions :: SampClient -> [(String,[(String,String)])] -> IO (Maybe ())
+declareSubscriptions = undefined
+
+getRegisteredClients :: SampClient -> IO (Maybe Value)
+getRegisteredClients sc = either (const Nothing) Just
+                      `liftM`
+                      callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.getRegisteredClients" []
 
 {-   
    # Store metadata in hub for use by other applications.
@@ -307,6 +324,6 @@ unsafeRegisterClient name = do
     let Just hi = hInfo
     scl <- registerClient hi
     let Just sc = scl
-    setClientMetadata sc name "Quickly hacked-up client" "0.0.1"
+    declareMetadata sc name "Quickly hacked-up client" "0.0.1"
     return sc
     
