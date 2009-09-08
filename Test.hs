@@ -171,6 +171,7 @@ data SAMPValue =
   deriving (Eq, Show)
 
 -- is the following sensible?
+
 instance XmlRpcType SAMPValue where
     toValue (SAMPString s) = ValueString s
     toValue (SAMPList a)   = ValueArray $ map toValue a
@@ -246,6 +247,11 @@ ValueStruct [("samp.hub-id",ValueString "hub"),("samp.self-id",ValueString "c1")
 
 -}
 
+-- XXX TODO XXX
+--   provide a default set of metadata about the client that can be over-ridden
+--   by a call to declareMetadata. Could also add an optional "config" record
+--   as a parameter to registerClient
+--
 registerClient :: (SampSecret, SampHubURL) -> IO (Maybe SampClient)
 registerClient (s,u) = either (const Nothing) mkClient `liftM` callHub u (Just s) "samp.hub.register" []
         where
@@ -280,35 +286,119 @@ unregisterClient sc = callHub u (Just s) "samp.hub.unregister" [] >> return ()
       u = sampHubURL sc
       s = sampPrivateKey sc -- this is BAD since callHub needs to be re-written to better reflect this usage
 
+-- call the hub with the given arguments, and return either
+-- Nothing or Just Value (in IO)
+--
+doCallHub :: SampClient -> String -> [Value] -> IO (Maybe Value)
+doCallHub sc msg args = either (const Nothing) Just
+                        `liftM`
+                        callHub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg) args
+
+doCallHubBool :: SampClient -> String -> [Value] -> IO Bool
+doCallHubBool sc msg args = either (const False) (const True)
+                            `liftM`
+                            callHub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg)  args
+
+doCallHubEither :: SampClient -> String -> [Value] -> IO (Either String Value)
+doCallHubEither sc msg args = callHub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg) args
+
 -- Name, description, and version: may want a generic one which
 -- takes in a map and ensures necessary fields
 --
--- do we want the return to be () or Bool (say?)
+-- XXX TODO XXX
+--   clean up, since need to allow arbitrary metadata elements
 --
 declareMetadata :: SampClient -> String -> String -> String -> IO Bool
-declareMetadata sc name desc version = either (const False) (const True)
-                                       `liftM`
-                                       callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.declareMetadata"  [mdata]
+declareMetadata sc name desc version = doCallHubBool sc "declareMetadata" [mdata]
     where
       mdata = ValueStruct [("samp.name", ValueString name),
                            ("samp.description.text", ValueString desc),
                            ("internal.version", ValueString version)]
 
--- Returns a map; should encode that in the type?
+-- Qus: For map return values, would it be good to encode this
+-- in the type? If so would need a specific map type which is
+-- probably a bad idea
+--
 
 getMetadata :: SampClient -> String -> IO (Maybe Value)
-getMetadata sc clientId = either (const Nothing) Just
-                          `liftM`
-                          callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.getMetadata" [toValue clientId]
+getMetadata sc clientId = doCallHub sc "getMetadata" [toValue clientId]
 
--- need to come up with a better type for the subsctiptions
-declareSubscriptions :: SampClient -> [(String,[(String,String)])] -> IO (Maybe ())
-declareSubscriptions = undefined
+-- need to come up with a better type for the subscriptions
+-- 
+-- We provide a version to allow sending arguments along with each
+-- subscription, but provide a simple interface for general use
+--
+declareSubscriptionsSimple :: SampClient -> [String] -> IO Bool
+declareSubscriptionsSimple sc subs = doCallHubBool sc "declareSubscriptions" [ValueStruct args]
+    where
+      args = zip subs (repeat (ValueStruct []))
+
+declareSubscriptions :: SampClient -> [(String,[(String,String)])] -> IO Bool
+declareSubscriptions sc subs = doCallHubBool sc "declareSubscriptions" [ValueStruct args]
+    where
+      args = map (\(name,alist) -> (name, alistTovstruct alist)) subs
+
+-- for testing
+declareSubscriptions' :: SampClient -> [(String,[(String,String)])] -> IO (Either String Value)
+declareSubscriptions' sc subs = doCallHubEither sc "declareSubscriptions" [ValueStruct args]
+    where
+      args = map (\(name,alist) -> (name, alistTovstruct alist)) subs
+
+getSubscriptions :: SampClient -> String -> IO (Maybe Value)
+getSubscriptions sc clientId = doCallHub sc "getSubscriptions" [toValue clientId]
 
 getRegisteredClients :: SampClient -> IO (Maybe Value)
-getRegisteredClients sc = either (const Nothing) Just
-                      `liftM`
-                      callHub (sampHubURL sc) (Just (sampPrivateKey sc)) "samp.hub.getRegisteredClients" []
+getRegisteredClients sc = doCallHub sc "getRegisteredClients" []
+
+getSubscribedClients :: SampClient -> String -> IO (Maybe Value)
+getSubscribedClients sc mType = doCallHub sc "getSubscribedClients" [toValue mType]
+
+reply = undefined
+
+-- We can not assume v is a string, so use toValue and hope that all is well
+-- below
+alistTovstruct = ValueStruct . map (\(n,v) -> (n, toValue v))
+
+toSAMPMessage mType params = ValueStruct m
+    where
+      m = [("samp.mtype", ValueString mType), ("samp.params", alistTovstruct params)]
+
+-- Bool probably isn't sufficient for a return type because the routine can
+-- fail if the client is not registered to receive the given message type.
+-- We could return 'Either String Bool' but then this should be done for all
+-- types
+--
+notify :: SampClient -> String -> String -> [(String,String)] -> IO Bool
+notify sc clientId mType params = doCallHubBool sc "notify" args
+    where
+      args = [ValueString clientId, toSAMPMessage mType params]
+
+notify' :: SampClient -> String -> String -> [(String,String)] -> IO (Either String Value) -- TODO change Value to Bool
+notify' sc clientId mType params = doCallHubEither sc "notify" args
+    where
+      args = [ValueString clientId, toSAMPMessage mType params]
+
+-- This is not extensible, in the sense that it doesn't allow other parameters
+-- than samp.mtype and samp.params to be specified.
+--
+notifyAll :: SampClient -> String -> [(String,String)] -> IO (Maybe Value)
+notifyAll sc mType params = doCallHub sc "notifyAll" [toSAMPMessage mType params]
+
+
+-- This is not extensible, in the sense that it doesn't allow other parameters
+-- than samp.mtype and samp.params to be specified.
+--
+callAndWait :: SampClient -> String -> String -> [(String,String)] -> Int -> IO (Maybe Value)
+callAndWait sc clientId mType params timeout = do
+  ans <- callAndWait' sc clientId mType params timeout
+  return $ case ans of
+             Left _ -> Nothing
+             Right x -> Just x
+
+callAndWait' :: SampClient -> String -> String -> [(String,String)] -> Int -> IO (Either String Value)
+callAndWait' sc clientId mType params timeout = doCallHubEither sc "callAndWait" args
+    where
+      args = [ValueString clientId, toSAMPMessage mType params, ValueString $ show timeout]
 
 {-   
    # Store metadata in hub for use by other applications.
