@@ -63,6 +63,9 @@ import qualified System.IO.Strict as S
 import qualified Data.Map as M
 import Data.Maybe
 
+import Data.List (isPrefixOf)
+import Data.Char (isDigit)
+
 import qualified Control.Arrow as CA
 import Control.Monad (liftM)
 -- import Control.Monad.Trans
@@ -170,7 +173,15 @@ data SAMPValue =
     SAMPMap   [(String, SAMPValue)]
   deriving (Eq, Show)
 
--- is the following sensible?
+toSAMPValue :: Value -> SAMPValue
+toSAMPValue (ValueString s) = SAMPString s
+toSAMPValue (ValueArray as) = SAMPList $ map toSAMPValue as
+toSAMPValue (ValueStruct s) = SAMPMap $ map (CA.second toSAMPValue) s
+
+{-
+
+Is the following sensible? Well, I can not be bothered to work out how to handle
+the fromValue code, and it is not yet clear whether we need this.
 
 instance XmlRpcType SAMPValue where
     toValue (SAMPString s) = ValueString s
@@ -187,6 +198,8 @@ instance XmlRpcType SAMPValue where
     -- fromValue (ValueArray a)  = return $ SAMPList $ mapM fromValue a
     -- fromValue (ValueStruct a)  = return $ SAMPMap $ mapM (CA.second fromValue) a
     fromValue v = fail $ "Unable to convert '" ++ show v ++ "' to a SAMPValue"
+
+-}
 
 type SampId = String
 type SampPrivateKey = String
@@ -205,12 +218,14 @@ data SampClient = SampClient {
                              } deriving (Eq, Show)
 
 
--- Just in case we want the error value, we wrap the call method
--- rather than use remote. This is specialized to the standard SAMP
--- profile. Once I get the SAMPValue data type to be an instance of
--- XmlRpcType (ie get fromValue working) then this can return
--- IO (Either String SAMPValue).
---
+data SAMPReturn = SAMPSuccess SAMPValue -- ^ successful call
+                | SAMPError String SAMPValue -- ^ The first argument is the contents of the samp.errortxt,
+                                             -- the second argument is a SAMPMap containing any other elements
+                                             -- (these are not explicitly named in case new fields are added)
+                                             -- This will typically be delivered to the user of the sender application.
+                | SAMPWarning String SAMPValue SAMPValue -- ^ amalgum of SAMPError and SAMPSuccess
+                | TransportError Int String -- ^ XML-RPC error
+                     deriving (Eq, Show)
 
 -- XXX TODO: re-write since SampSecret is only used when registering;
 -- for other calls you use the private key; so move to callHub' and then
@@ -225,6 +240,75 @@ callHub' url method = handleError (return . Left) . liftM Right . call url metho
 -- An alternative to callHub' which is not specific to the Either monad
 
 cH url method = handleError (return . fail) . liftM return . call url method
+
+-- and another alternative which uses SAMPReturn instead, which requires
+-- knowledge of some of the internals from Network.XmlRpc.Client
+
+-- I decompose the error string to get back the error code and string.
+-- Not ideal, and fragile, but simpler than writing my own code to 
+-- call an XML-RPC method
+--
+recreateTransportError :: String -> SAMPReturn
+recreateTransportError eMsg = if null l || null r || null r2 || not ("Error " `isPrefixOf` l) || not (all isDigit lCode)
+                              then TransportError 999 eMsg
+                              else TransportError code msg
+    where
+      (l,r) = break (==':') eMsg
+
+      lCode = drop 6 l
+      code = read lCode
+
+      r2 = tail r
+      msg = tail r2
+
+-- For the moment assume there can only be keys of
+--   "samp.status", "samp.error", "samp.result"
+-- in the response. We also assume the response is correctly
+-- typed.
+--
+-- Actually, should we just convert SAMP types to native Haskell
+-- types here?
+--
+parseSAMPResponse :: Value -> SAMPReturn
+parseSAMPResponse (ValueStruct s) = case status of
+                                      Nothing -> TransportError 999 $ "Internal error: missing samp.status in response - " ++ show s
+                                      Just (ValueString "samp.ok") -> SAMPSuccess rOut
+                                      Just (ValueString "samp.error") -> SAMPError eText eOut
+                                      Just (ValueString "samp.warning") -> SAMPWarning eText eOut rOut
+                                      Just x -> TransportError 999 $ "Internal error: unknown samp.status of '" ++ show x ++ "' in " ++ show s
+    where
+      status = lookup "samp.status" s 
+      -- Just (ValueStruct result) = lookup "samp.result" s
+      Just result = lookup "samp.result" s
+      Just (ValueStruct error) = lookup "samp.error" s
+
+      Just (ValueString eText) = lookup "samp.errortxt" error
+      eVals = filter (\(n,v) -> n /= "samp.errortxt") error
+
+      eOut = toSAMPValue (ValueStruct eVals)
+      rOut = toSAMPValue result
+
+parseSAMPResonpse v = TransportError 999 $ "Internal error: unrecognized return: " ++ show v
+
+{-
+XXX TODO: need to be clevererer here, since the return value could be
+
+ValueStruct [("samp.status",ValueString "samp.error"),("samp.error",ValueStruct [("samp.errortxt",ValueString "Unknown command: samp.hub.disconnect")])]
+
+which we want to convert into a SAMPError and not pass through as a success
+
+(this is the return value when try to send samp.hub.disconnect to ds9)
+
+-}
+
+chub' :: SampHubURL -> String -> [Value] -> IO SAMPReturn
+chub' url method = handleError (return . recreateTransportError) . liftM parseSAMPResponse . call url method
+
+chub :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> IO SAMPReturn
+chub url (Just s) method args = chub' url method (ValueString s : args)
+chub url _        method args = chub' url method args
+
+-- back to normal programming
 
 callHub :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> IO (Either String Value)
 callHub url (Just s) method args = callHub' url method (ValueString s : args)
@@ -301,6 +385,9 @@ doCallHubBool sc msg args = either (const False) (const True)
 
 doCallHubEither :: SampClient -> String -> [Value] -> IO (Either String Value)
 doCallHubEither sc msg args = callHub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg) args
+
+dochub :: SampClient -> String -> [Value] -> IO SAMPReturn
+dochub sc msg args = chub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg) args
 
 -- Name, description, and version: may want a generic one which
 -- takes in a map and ensures necessary fields
@@ -397,6 +484,11 @@ callAndWait sc clientId mType params timeout = do
 
 callAndWait' :: SampClient -> String -> String -> [(String,String)] -> Int -> IO (Either String Value)
 callAndWait' sc clientId mType params timeout = doCallHubEither sc "callAndWait" args
+    where
+      args = [ValueString clientId, toSAMPMessage mType params, ValueString $ show timeout]
+
+callAndWait2 :: SampClient -> String -> String -> [(String,String)] -> Int -> IO SAMPReturn
+callAndWait2 sc clientId mType params timeout = dochub sc "callAndWait" args
     where
       args = [ValueString clientId, toSAMPMessage mType params, ValueString $ show timeout]
 
