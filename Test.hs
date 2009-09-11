@@ -173,33 +173,11 @@ data SAMPValue =
     SAMPMap   [(String, SAMPValue)]
   deriving (Eq, Show)
 
+-- this is not a total function!
 toSAMPValue :: Value -> SAMPValue
 toSAMPValue (ValueString s) = SAMPString s
 toSAMPValue (ValueArray as) = SAMPList $ map toSAMPValue as
 toSAMPValue (ValueStruct s) = SAMPMap $ map (CA.second toSAMPValue) s
-
-{-
-
-Is the following sensible? Well, I can not be bothered to work out how to handle
-the fromValue code, and it is not yet clear whether we need this.
-
-instance XmlRpcType SAMPValue where
-    toValue (SAMPString s) = ValueString s
-    toValue (SAMPList a)   = ValueArray $ map toValue a
-    toValue (SAMPMap m)    = ValueStruct $ map (CA.second toValue) m
-
-    getType (SAMPString _) = TString
-    getType (SAMPList _) = TArray
-    getType (SAMPMap _) = TStruct
-
-    -- TODO: need the fromValues for arrays and structs otherwise this
-    --  is rather pointless
-    fromValue (ValueString s) = return $ SAMPString s
-    -- fromValue (ValueArray a)  = return $ SAMPList $ mapM fromValue a
-    -- fromValue (ValueStruct a)  = return $ SAMPMap $ mapM (CA.second fromValue) a
-    fromValue v = fail $ "Unable to convert '" ++ show v ++ "' to a SAMPValue"
-
--}
 
 type SampId = String
 type SampPrivateKey = String
@@ -218,37 +196,25 @@ data SampClient = SampClient {
                              } deriving (Eq, Show)
 
 
-data SAMPReturn = SAMPSuccess SAMPValue -- ^ successful call
+data TransportError = TransportError Int String -- ^ XML-RPC error, the first argument is the faultCode and the second the 
+                                                -- faultString of the response
+                      deriving (Eq, Show)
+
+data SAMPResponse = SAMPSuccess SAMPValue -- ^ successful call
                 | SAMPError String SAMPValue -- ^ The first argument is the contents of the samp.errortxt,
                                              -- the second argument is a SAMPMap containing any other elements
                                              -- (these are not explicitly named in case new fields are added)
                                              -- This will typically be delivered to the user of the sender application.
                 | SAMPWarning String SAMPValue SAMPValue -- ^ amalgum of SAMPError and SAMPSuccess
-                | TransportError Int String -- ^ XML-RPC error
                      deriving (Eq, Show)
 
--- XXX TODO: re-write since SampSecret is only used when registering;
--- for other calls you use the private key; so move to callHub' and then
--- some wrappers around this
-
--- XXX work out how to send in an array of values
---
-
-callHub' :: SampHubURL -> String -> [Value] -> IO (Either String Value)
-callHub' url method = handleError (return . Left) . liftM Right . call url method
-
--- An alternative to callHub' which is not specific to the Either monad
-
-cH url method = handleError (return . fail) . liftM return . call url method
-
--- and another alternative which uses SAMPReturn instead, which requires
--- knowledge of some of the internals from Network.XmlRpc.Client
+type SAMPReturn = Either TransportError SAMPResponse
 
 -- I decompose the error string to get back the error code and string.
 -- Not ideal, and fragile, but simpler than writing my own code to 
 -- call an XML-RPC method
 --
-recreateTransportError :: String -> SAMPReturn
+recreateTransportError :: String -> TransportError
 recreateTransportError eMsg = if null l || null r || null r2 || not ("Error " `isPrefixOf` l) || not (all isDigit lCode)
                               then TransportError 999 eMsg
                               else TransportError code msg
@@ -269,13 +235,24 @@ recreateTransportError eMsg = if null l || null r || null r2 || not ("Error " `i
 -- Actually, should we just convert SAMP types to native Haskell
 -- types here?
 --
+
+-- Parse a general return value. If the method returns a SAMP Response
+-- then use parseSAMPResponse instead.
+--
+parseGeneralResponse :: Value -> SAMPReturn
+parseGeneralResponse = Right . SAMPSuccess . toSAMPValue
+
+-- This is used to parse the return value from a method that
+-- returns a SAMP Response value, which is currently only the
+-- callAndWait method.
+--
 parseSAMPResponse :: Value -> SAMPReturn
 parseSAMPResponse (ValueStruct s) = case status of
-                                      Nothing -> TransportError 999 $ "Internal error: missing samp.status in response - " ++ show s
-                                      Just (ValueString "samp.ok") -> SAMPSuccess rOut
-                                      Just (ValueString "samp.error") -> SAMPError eText eOut
-                                      Just (ValueString "samp.warning") -> SAMPWarning eText eOut rOut
-                                      Just x -> TransportError 999 $ "Internal error: unknown samp.status of '" ++ show x ++ "' in " ++ show s
+                                      Nothing -> Left $ TransportError 999 $ "Internal error: missing samp.status in response - " ++ show s
+                                      Just (ValueString "samp.ok") -> Right $ SAMPSuccess rOut
+                                      Just (ValueString "samp.error") -> Right $ SAMPError eText eOut
+                                      Just (ValueString "samp.warning") -> Right $ SAMPWarning eText eOut rOut
+                                      Just x -> Left $ TransportError 999 $ "Internal error: unknown samp.status of '" ++ show x ++ "' in " ++ show s
     where
       status = lookup "samp.status" s 
       -- Just (ValueStruct result) = lookup "samp.result" s
@@ -288,31 +265,30 @@ parseSAMPResponse (ValueStruct s) = case status of
       eOut = toSAMPValue (ValueStruct eVals)
       rOut = toSAMPValue result
 
-parseSAMPResonpse v = TransportError 999 $ "Internal error: unrecognized return: " ++ show v
+parseSAMPResponse v = Left $ TransportError 999 $ "Internal error: unrecognized return: " ++ show v
 
-{-
-XXX TODO: need to be clevererer here, since the return value could be
+-- callHub' and callHub are for methods that return a non-specific return
+-- type (i.e. any XML-RPC value given the SAMP restrictions).
+--
+-- callHubSAMP' and callHubSAMP are for methods that return a SAMP response
+--
 
-ValueStruct [("samp.status",ValueString "samp.error"),("samp.error",ValueStruct [("samp.errortxt",ValueString "Unknown command: samp.hub.disconnect")])]
+cHub :: (Value -> SAMPReturn) -> SampHubURL -> String -> [Value] -> IO SAMPReturn
+cHub f url msg = handleError (return . Left . recreateTransportError) . liftM f . call url msg
 
-which we want to convert into a SAMPError and not pass through as a success
+callHub' :: SampHubURL -> String -> [Value] -> IO SAMPReturn
+callHub' = cHub parseGeneralResponse
 
-(this is the return value when try to send samp.hub.disconnect to ds9)
+callHubSAMP' :: SampHubURL -> String -> [Value] -> IO SAMPReturn
+callHubSAMP' = cHub parseSAMPResponse
 
--}
-
-chub' :: SampHubURL -> String -> [Value] -> IO SAMPReturn
-chub' url method = handleError (return . recreateTransportError) . liftM parseSAMPResponse . call url method
-
-chub :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> IO SAMPReturn
-chub url (Just s) method args = chub' url method (ValueString s : args)
-chub url _        method args = chub' url method args
-
--- back to normal programming
-
-callHub :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> IO (Either String Value)
+callHub :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> IO SAMPReturn
 callHub url (Just s) method args = callHub' url method (ValueString s : args)
 callHub url _        method args = callHub' url method args
+
+callHubSAMP :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> IO SAMPReturn
+callHubSAMP url (Just s) method args = callHub' url method (ValueString s : args)
+callHubSAMP url _        method args = callHub' url method args
 
 pingHub' :: SampHubURL -> IO Bool
 pingHub' u = either (const False) (const True) `liftM` callHub u Nothing "samp.hub.ping" []
@@ -324,13 +300,6 @@ pingHub = do
       Just (_,url) -> pingHub' url
       _            -> return False
 
-{-
-JSAMP return from samp.hub.register call
-
-ValueStruct [("samp.hub-id",ValueString "hub"),("samp.self-id",ValueString "c1"),("samp.private-key",ValueString "k:2_wsfxgqdihoxgotve")]
-
--}
-
 -- XXX TODO XXX
 --   provide a default set of metadata about the client that can be over-ridden
 --   by a call to declareMetadata. Could also add an optional "config" record
@@ -339,7 +308,7 @@ ValueStruct [("samp.hub-id",ValueString "hub"),("samp.self-id",ValueString "c1")
 registerClient :: (SampSecret, SampHubURL) -> IO (Maybe SampClient)
 registerClient (s,u) = either (const Nothing) mkClient `liftM` callHub u (Just s) "samp.hub.register" []
         where
-            mkClient (ValueStruct v) = do
+            mkClient (SAMPSuccess (SAMPMap v)) = do
                 pkey <- xlookup "samp.private-key" v
                 hid <- xlookup "samp.hub-id" v
                 sid <- xlookup "samp.self-id" v
@@ -355,10 +324,10 @@ registerClient (s,u) = either (const Nothing) mkClient `liftM` callHub u (Just s
             mkClient _ = Nothing
 
             xlookup k a = do
-                v <- lookup k a
-                case v of
-                    ValueString s -> Just s
-                    _ -> Nothing
+              v <- lookup k a
+              case v of
+                SAMPString s -> Just s
+                _            -> Nothing
 
 
 -- We do not worry if there is an error un-registering the client
@@ -370,24 +339,11 @@ unregisterClient sc = callHub u (Just s) "samp.hub.unregister" [] >> return ()
       u = sampHubURL sc
       s = sampPrivateKey sc -- this is BAD since callHub needs to be re-written to better reflect this usage
 
--- call the hub with the given arguments, and return either
--- Nothing or Just Value (in IO)
---
-doCallHub :: SampClient -> String -> [Value] -> IO (Maybe Value)
-doCallHub sc msg args = either (const Nothing) Just
-                        `liftM`
-                        callHub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg) args
+doCallHub :: SampClient -> String -> [Value] -> IO SAMPReturn
+doCallHub sc msg args = callHub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg) args
 
-doCallHubBool :: SampClient -> String -> [Value] -> IO Bool
-doCallHubBool sc msg args = either (const False) (const True)
-                            `liftM`
-                            callHub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg)  args
-
-doCallHubEither :: SampClient -> String -> [Value] -> IO (Either String Value)
-doCallHubEither sc msg args = callHub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg) args
-
-dochub :: SampClient -> String -> [Value] -> IO SAMPReturn
-dochub sc msg args = chub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg) args
+doCallHubSAMP :: SampClient -> String -> [Value] -> IO SAMPReturn
+doCallHubSAMP sc msg args = callHubSAMP (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg) args
 
 -- Name, description, and version: may want a generic one which
 -- takes in a map and ensures necessary fields
@@ -395,8 +351,8 @@ dochub sc msg args = chub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub.
 -- XXX TODO XXX
 --   clean up, since need to allow arbitrary metadata elements
 --
-declareMetadata :: SampClient -> String -> String -> String -> IO Bool
-declareMetadata sc name desc version = doCallHubBool sc "declareMetadata" [mdata]
+declareMetadata :: SampClient -> String -> String -> String -> IO SAMPReturn
+declareMetadata sc name desc version = doCallHub sc "declareMetadata" [mdata]
     where
       mdata = ValueStruct [("samp.name", ValueString name),
                            ("samp.description.text", ValueString desc),
@@ -407,7 +363,7 @@ declareMetadata sc name desc version = doCallHubBool sc "declareMetadata" [mdata
 -- probably a bad idea
 --
 
-getMetadata :: SampClient -> String -> IO (Maybe Value)
+getMetadata :: SampClient -> String -> IO SAMPReturn
 getMetadata sc clientId = doCallHub sc "getMetadata" [toValue clientId]
 
 -- need to come up with a better type for the subscriptions
@@ -415,29 +371,23 @@ getMetadata sc clientId = doCallHub sc "getMetadata" [toValue clientId]
 -- We provide a version to allow sending arguments along with each
 -- subscription, but provide a simple interface for general use
 --
-declareSubscriptionsSimple :: SampClient -> [String] -> IO Bool
-declareSubscriptionsSimple sc subs = doCallHubBool sc "declareSubscriptions" [ValueStruct args]
+declareSubscriptionsSimple :: SampClient -> [String] -> IO SAMPReturn
+declareSubscriptionsSimple sc subs = doCallHub sc "declareSubscriptions" [ValueStruct args]
     where
       args = zip subs (repeat (ValueStruct []))
 
-declareSubscriptions :: SampClient -> [(String,[(String,String)])] -> IO Bool
-declareSubscriptions sc subs = doCallHubBool sc "declareSubscriptions" [ValueStruct args]
+declareSubscriptions :: SampClient -> [(String,[(String,String)])] -> IO SAMPReturn
+declareSubscriptions sc subs = doCallHub sc "declareSubscriptions" [ValueStruct args]
     where
       args = map (\(name,alist) -> (name, alistTovstruct alist)) subs
 
--- for testing
-declareSubscriptions' :: SampClient -> [(String,[(String,String)])] -> IO (Either String Value)
-declareSubscriptions' sc subs = doCallHubEither sc "declareSubscriptions" [ValueStruct args]
-    where
-      args = map (\(name,alist) -> (name, alistTovstruct alist)) subs
-
-getSubscriptions :: SampClient -> String -> IO (Maybe Value)
+getSubscriptions :: SampClient -> String -> IO SAMPReturn
 getSubscriptions sc clientId = doCallHub sc "getSubscriptions" [toValue clientId]
 
-getRegisteredClients :: SampClient -> IO (Maybe Value)
+getRegisteredClients :: SampClient -> IO SAMPReturn
 getRegisteredClients sc = doCallHub sc "getRegisteredClients" []
 
-getSubscribedClients :: SampClient -> String -> IO (Maybe Value)
+getSubscribedClients :: SampClient -> String -> IO SAMPReturn
 getSubscribedClients sc mType = doCallHub sc "getSubscribedClients" [toValue mType]
 
 reply = undefined
@@ -450,55 +400,24 @@ toSAMPMessage mType params = ValueStruct m
     where
       m = [("samp.mtype", ValueString mType), ("samp.params", alistTovstruct params)]
 
--- Bool probably isn't sufficient for a return type because the routine can
--- fail if the client is not registered to receive the given message type.
--- We could return 'Either String Bool' but then this should be done for all
--- types
---
-notify :: SampClient -> String -> String -> [(String,String)] -> IO Bool
-notify sc clientId mType params = doCallHubBool sc "notify" args
-    where
-      args = [ValueString clientId, toSAMPMessage mType params]
-
-notify' :: SampClient -> String -> String -> [(String,String)] -> IO (Either String Value) -- TODO change Value to Bool
-notify' sc clientId mType params = doCallHubEither sc "notify" args
+notify :: SampClient -> String -> String -> [(String,String)] -> IO SAMPReturn
+notify sc clientId mType params = doCallHub sc "notify" args
     where
       args = [ValueString clientId, toSAMPMessage mType params]
 
 -- This is not extensible, in the sense that it doesn't allow other parameters
 -- than samp.mtype and samp.params to be specified.
 --
-notifyAll :: SampClient -> String -> [(String,String)] -> IO (Maybe Value)
+notifyAll :: SampClient -> String -> [(String,String)] -> IO SAMPReturn
 notifyAll sc mType params = doCallHub sc "notifyAll" [toSAMPMessage mType params]
 
-
 -- This is not extensible, in the sense that it doesn't allow other parameters
 -- than samp.mtype and samp.params to be specified.
 --
-callAndWait :: SampClient -> String -> String -> [(String,String)] -> Int -> IO (Maybe Value)
-callAndWait sc clientId mType params timeout = do
-  ans <- callAndWait' sc clientId mType params timeout
-  return $ case ans of
-             Left _ -> Nothing
-             Right x -> Just x
-
-callAndWait' :: SampClient -> String -> String -> [(String,String)] -> Int -> IO (Either String Value)
-callAndWait' sc clientId mType params timeout = doCallHubEither sc "callAndWait" args
+callAndWait :: SampClient -> String -> String -> [(String,String)] -> Int -> IO SAMPReturn
+callAndWait sc clientId mType params timeout = doCallHubSAMP sc "callAndWait" args
     where
       args = [ValueString clientId, toSAMPMessage mType params, ValueString $ show timeout]
-
-callAndWait2 :: SampClient -> String -> String -> [(String,String)] -> Int -> IO SAMPReturn
-callAndWait2 sc clientId mType params timeout = dochub sc "callAndWait" args
-    where
-      args = [ValueString clientId, toSAMPMessage mType params, ValueString $ show timeout]
-
-{-   
-   # Store metadata in hub for use by other applications.
-   map metadata = ("samp.name" -> "dummy",
-                   "samp.description.text" -> "Test Application",
-                   "dummy.version" -> "0.1-3");
-   hub.xmlrpcCall("samp.hub.declareMetadata", private-key, metadata);
--}
 
 unsafeRegisterClient :: String -> IO SampClient
 unsafeRegisterClient name = do
