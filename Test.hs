@@ -80,9 +80,8 @@ import Data.List (isPrefixOf, intercalate)
 import Data.Char (isDigit)
 
 import qualified Control.Arrow as CA
-import Control.Monad (liftM)
+import Control.Monad (liftM, ap)
 import qualified Control.Monad.Error.Class as ME
-
 -- import Control.Monad.Trans
 
 import System.Environment (getEnv)
@@ -332,16 +331,12 @@ registerClient :: (SampSecret, SampHubURL) -> IO (Either TransportError SampClie
 registerClient (s,u) = either Left mkClient `liftM` callHub u (Just s) "samp.hub.register" []
         where
           mkClient :: SAMPResponse -> Either TransportError SampClient
-          mkClient (SAMPSuccess (SAMPMap v)) = do
-            pkey <- xlookup "samp.private-key" v
-            hid <- xlookup "samp.hub-id" v
-            sid <- xlookup "samp.self-id" v
-            Right SampClient { sampSecret = s,
-                               sampHubURL = u,
-                               sampPrivateKey = pkey,
-                               sampHubId = hid,
-                               sampId = sid
-                             }
+          mkClient (SAMPSuccess (SAMPMap v)) = SampClient `liftM`
+                                               Right s
+                                               `ap` Right u
+                                               `ap` xlookup "samp.private-key" v
+                                               `ap` xlookup "samp.hub-id" v
+                                               `ap` xlookup "samp.self-id" v
           mkClient _ = Left $ TransportError 999 "Unable to process return value of samp.hub.register"
 
           xlookup k a = case lookup k a of
