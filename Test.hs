@@ -323,12 +323,12 @@ registerClient (s,u) = either Left mkClient `liftM` callHub u (Just s) "samp.hub
             pkey <- xlookup "samp.private-key" v
             hid <- xlookup "samp.hub-id" v
             sid <- xlookup "samp.self-id" v
-            Right $ SampClient { sampSecret = s,
-                                 sampHubURL = u,
-                                 sampPrivateKey = pkey,
-                                 sampHubId = hid,
-                                 sampId = sid
-                               }
+            Right SampClient { sampSecret = s,
+                               sampHubURL = u,
+                               sampPrivateKey = pkey,
+                               sampHubId = hid,
+                               sampId = sid
+                             }
           mkClient _ = Left $ TransportError 999 "Unable to process return value of samp.hub.register"
 
           xlookup k a = case lookup k a of
@@ -346,10 +346,10 @@ unregisterClient sc = callHub u (Just s) "samp.hub.unregister" [] >> return ()
       s = sampPrivateKey sc -- this is BAD since callHub needs to be re-written to better reflect this usage
 
 doCallHub :: SampClient -> String -> [Value] -> IO SAMPReturn
-doCallHub sc msg args = callHub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg) args
+doCallHub sc msg = callHub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg)
 
 doCallHubSAMP :: SampClient -> String -> [Value] -> IO SAMPReturn
-doCallHubSAMP sc msg args = callHubSAMP (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg) args
+doCallHubSAMP sc msg = callHubSAMP (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg)
 
 -- Name, description, and version: may want a generic one which
 -- takes in a map and ensures necessary fields
@@ -357,6 +357,11 @@ doCallHubSAMP sc msg args = callHubSAMP (sampHubURL sc) (Just (sampPrivateKey sc
 -- XXX TODO XXX
 --   clean up, since need to allow arbitrary metadata elements
 --
+{-
+declareMetadata :: SampClient -> String -> String -> String -> IO (Either TransportError ())
+declareMetadata sc name desc version = doCallHub sc "declareMetadata" [mdata] >>= either Left (const (Right ()))
+-}
+
 declareMetadata :: SampClient -> String -> String -> String -> IO SAMPReturn
 declareMetadata sc name desc version = doCallHub sc "declareMetadata" [mdata]
     where
@@ -385,7 +390,7 @@ declareSubscriptionsSimple sc subs = doCallHub sc "declareSubscriptions" [ValueS
 declareSubscriptions :: SampClient -> [(String,[(String,String)])] -> IO SAMPReturn
 declareSubscriptions sc subs = doCallHub sc "declareSubscriptions" [ValueStruct args]
     where
-      args = map (\(name,alist) -> (name, alistTovstruct alist)) subs
+      args = map (CA.second alistTovstruct) subs
 
 getSubscriptions :: SampClient -> String -> IO SAMPReturn
 getSubscriptions sc clientId = doCallHub sc "getSubscriptions" [toValue clientId]
@@ -400,7 +405,7 @@ reply = undefined
 
 -- We can not assume v is a string, so use toValue and hope that all is well
 -- below
-alistTovstruct = ValueStruct . map (\(n,v) -> (n, toValue v))
+alistTovstruct = ValueStruct . map (CA.second toValue)
 
 toSAMPMessage mType params = ValueStruct m
     where
