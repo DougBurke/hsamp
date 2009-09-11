@@ -4,6 +4,14 @@
 -- NEED TO USE
 --    -hide-package monads-fd
 
+{-
+
+To do:
+
+  - return Haskell types (list, assoc list, strings) rather than SAMP types?
+
+-}
+
 
 -- may need to use
 --    -hide-package transformers
@@ -68,7 +76,7 @@ import qualified System.IO.Strict as S
 import qualified Data.Map as M
 import Data.Maybe
 
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, intercalate)
 import Data.Char (isDigit)
 
 import qualified Control.Arrow as CA
@@ -186,6 +194,11 @@ toSAMPValue (ValueString s) = SAMPString s
 toSAMPValue (ValueArray as) = SAMPList $ map toSAMPValue as
 toSAMPValue (ValueStruct s) = SAMPMap $ map (CA.second toSAMPValue) s
 
+fromSAMPValue :: SAMPValue -> String
+fromSAMPValue (SAMPString s) = s
+fromSAMPValue (SAMPList xs)  = "[" ++ intercalate ", " (map fromSAMPValue xs) ++ "]"
+fromSAMPValue (SAMPMap m)    = "{" ++ intercalate ", " (map (\(n,v) -> show n ++ " -> " ++ fromSAMPValue v) m) ++ "}"
+
 type SampId = String
 type SampPrivateKey = String
 
@@ -297,8 +310,8 @@ callHub url (Just s) method args = callHub' url method (ValueString s : args)
 callHub url _        method args = callHub' url method args
 
 callHubSAMP :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> IO SAMPReturn
-callHubSAMP url (Just s) method args = callHub' url method (ValueString s : args)
-callHubSAMP url _        method args = callHub' url method args
+callHubSAMP url (Just s) method args = callHubSAMP' url method (ValueString s : args)
+callHubSAMP url _        method args = callHubSAMP' url method args
 
 pingHub' :: SampHubURL -> IO Bool
 pingHub' u = either (const False) (const True) `liftM` callHub u Nothing "samp.hub.ping" []
@@ -357,49 +370,56 @@ doCallHubSAMP sc msg = callHubSAMP (sampHubURL sc) (Just (sampPrivateKey sc)) ("
 -- XXX TODO XXX
 --   clean up, since need to allow arbitrary metadata elements
 --
-{-
-declareMetadata :: SampClient -> String -> String -> String -> IO (Either TransportError ())
-declareMetadata sc name desc version = doCallHub sc "declareMetadata" [mdata] >>= either Left (const (Right ()))
--}
 
-declareMetadata :: SampClient -> String -> String -> String -> IO SAMPReturn
-declareMetadata sc name desc version = doCallHub sc "declareMetadata" [mdata]
+declareMetadata :: SampClient -> String -> String -> String -> IO (Either TransportError ())
+declareMetadata sc name desc version = either Left (const (Right ())) `liftM` doCallHub sc "declareMetadata" [mdata]
     where
       mdata = ValueStruct [("samp.name", ValueString name),
                            ("samp.description.text", ValueString desc),
                            ("internal.version", ValueString version)]
 
--- Qus: For map return values, would it be good to encode this
--- in the type? If so would need a specific map type which is
--- probably a bad idea
---
-
-getMetadata :: SampClient -> String -> IO SAMPReturn
-getMetadata sc clientId = doCallHub sc "getMetadata" [toValue clientId]
+getMetadata :: SampClient -> String -> IO (Either TransportError [(String,SAMPValue)])
+getMetadata sc clientId = either Left toAList `liftM` doCallHub sc "getMetadata" [toValue clientId]
+    where
+      toAList :: SAMPResponse -> Either TransportError [(String, SAMPValue)]
+      toAList (SAMPSuccess (SAMPMap m)) = Right m
+      toAList _ = Left $ TransportError 999 "Unable to parse repsonse for samp.hub.getMetadata"
 
 -- need to come up with a better type for the subscriptions
 -- 
 -- We provide a version to allow sending arguments along with each
 -- subscription, but provide a simple interface for general use
 --
-declareSubscriptionsSimple :: SampClient -> [String] -> IO SAMPReturn
-declareSubscriptionsSimple sc subs = doCallHub sc "declareSubscriptions" [ValueStruct args]
+declareSubscriptionsSimple :: SampClient -> [String] -> IO (Either TransportError ())
+declareSubscriptionsSimple sc subs = either Left (const (Right ())) `liftM` doCallHub sc "declareSubscriptions" [ValueStruct args]
     where
       args = zip subs (repeat (ValueStruct []))
 
-declareSubscriptions :: SampClient -> [(String,[(String,String)])] -> IO SAMPReturn
-declareSubscriptions sc subs = doCallHub sc "declareSubscriptions" [ValueStruct args]
+declareSubscriptions :: SampClient -> [(String,[(String,String)])] -> IO (Either TransportError ())
+declareSubscriptions sc subs = either Left (const (Right ())) `liftM` doCallHub sc "declareSubscriptions" [ValueStruct args]
     where
       args = map (CA.second alistTovstruct) subs
 
-getSubscriptions :: SampClient -> String -> IO SAMPReturn
-getSubscriptions sc clientId = doCallHub sc "getSubscriptions" [toValue clientId]
+getSubscriptions :: SampClient -> String -> IO (Either TransportError [(String,SAMPValue)])
+getSubscriptions sc clientId = either Left toAList `liftM` doCallHub sc "getSubscriptions" [toValue clientId]
+    where
+      toAList :: SAMPResponse -> Either TransportError [(String, SAMPValue)]
+      toAList (SAMPSuccess (SAMPMap m)) = Right m
+      toAList _ = Left $ TransportError 999 "Unable to parse repsonse for samp.hub.getSubscriptions"
 
-getRegisteredClients :: SampClient -> IO SAMPReturn
-getRegisteredClients sc = doCallHub sc "getRegisteredClients" []
+getRegisteredClients :: SampClient -> IO (Either TransportError [String])
+getRegisteredClients sc = either Left toList `liftM` doCallHub sc "getRegisteredClients" []
+    where
+      toList :: SAMPResponse -> Either TransportError [String]
+      toList (SAMPSuccess (SAMPList xs)) = Right $ map fromSAMPValue xs
+      toList _ = Left $ TransportError 999 "Unable to parse response for samp.hub.getRegisteredClients"
 
-getSubscribedClients :: SampClient -> String -> IO SAMPReturn
-getSubscribedClients sc mType = doCallHub sc "getSubscribedClients" [toValue mType]
+getSubscribedClients :: SampClient -> String -> IO (Either TransportError [(String,SAMPValue)])
+getSubscribedClients sc mType = either Left toAList `liftM` doCallHub sc "getSubscribedClients" [toValue mType]
+    where
+      toAList :: SAMPResponse -> Either TransportError [(String, SAMPValue)]
+      toAList (SAMPSuccess (SAMPMap m)) = Right m
+      toAList _ = Left $ TransportError 999 "Unable to parse repsonse for samp.hub.getSubscribedClients"
 
 reply = undefined
 
@@ -411,16 +431,20 @@ toSAMPMessage mType params = ValueStruct m
     where
       m = [("samp.mtype", ValueString mType), ("samp.params", alistTovstruct params)]
 
-notify :: SampClient -> String -> String -> [(String,String)] -> IO SAMPReturn
-notify sc clientId mType params = doCallHub sc "notify" args
+notify :: SampClient -> String -> String -> [(String,String)] -> IO (Either TransportError ())
+notify sc clientId mType params = either Left (const (Right ())) `liftM` doCallHub sc "notify" args
     where
       args = [ValueString clientId, toSAMPMessage mType params]
 
 -- This is not extensible, in the sense that it doesn't allow other parameters
 -- than samp.mtype and samp.params to be specified.
 --
-notifyAll :: SampClient -> String -> [(String,String)] -> IO SAMPReturn
-notifyAll sc mType params = doCallHub sc "notifyAll" [toSAMPMessage mType params]
+notifyAll :: SampClient -> String -> [(String,String)] -> IO (Either TransportError [String])
+notifyAll sc mType params = either Left toList `liftM` doCallHub sc "notifyAll" [toSAMPMessage mType params]
+    where
+      toList :: SAMPResponse -> Either TransportError [String]
+      toList (SAMPSuccess (SAMPList xs)) = Right $ map fromSAMPValue xs
+      toList _ = Left $ TransportError 999 "Unable to parse response for samp.hub.notifyAll"
 
 -- This is not extensible, in the sense that it doesn't allow other parameters
 -- than samp.mtype and samp.params to be specified.
