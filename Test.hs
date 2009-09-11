@@ -1,8 +1,13 @@
 
 -- not currently used {-# LANGUAGE FlexibleContexts #-}
 
+-- NEED TO USE
+--    -hide-package monads-fd
+
+
 -- may need to use
 --    -hide-package transformers
+--    -hide-package monads-fd
 --  (or mtl) to getliftIO and friends working
 
 --
@@ -68,6 +73,8 @@ import Data.Char (isDigit)
 
 import qualified Control.Arrow as CA
 import Control.Monad (liftM)
+import qualified Control.Monad.Error.Class as ME
+
 -- import Control.Monad.Trans
 
 import System.Environment (getEnv)
@@ -200,6 +207,9 @@ data TransportError = TransportError Int String -- ^ XML-RPC error, the first ar
                                                 -- faultString of the response
                       deriving (Eq, Show)
 
+instance ME.Error TransportError where
+    strMsg = TransportError 999
+
 data SAMPResponse = SAMPSuccess SAMPValue -- ^ successful call
                 | SAMPError String SAMPValue -- ^ The first argument is the contents of the samp.errortxt,
                                              -- the second argument is a SAMPMap containing any other elements
@@ -305,29 +315,25 @@ pingHub = do
 --   by a call to declareMetadata. Could also add an optional "config" record
 --   as a parameter to registerClient
 --
-registerClient :: (SampSecret, SampHubURL) -> IO (Maybe SampClient)
-registerClient (s,u) = either (const Nothing) mkClient `liftM` callHub u (Just s) "samp.hub.register" []
+registerClient :: (SampSecret, SampHubURL) -> IO (Either TransportError SampClient)
+registerClient (s,u) = either Left mkClient `liftM` callHub u (Just s) "samp.hub.register" []
         where
-            mkClient (SAMPSuccess (SAMPMap v)) = do
-                pkey <- xlookup "samp.private-key" v
-                hid <- xlookup "samp.hub-id" v
-                sid <- xlookup "samp.self-id" v
-                return SampClient { sampSecret = s,
-                                    sampHubURL = u,
-                                    sampPrivateKey = pkey,
-                                    sampHubId = hid,
-                                    sampId = sid
-                                    -- sampPrivateKey = fromValue pkey,
-                                    -- sampHubId = fromValue hid,
-                                    -- sampId = fromValue sid
-                                  }
-            mkClient _ = Nothing
+          mkClient :: SAMPResponse -> Either TransportError SampClient
+          mkClient (SAMPSuccess (SAMPMap v)) = do
+            pkey <- xlookup "samp.private-key" v
+            hid <- xlookup "samp.hub-id" v
+            sid <- xlookup "samp.self-id" v
+            Right $ SampClient { sampSecret = s,
+                                 sampHubURL = u,
+                                 sampPrivateKey = pkey,
+                                 sampHubId = hid,
+                                 sampId = sid
+                               }
+          mkClient _ = Left $ TransportError 999 "Unable to process return value of samp.hub.register"
 
-            xlookup k a = do
-              v <- lookup k a
-              case v of
-                SAMPString s -> Just s
-                _            -> Nothing
+          xlookup k a = case lookup k a of
+                          Just (SAMPString s) -> Right s
+                          _            -> Left $ TransportError 999 ("Unable to find key " ++ k)
 
 
 -- We do not worry if there is an error un-registering the client
@@ -424,7 +430,7 @@ unsafeRegisterClient name = do
     hInfo <- getHubInfo
     let Just hi = hInfo
     scl <- registerClient hi
-    let Just sc = scl
+    let Right sc = scl
     declareMetadata sc name "Quickly hacked-up client" "0.0.1"
     return sc
     
