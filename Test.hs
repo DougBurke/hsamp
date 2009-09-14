@@ -127,7 +127,8 @@ stripLines = filter (\x ->not (null x || head x == '#')) . splitLines
 processLockFile :: String -> [(String,String)]
 processLockFile = foldr step [] . stripLines
     where
-        step l a = CA.second tail (break (== '=') l) : a
+        step = (:) . CA.second tail . break (== '=')
+        -- step l a = CA.second tail (break (== '=') l) : a
 
 extractHubInfo :: [(String,String)] -> Maybe (SampSecret, SampHubURL)
 extractHubInfo alist = do
@@ -148,7 +149,7 @@ getHubInfo = catch (do
 
 From the SAMP documentation:
 
-# Read information from lockfile to locate and register with hub.
+   # Read information from lockfile to locate and register with hub.
    string hub-url = readFromLockfile("samp.hub.xmlprc.url");
    string samp-secret = readFromLockfile("samp.secret");
 
@@ -354,10 +355,10 @@ unregisterClient sc = callHub u (Just s) "samp.hub.unregister" [] >> return ()
       s = sampPrivateKey sc -- this is BAD since callHub needs to be re-written to better reflect this usage
 
 doCallHub :: SampClient -> String -> [Value] -> IO SAMPReturn
-doCallHub sc msg = callHub (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg)
+doCallHub sc = callHub (sampHubURL sc) (Just (sampPrivateKey sc)) . ("samp.hub." ++)
 
 doCallHubSAMP :: SampClient -> String -> [Value] -> IO SAMPReturn
-doCallHubSAMP sc msg = callHubSAMP (sampHubURL sc) (Just (sampPrivateKey sc)) ("samp.hub."++msg)
+doCallHubSAMP sc = callHubSAMP (sampHubURL sc) (Just (sampPrivateKey sc)) . ("samp.hub." ++)
 
 -- Name, description, and version: may want a generic one which
 -- takes in a map and ensures necessary fields
