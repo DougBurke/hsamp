@@ -73,8 +73,8 @@ import Network.XmlRpc.Client
 import Network.XmlRpc.Internals
 
 import qualified System.IO.Strict as S
-import qualified Data.Map as M
-import Data.Maybe
+-- import qualified Data.Map as M
+-- import Data.Maybe
 
 import Data.List (isPrefixOf, intercalate)
 import Data.Char (isDigit)
@@ -85,7 +85,7 @@ import qualified Control.Monad.Error.Class as ME
 -- import Control.Monad.Trans
 
 import System.Environment (getEnv)
-import System.IO.Error (catch)
+-- import System.IO.Error (catch)
 
 type SampSecret = String
 type SampHubURL = String
@@ -110,7 +110,8 @@ splitLines cs =
            ('\n':rest) -> splitLines rest
            _           -> []
 
-isLineTerminator c = c == '\r' || c == '\n'
+isLineTerminator :: Char -> Bool
+isLineTerminator c = c `elem` "\r\n"
 
 -- Remove un-needed lines from the SAMP lock file
 -- and return a list of interesting lines
@@ -193,6 +194,7 @@ toSAMPValue :: Value -> SAMPValue
 toSAMPValue (ValueString s) = SAMPString s
 toSAMPValue (ValueArray as) = SAMPList $ map toSAMPValue as
 toSAMPValue (ValueStruct s) = SAMPMap $ map (CA.second toSAMPValue) s
+toSAMPValue e = error $ "Unexpected Value: " ++ show e
 
 fromSAMPValue :: SAMPValue -> String
 fromSAMPValue (SAMPString s) = s
@@ -280,10 +282,10 @@ parseSAMPResponse (ValueStruct s) = case status of
       status = lookup "samp.status" s 
       -- Just (ValueStruct result) = lookup "samp.result" s
       Just result = lookup "samp.result" s
-      Just (ValueStruct error) = lookup "samp.error" s
+      Just (ValueStruct eStruct) = lookup "samp.error" s
 
-      Just (ValueString eText) = lookup "samp.errortxt" error
-      eVals = filter (\(n,v) -> n /= "samp.errortxt") error
+      Just (ValueString eText) = lookup "samp.errortxt" eStruct
+      eVals = filter (\(n,_) -> n /= "samp.errortxt") eStruct
 
       eOut = toSAMPValue (ValueStruct eVals)
       rOut = toSAMPValue result
@@ -341,7 +343,7 @@ registerClient (s,u) = either Left mkClient `liftM` callHub u (Just s) "samp.hub
           mkClient _ = Left $ TransportError 999 "Unable to process return value of samp.hub.register"
 
           xlookup k a = case lookup k a of
-                          Just (SAMPString s) -> Right s
+                          Just (SAMPString s2) -> Right s2
                           _            -> Left $ TransportError 999 ("Unable to find key " ++ k)
 
 
@@ -417,12 +419,14 @@ getSubscribedClients sc mType = either Left toAList `liftM` doCallHub sc "getSub
       toAList (SAMPSuccess (SAMPMap m)) = Right m
       toAList _ = Left $ TransportError 999 "Unable to parse repsonse for samp.hub.getSubscribedClients"
 
-reply = undefined
+-- reply = undefined
 
 -- We can not assume v is a string, so use toValue and hope that all is well
 -- below
+alistTovstruct :: (XmlRpcType a) => [(String, a)] -> Value
 alistTovstruct = ValueStruct . map (CA.second toValue)
 
+toSAMPMessage :: (XmlRpcType a) => String -> [(String, a)] -> Value
 toSAMPMessage mType params = ValueStruct m
     where
       m = [("samp.mtype", ValueString mType), ("samp.params", alistTovstruct params)]
@@ -456,6 +460,6 @@ unsafeRegisterClient name = do
     let Just hi = hInfo
     scl <- registerClient hi
     let Right sc = scl
-    declareMetadata sc name "Quickly hacked-up client" "0.0.1"
+    _ <- declareMetadata sc name "Quickly hacked-up client" "0.0.1"
     return sc
     
