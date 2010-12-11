@@ -29,6 +29,7 @@ deconstructed (so losing the actual error message).
 
 module SAMP.Client (SampClient, SampInfo, SAMPValue,
              TransportError,
+             showSAMPValue,
              getHubInfo, pingHub,
              registerClient,
              unregisterClient,

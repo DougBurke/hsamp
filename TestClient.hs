@@ -50,7 +50,7 @@ reportIt :: String -> Either TransportError [(String,SAMPValue)] -> IO ()
 reportIt lbl (Left te) = putStrLn $ concat ["    ERROR accessing ", lbl, " : ", show te]
 reportIt lbl (Right msgs) = do
          putStrLn $ concat ["    ", lbl]
-         forM_ msgs $ \(n,v) -> putStrLn $ concat ["        ", n, " : ", show v]
+         forM_ msgs $ \(n,v) -> putStrLn $ concat ["        ", n, " : ", showSAMPValue v]
 
 reportClients :: SampClient -> IO ()
 reportClients cl = do

@@ -37,6 +37,7 @@ module SAMP.Types (
        SampClient(..), SampInfo, SampSecret, SampHubURL,
        SampId, SampPrivateKey,
        SAMPValue(..),
+       showSAMPValue,
        TransportError(..),
        SAMPResponse(..), SAMPReturn,
        toSAMPValue, fromSAMPValue
@@ -61,6 +62,13 @@ data SAMPValue =
     SAMPList [SAMPValue] |
     SAMPMap   [(String, SAMPValue)]
   deriving (Eq, Show)
+
+showSAMPValue :: SAMPValue -> String
+showSAMPValue (SAMPString s) = s
+showSAMPValue (SAMPList xs) = concat ["[", intercalate "," (map showSAMPValue xs), "]"]
+showSAMPValue (SAMPMap ms) = concat ["{", intercalate "," vals, "}"]
+         where
+             vals = map (\(n,v) -> concat [n, " -> ", showSAMPValue v]) ms
 
 -- this is not a total function!
 toSAMPValue :: Value -> SAMPValue
