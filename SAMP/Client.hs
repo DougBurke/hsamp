@@ -18,41 +18,6 @@ To do:
 --    -hide-package monads-fd
 --  (or mtl) to getliftIO and friends working
 
---
--- SAMP access tests
---
-
-{-
-
-I think we will want some sort of SampProfile typeclass - e.g.
-
-class SampProfile a where
-  getProfile :: IO a -- is this possible
-  sendMessage :: a -> String -> [(String,String)] -> IO () -- not sure about the return value
-  ... etc
-
-and then 
-
-registerClient :: (SampProfile a, SampClient b) => a -> ... -> IO b
-  
-hmmm, this looks a bit messy
-
-I think the SampProfile shoule be able to
-
-  ping the hub
-  register a client
-  send a message
-
-  notify options
-  .... other stuff ....
-
-Except that this suggests it's really a SampProfileClient.
-
-Since the client registration returns information we need, I think it does look like there's
-a SampProfile and a SampClient.
-
--}
-
 {-
 The SAMP hubs may return invalid XML-RPC responses on error: I have seen
 cases with both JSAMP and SAMPY. Mark has fixed JSAMP but not formally released,
@@ -83,20 +48,17 @@ import qualified System.IO.Strict as S
 -- import qualified Data.Map as M
 -- import Data.Maybe
 
-import Data.List (isPrefixOf, intercalate)
+import Data.List (isPrefixOf)
 import Data.Char (isDigit)
 
 import qualified Control.Arrow as CA
 import Control.Monad (liftM, ap)
-import qualified Control.Monad.Error.Class as ME
 -- import Control.Monad.Trans
 
 import System.Environment (getEnv)
 -- import System.IO.Error (catch)
 
-type SampSecret = String
-type SampHubURL = String
-type SampInfo = (SampSecret, SampHubURL)
+import SAMP.Types
 
 sampLockFile :: IO FilePath
 sampLockFile = do
@@ -187,61 +149,6 @@ From the SAMP documentation:
    hub.xmlrpcCall("samp.hub.unregister", private-key);
 
 -}
-
--- should we have a "restricted string" class that is limited to
--- ASCII characters with hex codes 09,0a,0d or 20 to 7f ?
---
-data SAMPValue =
-    SAMPString String |
-    SAMPList [SAMPValue] |
-    SAMPMap   [(String, SAMPValue)]
-  deriving (Eq, Show)
-
--- this is not a total function!
-toSAMPValue :: Value -> SAMPValue
-toSAMPValue (ValueString s) = SAMPString s
-toSAMPValue (ValueArray as) = SAMPList $ map toSAMPValue as
-toSAMPValue (ValueStruct s) = SAMPMap $ map (CA.second toSAMPValue) s
-toSAMPValue e = error $ "Unexpected Value: " ++ show e
-
-fromSAMPValue :: SAMPValue -> String
-fromSAMPValue (SAMPString s) = s
-fromSAMPValue (SAMPList xs)  = "[" ++ intercalate ", " (map fromSAMPValue xs) ++ "]"
-fromSAMPValue (SAMPMap m)    = "{" ++ intercalate ", " (map (\(n,v) -> show n ++ " -> " ++ fromSAMPValue v) m) ++ "}"
-
-type SampId = String
-type SampPrivateKey = String
-
--- How can we make it so that this data is invalid once we unregister
--- a client? Any calls with a previously valid structure will fail,
--- unless there's some fancy-schmancy type class magic to avoid it,
--- which I'm sure there is.
---
-data SampClient = SampClient {
-                               sampSecret :: SampSecret,
-                               sampHubURL :: SampHubURL,
-                               sampPrivateKey :: SampPrivateKey,
-                               sampHubId :: SampId,
-                               sampId :: SampId
-                             } deriving (Eq, Show)
-
-
-data TransportError = TransportError Int String -- ^ XML-RPC error, the first argument is the faultCode and the second the 
-                                                -- faultString of the response
-                      deriving (Eq, Show)
-
-instance ME.Error TransportError where
-    strMsg = TransportError 999
-
-data SAMPResponse = SAMPSuccess SAMPValue -- ^ successful call
-                | SAMPError String SAMPValue -- ^ The first argument is the contents of the samp.errortxt,
-                                             -- the second argument is a SAMPMap containing any other elements
-                                             -- (these are not explicitly named in case new fields are added)
-                                             -- This will typically be delivered to the user of the sender application.
-                | SAMPWarning String SAMPValue SAMPValue -- ^ amalgum of SAMPError and SAMPSuccess
-                     deriving (Eq, Show)
-
-type SAMPReturn = Either TransportError SAMPResponse
 
 -- I decompose the error string to get back the error code and string.
 -- Not ideal, and fragile, but simpler than writing my own code to 
