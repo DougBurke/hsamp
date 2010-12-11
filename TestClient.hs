@@ -67,10 +67,18 @@ reportClients cl = do
                                reportIt "Metadata" mds
                                return ()
 
+reportSubscriptions :: SampClient -> String -> IO ()
+reportSubscriptions cl msg = do
+                    msgs <- getSubscribedClients cl msg
+                    reportIt ("Subscriptions to " ++ msg) msgs
+
 doClient :: SampClient -> IO ()
 doClient cl = do
          putStrLn "Registered client"
          reportClients cl
+         putStrLn ""
+         reportSubscriptions cl "samp.app.ping"
+         reportSubscriptions cl "foo.bar"
          wait 10
          unregisterClient cl
          putStrLn "Unregistered client"
