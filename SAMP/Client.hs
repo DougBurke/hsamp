@@ -62,11 +62,18 @@ deconstructed (so losing the actual error message).
 
 -}
 
-module Test (SampClient,
+module SAMP.Client (SampClient, SampInfo, SAMPValue,
+             TransportError,
              getHubInfo, pingHub,
              registerClient,
              unregisterClient,
-             declareMetadata
+             declareMetadata,
+             getMetadata,
+             declareSubscriptions,
+             declareSubscriptionsSimple,
+             getSubscriptions,
+             getRegisteredClients,
+             getSubscribedClients,
             ) where
 
 import Network.XmlRpc.Client
@@ -89,13 +96,14 @@ import System.Environment (getEnv)
 
 type SampSecret = String
 type SampHubURL = String
+type SampInfo = (SampSecret, SampHubURL)
 
 sampLockFile :: IO FilePath
 sampLockFile = do
     home <- getEnv "HOME"
     return $ home ++ "/.samp"
 
--- As the SAMP control file may well be written using Windowswor
+-- As the SAMP control file may well be written using Windows
 -- control characters we need to ensure these are handled,
 -- since lines just splits on \n. This routine is taken straight
 -- from Real World Haskell.
@@ -138,7 +146,7 @@ extractHubInfo alist = do
     return (secret, url)
 
 -- This assumes we are on a UNIX environment
-getHubInfo :: IO (Maybe (SampSecret, SampHubURL))
+getHubInfo :: IO (Maybe SampInfo)
 getHubInfo = catch (do
                     fname <- sampLockFile
                     cts <- S.readFile fname
@@ -330,7 +338,7 @@ pingHub = do
 --   by a call to declareMetadata. Could also add an optional "config" record
 --   as a parameter to registerClient
 --
-registerClient :: (SampSecret, SampHubURL) -> IO (Either TransportError SampClient)
+registerClient :: SampInfo -> IO (Either TransportError SampClient)
 registerClient (s,u) = either Left mkClient `liftM` callHub u (Just s) "samp.hub.register" []
         where
           mkClient :: SAMPResponse -> Either TransportError SampClient
