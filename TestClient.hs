@@ -1,7 +1,8 @@
 {-
 Test out the SAMP client code.
 
-  ghc -Wall --make -o testclient -hide-package monads-fd TestClient.hs
+  ghc -Wall --make -o testclient -threaded -hide-package monads-fd TestClient.hs
+  ./testclient +RTS -N2 -RTS
 
 At the moment it doesn't work with monads-fd:
 
@@ -14,6 +15,7 @@ module Main where
 import System.Exit (exitFailure, exitSuccess)
 import Control.Monad (forM_)
 import Control.Concurrent (threadDelay)
+import Control.Concurrent.ParallelIO.Global
 
 import SAMP.Client
 
@@ -72,13 +74,33 @@ reportSubscriptions cl msg = do
                     msgs <- getSubscribedClients cl msg
                     reportIt ("Subscriptions to " ++ msg) msgs
 
+pingItems :: SampClient -> IO ()
+pingItems cl = do
+     putStrLn "Calling clients that respond to samp.app.ping"
+     msgs <- getSubscribedClients cl "samp.app.ping"
+     case msgs of
+         Left te -> putStrLn $ concat ["Error qyerying hub for subscriptions to samp.app.ping\n", show te]
+         Right rsp -> do
+              parallel_ (map (callPing . fst) rsp) >> stopGlobalPool
+              putStrLn "Finished calling samp.app.ping"
+
+         where
+           callPing p = do
+             ret <- callAndWait cl p "samp.app.ping" [] 10
+             case ret of
+               Left re -> putStrLn $ "ERROR calling " ++ p ++ "\n" ++ show re
+               Right (SAMPSuccess _) -> putStrLn $ "Successfuly called " ++ p
+               Right (SAMPError emsg _) -> putStrLn $ "ERROR calling " ++ p ++ "\n" ++ emsg
+               Right (SAMPWarning wmsg _ _) -> putStrLn $ "WARNING calling " ++ p ++ "\n" ++ wmsg
+
 doClient :: SampClient -> IO ()
 doClient cl = do
-         putStrLn "Registered client"
+         putStrLn $ concat ["Registered client: public name = ", sampId cl]
          reportClients cl
          putStrLn ""
          reportSubscriptions cl "samp.app.ping"
          reportSubscriptions cl "foo.bar"
+         pingItems cl
          wait 10
          unregisterClient cl
          putStrLn "Unregistered client"

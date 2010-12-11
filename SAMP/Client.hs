@@ -27,7 +27,7 @@ deconstructed (so losing the actual error message).
 
 -}
 
-module SAMP.Client (SampClient, SampInfo, SAMPValue,
+module SAMP.Client (SampClient(..), SampInfo, SAMPValue(..), SAMPResponse(..),
              TransportError,
              showSAMPValue,
              getHubInfo, pingHub,
@@ -40,6 +40,7 @@ module SAMP.Client (SampClient, SampInfo, SAMPValue,
              getSubscriptions,
              getRegisteredClients,
              getSubscribedClients,
+             callAndWait
             ) where
 
 import Network.XmlRpc.Client
