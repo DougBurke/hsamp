@@ -8,9 +8,17 @@ At the moment it doesn't work with monads-fd:
 
   ghc -Wall --make -o testclient -hide-package mtl TestClient.hs
 
+
+TODO:
+
+ a) work with monads-fd
+ b) try out error conditions (like the hub disappearing)
+
 -}
 
 module Main where
+
+import qualified Control.Exception as CE
 
 import System.Exit (exitFailure, exitSuccess)
 import Control.Monad (forM_)
@@ -33,7 +41,10 @@ processHub (ss, surl) = do
            cl <- makeClient (ss, surl)
            case cl of 
                 Nothing -> exitFailure
-                Just sc -> doClient sc
+                Just sc -> CE.catch (doClient sc) $ \e -> do
+                                    putStrLn $ "Caught error - cleaning up from " ++ show (e :: CE.AsyncException)
+                                    unregisterClient sc
+
            exitSuccess
 
 makeClient :: SampInfo -> IO (Maybe SampClient)
