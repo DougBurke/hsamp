@@ -1,24 +1,10 @@
 
--- not currently used {-# LANGUAGE FlexibleContexts #-}
-
--- NEED TO USE
---    -hide-package monads-fd
-
 {-
 
 To do:
 
   - return Haskell types (list, assoc list, strings) rather than SAMP types?
 
--}
-
-
--- may need to use
---    -hide-package transformers
---    -hide-package monads-fd
---  (or mtl) to getliftIO and friends working
-
-{-
 The SAMP hubs may return invalid XML-RPC responses on error: I have seen
 cases with both JSAMP and SAMPY. Mark has fixed JSAMP but not formally released,
 and I have sent a patch to SAMPY to Luigi to fix this, but it does mean we
@@ -40,7 +26,8 @@ module SAMP.Client (SampClient(..), SampInfo, SAMPValue(..), SAMPResponse(..),
              getSubscriptions,
              getRegisteredClients,
              getSubscribedClients,
-             callAndWait
+             callAndWait,
+             notify, notifyAll
             ) where
 
 import Network.XmlRpc.Client
@@ -371,6 +358,7 @@ callAndWait sc clientId mType params timeout = doCallHubSAMP sc "callAndWait" ar
     where
       args = [ValueString clientId, toSAMPMessage mType params, ValueString $ show timeout]
 
+{-
 unsafeRegisterClient :: String -> IO SampClient
 unsafeRegisterClient name = do
     hInfo <- getHubInfo
@@ -380,3 +368,4 @@ unsafeRegisterClient name = do
     _ <- declareMetadata sc name "Quickly hacked-up client" "0.0.1"
     return sc
     
+-}

@@ -1,5 +1,9 @@
 {-
 Types for the SAMP code.
+
+NEED TO USE
+   -hide-package monads-fd
+
 -}
 
 {-
