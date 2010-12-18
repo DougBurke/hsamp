@@ -35,20 +35,35 @@ Except that this suggests it's really a SampProfileClient.
 Since the client registration returns information we need, I think it does look like there's
 a SampProfile and a SampClient.
 
+TODO:
+
+  - is it worth doing something like (from Control.Monad.Trans.Error)
+
+Wrapping an IO action that can throw an error e:
+
+ type ErrorWithIO e a = ErrorT e IO a
+ ==> ErrorT (IO (Either e a))
+
+since we have a lot of return types of IO (Either TransportError a), noting
+that IO (SAMPReturn) is just IO (Either TransportError SAMPResponse).
+
 -}
 
 module SAMP.Types (
        SampClient(..), SampInfo, SampSecret, SampHubURL,
        SampId, SampPrivateKey,
        SAMPValue(..),
+       emptySampClient,
        showSAMPValue,
        TransportError(..),
        SAMPResponse(..), SAMPReturn,
-       toSAMPValue, fromSAMPValue
+       toSAMPValue, fromSAMPValue,
+       isSAMPSuccess, isSAMPError, isSAMPWarning
        ) where
 
 import qualified Control.Arrow as CA
 import qualified Control.Monad.Error.Class as ME
+-- import qualified Control.Monad.Trans.Error as ME
 
 import Network.XmlRpc.Internals
 
@@ -102,6 +117,15 @@ data SampClient = SampClient {
                                sampId :: SampId
                              } deriving (Eq, Show)
 
+-- this is a stupid idea
+emptySampClient :: SampClient
+emptySampClient = SampClient {
+                             sampSecret = "",
+                             sampHubURL = "",
+                             sampPrivateKey = "",
+                             sampHubId = "",
+                             sampId = ""
+                }
 
 data TransportError = TransportError Int String -- ^ XML-RPC error, the first argument is the faultCode and the second the 
                                                 -- faultString of the response
@@ -117,6 +141,18 @@ data SAMPResponse = SAMPSuccess SAMPValue -- ^ successful call
                                              -- This will typically be delivered to the user of the sender application.
                 | SAMPWarning String SAMPValue SAMPValue -- ^ amalgum of SAMPError and SAMPSuccess
                      deriving (Eq, Show)
+
+isSAMPSuccess :: SAMPResponse -> Bool
+isSAMPSuccess (SAMPSuccess _) = True
+isSAMPSuccess _ = False
+
+isSAMPError :: SAMPResponse -> Bool
+isSAMPError (SAMPError _ _) = True
+isSAMPError _ = False
+
+isSAMPWarning :: SAMPResponse -> Bool
+isSAMPWarning (SAMPWarning _ _ _) = True
+isSAMPWarning _ = False
 
 type SAMPReturn = Either TransportError SAMPResponse
 

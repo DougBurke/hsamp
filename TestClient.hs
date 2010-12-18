@@ -6,13 +6,15 @@ Test out the SAMP client code.
 
 At the moment it doesn't work with monads-fd:
 
-  ghc -Wall --make -o testclient -hide-package mtl TestClient.hs
+  ghc -Wall --make -o testclient -threaded -hide-package mtl TestClient.hs
 
 
 TODO:
 
  a) work with monads-fd
  b) try out error conditions (like the hub disappearing)
+ c) does it make sense to use something like a monad
+    transformer for combining IO and Either
 
 -}
 

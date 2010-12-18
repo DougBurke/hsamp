@@ -11,6 +11,15 @@ and I have sent a patch to SAMPY to Luigi to fix this, but it does mean we
 may have to deal with errors thrown because the error response can not be
 deconstructed (so losing the actual error message).
 
+NOTE: 
+
+  errors; could
+    - just use String for all errors, perhaps with some 'isThisASAMPError'
+      utilities
+    - newtype SAMPError a = ErrorT SAMPErrorType IO a    
+      and convert Err IO a to SAMPError a at earliest convenience
+  in both cases drop using Either
+
 -}
 
 module SAMP.Client (SampClient(..), SampInfo, SAMPValue(..), SAMPResponse(..),
@@ -27,7 +36,21 @@ module SAMP.Client (SampClient(..), SampInfo, SAMPValue(..), SAMPResponse(..),
              getRegisteredClients,
              getSubscribedClients,
              callAndWait,
-             notify, notifyAll
+             notify, notifyAll,
+
+             getHubInfo2, pingHub2,
+             registerClient2,
+             unregisterClient2,
+             declareMetadata2,
+             getMetadata2,
+             declareSubscriptions2,
+             declareSubscriptionsSimple2,
+             getSubscriptions2,
+             getRegisteredClients2,
+             getSubscribedClients2,
+             callAndWait2,
+             notify2, notifyAll2
+
             ) where
 
 import Network.XmlRpc.Client
@@ -41,17 +64,36 @@ import Data.List (isPrefixOf)
 import Data.Char (isDigit)
 
 import qualified Control.Arrow as CA
-import Control.Monad (liftM, ap)
+import Control.Monad (liftM, ap, guard)
 -- import Control.Monad.Trans
+
+import Control.Monad.Error (throwError)
+import Control.Monad.Trans (liftIO)
+
+import Control.Exception (tryJust)
 
 import System.Environment (getEnv)
 -- import System.IO.Error (catch)
+
+import IO (isDoesNotExistError)
 
 import SAMP.Types
 
 sampLockFile :: IO FilePath
 sampLockFile = do
     home <- getEnv "HOME"
+    return $ home ++ "/.samp"
+
+checkExists :: String -> IO a -> Err IO a
+checkExists emsg act = do
+   e <- liftIO $ tryJust (guard . isDoesNotExistError) act
+   case e of
+     Right a -> return a
+     Left _ -> throwError emsg
+
+sampLockFile2 :: Err IO FilePath
+sampLockFile2 = do
+    home <- checkExists "The HOME environment variable is not defined." (getEnv "HOME")
     return $ home ++ "/.samp"
 
 -- As the SAMP control file may well be written using Windows
@@ -97,6 +139,10 @@ extractHubInfo alist = do
     return (secret, url)
 
 -- This assumes we are on a UNIX environment
+--
+-- Question: is this the correct catch to use?
+-- (it's the Prelude one)
+--
 getHubInfo :: IO (Maybe SampInfo)
 getHubInfo = catch (do
                     fname <- sampLockFile
@@ -105,6 +151,14 @@ getHubInfo = catch (do
                     return $ extractHubInfo alist)
                     (\_ -> return Nothing)
 
+getHubInfo2 :: Err IO SampInfo
+getHubInfo2 = do
+    fname <- sampLockFile2
+    let emsg = "Unable to find Hub info (" ++ fname ++ ")"
+    cts <- checkExists emsg $ S.readFile fname 
+    let alist = processLockFile cts
+    maybeToM "Unable to read hub info" (extractHubInfo alist)
+    
 {-
 
 From the SAMP documentation:
@@ -139,12 +193,16 @@ From the SAMP documentation:
 
 -}
 
+{-
+Looks like call throws a DoesNotExistError when the hub no longer exists.
+-}
+
 -- I decompose the error string to get back the error code and string.
 -- Not ideal, and fragile, but simpler than writing my own code to 
 -- call an XML-RPC method
 --
 recreateTransportError :: String -> TransportError
-recreateTransportError eMsg = if null l || null r || null r2 || not ("Error " `isPrefixOf` l) || not (all isDigit lCode)
+recreateTransportError eMsg = if or [null l, null r, null r2, not ("Error " `isPrefixOf` l), not (all isDigit lCode)]
                               then TransportError 999 eMsg
                               else TransportError code msg
     where
@@ -171,6 +229,9 @@ recreateTransportError eMsg = if null l || null r || null r2 || not ("Error " `i
 parseGeneralResponse :: Value -> SAMPReturn
 parseGeneralResponse = Right . SAMPSuccess . toSAMPValue
 
+parseGeneralResponse2 :: Value -> Err IO SAMPResponse
+parseGeneralResponse2 = return . SAMPSuccess . toSAMPValue
+
 -- This is used to parse the return value from a method that
 -- returns a SAMP Response value, which is currently only the
 -- callAndWait method.
@@ -196,11 +257,108 @@ parseSAMPResponse (ValueStruct s) = case status of
 
 parseSAMPResponse v = Left $ TransportError 999 $ "Internal error: unrecognized return: " ++ show v
 
+parseSAMPResponse2 :: Value -> Err IO SAMPResponse
+parseSAMPResponse2 (ValueStruct s) = case status of
+                                      Nothing -> throwError $ "Internal error: missing samp.status in response - " ++ show s
+                                      Just (ValueString "samp.ok") -> return $ SAMPSuccess rOut
+                                      Just (ValueString "samp.error") -> return $ SAMPError eText eOut
+                                      Just (ValueString "samp.warning") -> return $ SAMPWarning eText eOut rOut
+                                      Just x -> throwError $ "Internal error: unknown samp.status of '" ++ show x ++ "' in " ++ show s
+    where
+      status = lookup "samp.status" s 
+      -- Just (ValueStruct result) = lookup "samp.result" s
+      Just result = lookup "samp.result" s
+      Just (ValueStruct eStruct) = lookup "samp.error" s
+
+      Just (ValueString eText) = lookup "samp.errortxt" eStruct
+      eVals = filter (\(n,_) -> n /= "samp.errortxt") eStruct
+
+      eOut = toSAMPValue (ValueStruct eVals)
+      rOut = toSAMPValue result
+
+parseSAMPResponse2 v = throwError $ "Internal error: unrecognized return: " ++ show v
+
 -- callHub' and callHub are for methods that return a non-specific return
 -- type (i.e. any XML-RPC value given the SAMP restrictions).
 --
 -- callHubSAMP' and callHubSAMP are for methods that return a SAMP response
 --
+
+{-
+For the new "error handling" I am going back from having a type for the
+error to a string, although I feel I really should have my own transformer,
+ErrorT TransportError IO a
+
+-}
+
+cHub2 :: (Value -> Err IO SAMPResponse) -> SampHubURL -> String -> [Value] -> Err IO SAMPResponse
+cHub2 f url msg args = call url msg args >>= f
+
+{-
+
+I could catch exceptions from call, but I don't think it's worth it,
+as the caller then loses the knowledge of the failure type.
+
+The following doesn't work anyway.
+
+cHub2 f url msg args = do
+      let hE :: CE.IOException -> Err IO a
+          hE e = if isDoesNotExistError e
+                 then throwError $ "Unable to call " ++ msg ++ " at " ++ url ++ " " ++ show e
+                 else ioError e
+      resp <- call url msg args `CE.catch` hE
+      f resp
+
+-}
+
+callHub2' :: SampHubURL -> String -> [Value] -> Err IO SAMPResponse
+callHub2' = cHub2 parseGeneralResponse2
+
+callHubSAMP2' :: SampHubURL -> String -> [Value] -> Err IO SAMPResponse
+callHubSAMP2' = cHub2 parseSAMPResponse2
+
+callHub2 :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> Err IO SAMPResponse
+callHub2 url (Just s) method args = callHub2' url method (ValueString s : args)
+callHub2 url _        method args = callHub2' url method args
+
+callHubSAMP2 :: SampHubURL -> Maybe SampSecret -> String -> [Value] -> Err IO SAMPResponse
+callHubSAMP2 url (Just s) method args = callHubSAMP2' url method (ValueString s : args)
+callHubSAMP2 url _        method args = callHubSAMP2' url method args
+
+-- XXX TO LOOK AT Do we really need either here or is there a better conversion?
+pingHub2' :: SampHubURL -> Err IO Bool
+-- pingHub2' u = either (const False) (const True) `liftM` callHub2 u Nothing "samp.hub.ping" []
+pingHub2' u = do
+          resp <- callHub2 u Nothing "samp.hub.ping" []
+          return $ isSAMPSuccess resp
+
+pingHub2 :: Err IO Bool
+pingHub2 = getHubInfo2 >>= return . snd >>= pingHub2'
+
+-- XXX TODO XXX
+--   provide a default set of metadata about the client that can be over-ridden
+--   by a call to declareMetadata. Could also add an optional "config" record
+--   as a parameter to registerClient
+--
+
+registerClient2 :: SampInfo -> Err IO SampClient
+registerClient2 (s,u) = callHub2 u (Just s) "samp.hub.register" [] >>= r2c
+        where
+          r2c :: SAMPResponse -> Err IO SampClient
+          r2c (SAMPSuccess (SAMPMap v)) = SampClient `liftM`
+                                               return s 
+                                               `ap` return u
+                                               `ap` xlookup "samp.private-key" v
+                                               `ap` xlookup "samp.hub-id" v
+                                               `ap` xlookup "samp.self-id" v
+          r2c o = throwError $ "Unexpected response from samp.hub.register: " ++ show o
+
+          xlookup :: String -> [(String, SAMPValue)] -> Err IO String
+          xlookup k a = case lookup k a of
+                          Just (SAMPString s2) -> return s2
+                          _                    -> throwError $ "Unable to find key " ++ k
+
+{- OLD CODE -}
 
 cHub :: (Value -> SAMPReturn) -> SampHubURL -> String -> [Value] -> IO SAMPReturn
 cHub f url msg = handleError (return . Left . recreateTransportError) . liftM f . call url msg
@@ -255,16 +413,22 @@ registerClient (s,u) = either Left mkClient `liftM` callHub u (Just s) "samp.hub
 -- but perhaps we should
 
 unregisterClient :: SampClient -> IO ()
-unregisterClient sc = callHub u (Just s) "samp.hub.unregister" [] >> return ()
-    where
-      u = sampHubURL sc
-      s = sampPrivateKey sc -- this is BAD since callHub needs to be re-written to better reflect this usage
+unregisterClient sc = doCallHub sc "unregister" [] >> return ()
+
+unregisterClient2 :: SampClient -> Err IO ()
+unregisterClient2 sc = doCallHub2 sc "unregister" [] >> return ()
 
 doCallHub :: SampClient -> String -> [Value] -> IO SAMPReturn
 doCallHub sc = callHub (sampHubURL sc) (Just (sampPrivateKey sc)) . ("samp.hub." ++)
 
+doCallHub2 :: SampClient -> String -> [Value] -> Err IO SAMPResponse
+doCallHub2 sc = callHub2 (sampHubURL sc) (Just (sampPrivateKey sc)) . ("samp.hub." ++)
+
 doCallHubSAMP :: SampClient -> String -> [Value] -> IO SAMPReturn
 doCallHubSAMP sc = callHubSAMP (sampHubURL sc) (Just (sampPrivateKey sc)) . ("samp.hub." ++)
+
+doCallHubSAMP2 :: SampClient -> String -> [Value] -> Err IO SAMPResponse
+doCallHubSAMP2 sc = callHubSAMP2 (sampHubURL sc) (Just (sampPrivateKey sc)) . ("samp.hub." ++)
 
 -- Name, description, and version: may want a generic one which
 -- takes in a map and ensures necessary fields
@@ -280,12 +444,31 @@ declareMetadata sc name desc version = either Left (const (Right ())) `liftM` do
                            ("samp.description.text", ValueString desc),
                            ("internal.version", ValueString version)]
 
+declareMetadata2 :: SampClient -> String -> String -> String -> Err IO ()
+declareMetadata2 sc name desc version = doCallHub2 sc "declareMetadata" [mdata] >> return ()
+    where
+      mdata = ValueStruct [("samp.name", ValueString name),
+                           ("samp.description.text", ValueString desc),
+                           ("internal.version", ValueString version)]
+
+sampToAssoc :: String -> SAMPResponse -> Err IO [(String, SAMPValue)]
+sampToAssoc _ (SAMPSuccess (SAMPMap m)) = return m
+sampToAssoc msg e = throwError $ "Unable to parse repsonse for " ++ msg ++ ": " ++ show e
+
+sampToList ::  String -> SAMPResponse -> Err IO [String]
+sampToList _ (SAMPSuccess (SAMPList xs)) = return $ map fromSAMPValue xs
+sampToList msg e = throwError $ "Unable to parse repsonse for " ++ msg ++ ": " ++ show e
+
+
 getMetadata :: SampClient -> String -> IO (Either TransportError [(String,SAMPValue)])
 getMetadata sc clientId = either Left toAList `liftM` doCallHub sc "getMetadata" [toValue clientId]
     where
       toAList :: SAMPResponse -> Either TransportError [(String, SAMPValue)]
       toAList (SAMPSuccess (SAMPMap m)) = Right m
       toAList _ = Left $ TransportError 999 "Unable to parse repsonse for samp.hub.getMetadata"
+
+getMetadata2 :: SampClient -> String -> Err IO [(String,SAMPValue)]
+getMetadata2 sc clientId = doCallHub2 sc "getMetadata" [toValue clientId] >>= sampToAssoc "samp.hub.getMetadata"
 
 -- need to come up with a better type for the subscriptions
 -- 
@@ -297,8 +480,18 @@ declareSubscriptionsSimple sc subs = either Left (const (Right ())) `liftM` doCa
     where
       args = zip subs (repeat (ValueStruct []))
 
+declareSubscriptionsSimple2 :: SampClient -> [String] -> Err IO ()
+declareSubscriptionsSimple2 sc subs = doCallHub2 sc "declareSubscriptions" [ValueStruct args] >> return ()
+    where
+      args = zip subs (repeat (ValueStruct []))
+
 declareSubscriptions :: SampClient -> [(String,[(String,String)])] -> IO (Either TransportError ())
 declareSubscriptions sc subs = either Left (const (Right ())) `liftM` doCallHub sc "declareSubscriptions" [ValueStruct args]
+    where
+      args = map (CA.second alistTovstruct) subs
+
+declareSubscriptions2 :: SampClient -> [(String,[(String,String)])] -> Err IO ()
+declareSubscriptions2 sc subs = doCallHub2 sc "declareSubscriptions" [ValueStruct args] >> return ()
     where
       args = map (CA.second alistTovstruct) subs
 
@@ -307,7 +500,10 @@ getSubscriptions sc clientId = either Left toAList `liftM` doCallHub sc "getSubs
     where
       toAList :: SAMPResponse -> Either TransportError [(String, SAMPValue)]
       toAList (SAMPSuccess (SAMPMap m)) = Right m
-      toAList _ = Left $ TransportError 999 "Unable to parse repsonse for samp.hub.getSubscriptions"
+      toAList _ = Left $ TransportError 999 "Unable to parse response for samp.hub.getSubscriptions"
+
+getSubscriptions2 :: SampClient -> String -> Err IO [(String,SAMPValue)]
+getSubscriptions2 sc clientId = doCallHub2 sc "getSubscriptions" [toValue clientId] >>= sampToAssoc "samp.hub.getSubscriptions"
 
 getRegisteredClients :: SampClient -> IO (Either TransportError [String])
 getRegisteredClients sc = either Left toList `liftM` doCallHub sc "getRegisteredClients" []
@@ -316,12 +512,18 @@ getRegisteredClients sc = either Left toList `liftM` doCallHub sc "getRegistered
       toList (SAMPSuccess (SAMPList xs)) = Right $ map fromSAMPValue xs
       toList _ = Left $ TransportError 999 "Unable to parse response for samp.hub.getRegisteredClients"
 
+getRegisteredClients2 :: SampClient -> Err IO [String]
+getRegisteredClients2 sc = doCallHub2 sc "getRegisteredClients" [] >>= sampToList "samp.hub.getRegisteredClients"
+
 getSubscribedClients :: SampClient -> String -> IO (Either TransportError [(String,SAMPValue)])
 getSubscribedClients sc mType = either Left toAList `liftM` doCallHub sc "getSubscribedClients" [toValue mType]
     where
       toAList :: SAMPResponse -> Either TransportError [(String, SAMPValue)]
       toAList (SAMPSuccess (SAMPMap m)) = Right m
       toAList _ = Left $ TransportError 999 "Unable to parse repsonse for samp.hub.getSubscribedClients"
+
+getSubscribedClients2 :: SampClient -> String -> Err IO [(String,SAMPValue)]
+getSubscribedClients2 sc mType = doCallHub2 sc "getSubscribedClients" [toValue mType] >>= sampToAssoc "samp.hub.getSubscribedClients"
 
 -- reply = undefined
 
@@ -340,6 +542,11 @@ notify sc clientId mType params = either Left (const (Right ())) `liftM` doCallH
     where
       args = [ValueString clientId, toSAMPMessage mType params]
 
+notify2 :: SampClient -> String -> String -> [(String,String)] -> Err IO ()
+notify2 sc clientId mType params = doCallHub2 sc "notify" args >> return ()
+    where
+      args = [ValueString clientId, toSAMPMessage mType params]
+
 -- This is not extensible, in the sense that it doesn't allow other parameters
 -- than samp.mtype and samp.params to be specified.
 --
@@ -350,11 +557,19 @@ notifyAll sc mType params = either Left toList `liftM` doCallHub sc "notifyAll" 
       toList (SAMPSuccess (SAMPList xs)) = Right $ map fromSAMPValue xs
       toList _ = Left $ TransportError 999 "Unable to parse response for samp.hub.notifyAll"
 
+notifyAll2 :: SampClient -> String -> [(String,String)] -> Err IO [String]
+notifyAll2 sc mType params = doCallHub2 sc "notifyAll" [toSAMPMessage mType params] >>= sampToList "samp.hub.notifyAll"
+
 -- This is not extensible, in the sense that it doesn't allow other parameters
 -- than samp.mtype and samp.params to be specified.
 --
 callAndWait :: SampClient -> String -> String -> [(String,String)] -> Int -> IO SAMPReturn
 callAndWait sc clientId mType params timeout = doCallHubSAMP sc "callAndWait" args
+    where
+      args = [ValueString clientId, toSAMPMessage mType params, ValueString $ show timeout]
+
+callAndWait2 :: SampClient -> String -> String -> [(String,String)] -> Int -> Err IO SAMPResponse
+callAndWait2 sc clientId mType params timeout = doCallHubSAMP2 sc "callAndWait" args
     where
       args = [ValueString clientId, toSAMPMessage mType params, ValueString $ show timeout]
 
