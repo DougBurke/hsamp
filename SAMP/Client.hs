@@ -20,6 +20,14 @@ NOTE:
       and convert Err IO a to SAMPError a at earliest convenience
   in both cases drop using Either
 
+could have several sets of routines;
+  
+  ones that return 'Err IO SAMPResponse'
+  ones that return 'ERR IO SAMPValue' where errors/warnings are converted
+    to error strings
+
+how about 'IO SAMPValue' say?
+
 -}
 
 module SAMP.Client (SampClient(..), SampInfo, SAMPValue(..), SAMPResponse(..),
@@ -75,6 +83,7 @@ import Control.Exception (tryJust)
 import System.Environment (getEnv)
 -- import System.IO.Error (catch)
 
+-- import System.IO (isDoesNotExistError)
 import IO (isDoesNotExistError)
 
 import SAMP.Types
@@ -333,7 +342,7 @@ pingHub2' u = do
           return $ isSAMPSuccess resp
 
 pingHub2 :: Err IO Bool
-pingHub2 = getHubInfo2 >>= return . snd >>= pingHub2'
+pingHub2 = fmap snd getHubInfo2 >>= pingHub2'
 
 -- XXX TODO XXX
 --   provide a default set of metadata about the client that can be over-ridden
