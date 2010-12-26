@@ -90,17 +90,27 @@ processHub2 (ss, surl) = do
            liftIO $ putStrLn $ "Samp hub:    " ++ surl
            cl <- makeClient2 (ss, surl)
 
-           -- hmm, I expected ioErrorToErr to catch the fail's and map them
-           -- to the Err fail case, but it doesn't
-           --
-           liftIO $ handleError fail (doClient2 cl) `CE.catch` (\e -> do
-               let emsg = show (e:: CE.AsyncException)
-               -- putStrLn $ "Caught error - cleaning up from " ++ emsg
-               handleError fail (unregisterClient2 cl)
-               fail emsg)
+           let hdlr :: CE.AsyncException -> IO ()
+               hdlr CE.UserInterrupt = handleError fail (unregisterClient2 cl) >> CE.throwIO CE.UserInterrupt
+               hdlr e = CE.throwIO e
+                   
+           -- could use CE.catchJust here
+           liftIO $ handleError (\m -> handleError fail (unregisterClient2 cl) >> fail m) (doClient2 cl) `CE.catch` hdlr
 
            unregisterClient2 cl
            liftIO $ putStrLn "Unregistered client"
+
+{-
+Wait until the hub tells us it's about to shutdown.
+-}
+
+waitForShutdown2 :: SampClient -> Err IO ()
+waitForShutdown2 cl = do
+  setXmlrpcCallback2 cl "http://127.0.0.1:8080/" -- need to set up a URL
+  liftIO $ putStrLn "About to register subcription to samp.hub.event.unregister"
+  declareSubscriptionsSimple2 cl ["samp.hub.event.unregister"]
+  liftIO $ putStrLn "Done"
+  return ()
 
 {-
 XXX TODO shouldn't we check that declareMetadata has returned a SAMPSuccess?
@@ -228,4 +238,6 @@ doClient2 cl = do
          reportSubscriptions2 cl "samp.app.ping"
          reportSubscriptions2 cl "foo.bar"
          pingItems2 cl
+         waitForShutdown2 cl
          liftIO $ wait 10
+

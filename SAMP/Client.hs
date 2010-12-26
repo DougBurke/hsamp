@@ -5,6 +5,8 @@ To do:
 
   - return Haskell types (list, assoc list, strings) rather than SAMP types?
 
+  - add logging so we can see what is sent and received
+
 The SAMP hubs may return invalid XML-RPC responses on error: I have seen
 cases with both JSAMP and SAMPY. Mark has fixed JSAMP but not formally released,
 and I have sent a patch to SAMPY to Luigi to fix this, but it does mean we
@@ -21,12 +23,9 @@ NOTE:
   in both cases drop using Either
 
 could have several sets of routines;
-  
-  ones that return 'Err IO SAMPResponse'
-  ones that return 'ERR IO SAMPValue' where errors/warnings are converted
-    to error strings
 
-how about 'IO SAMPValue' say?
+  ones that return 'Err IO SAMPResponse' or SAMPValue
+  ones that return 'IO SAMPValue'
 
 -}
 
@@ -45,6 +44,7 @@ module SAMP.Client (SampClient(..), SampInfo, SAMPValue(..), SAMPResponse(..),
              getSubscribedClients,
              callAndWait,
              notify, notifyAll,
+             -- setXmlrpcCallback,
 
              getHubInfo2, pingHub2,
              registerClient2,
@@ -57,7 +57,8 @@ module SAMP.Client (SampClient(..), SampInfo, SAMPValue(..), SAMPResponse(..),
              getRegisteredClients2,
              getSubscribedClients2,
              callAndWait2,
-             notify2, notifyAll2
+             notify2, notifyAll2,
+             setXmlrpcCallback2
 
             ) where
 
@@ -68,7 +69,7 @@ import qualified System.IO.Strict as S
 -- import qualified Data.Map as M
 -- import Data.Maybe
 
-import Data.List (isPrefixOf)
+import Data.List (isPrefixOf, stripPrefix)
 import Data.Char (isDigit)
 
 import qualified Control.Arrow as CA
@@ -78,24 +79,61 @@ import Control.Monad (liftM, ap, guard)
 import Control.Monad.Error (throwError)
 import Control.Monad.Trans (liftIO)
 
-import Control.Exception (tryJust)
+import qualified Control.Exception as CE
 
 import System.Environment (getEnv)
 -- import System.IO.Error (catch)
 
--- import System.IO (isDoesNotExistError)
-import IO (isDoesNotExistError)
+-- import System.IO (isDoesNotExistError) invalid hlint suggestion
+-- import IO (isDoesNotExistError)
+import System.IO.Error (isDoesNotExistError, isDoesNotExistErrorType, ioeGetErrorType)
 
 import SAMP.Types
 
+{-
+XXX todo: need to update to SAMP 1.2
+    (look for SAMP_HUB env file first)
+    and Windows (USERPROFILE env var)
+-}
+
+getEnvM :: String -> IO (Either () String)
+getEnvM key = CE.tryJust
+        (\e -> if isDoesNotExistErrorType (ioeGetErrorType e) then Just () else Nothing)
+        (getEnv key)
+
+{-
+TODO: improve error messages
+
+It's also not 100% clear if falling through to the HOME/USERPROFILE
+variable when the SAMP_HUB profile does not start with the std-lockurl
+prefix is valid.
+-}
+
+stdPrefix :: String
+stdPrefix = "std-lockurl:"
+
 sampLockFile :: IO FilePath
 sampLockFile = do
-    home <- getEnv "HOME"
-    return $ home ++ "/.samp"
+    e1 <- getEnvM "SAMP_HUB"
+    case e1 of
+         Right fname -> doHub fname
+         Left _ -> doHome
+
+  where
+    doHome = do
+        home <- getEnv "HOME" -- to do: use USERPROFILE on Windows
+        return $ home ++ "/.samp"
+
+    doHub fname = 
+          case stripPrefix stdPrefix fname of
+            Nothing -> doHome
+            Just f -> do
+                 putStrLn $ "I am supposed to do something with " ++ f
+                 fail "lazy-programmer-error"
 
 checkExists :: String -> IO a -> Err IO a
 checkExists emsg act = do
-   e <- liftIO $ tryJust (guard . isDoesNotExistError) act
+   e <- liftIO $ CE.tryJust (guard . isDoesNotExistError) act
    case e of
      Right a -> return a
      Left _ -> throwError emsg
@@ -266,6 +304,9 @@ parseSAMPResponse (ValueStruct s) = case status of
 
 parseSAMPResponse v = Left $ TransportError 999 $ "Internal error: unrecognized return: " ++ show v
 
+{-
+TODO: throw an error if get back samp.error
+-}
 parseSAMPResponse2 :: Value -> Err IO SAMPResponse
 parseSAMPResponse2 (ValueStruct s) = case status of
                                       Nothing -> throwError $ "Internal error: missing samp.status in response - " ++ show s
@@ -301,6 +342,8 @@ ErrorT TransportError IO a
 -}
 
 cHub2 :: (Value -> Err IO SAMPResponse) -> SampHubURL -> String -> [Value] -> Err IO SAMPResponse
+-- cHub2 f url msg args = call url msg args >>= \m -> liftIO (putStrLn (">>RESPONSE to " ++ msg)) >> liftIO (putStrLn (show m)) >> liftIO (putStrLn "<<RESPONSE") >> f m
+
 cHub2 f url msg args = call url msg args >>= f
 
 {-
@@ -454,7 +497,7 @@ declareMetadata sc name desc version = either Left (const (Right ())) `liftM` do
                            ("internal.version", ValueString version)]
 
 declareMetadata2 :: SampClient -> String -> String -> String -> Err IO ()
-declareMetadata2 sc name desc version = doCallHub2 sc "declareMetadata" [mdata] >> return ()
+declareMetadata2 sc name desc version = doCallHub2 sc "declareMetadata" [mdata] >>= isOK >> return ()
     where
       mdata = ValueStruct [("samp.name", ValueString name),
                            ("samp.description.text", ValueString desc),
@@ -581,6 +624,16 @@ callAndWait2 :: SampClient -> String -> String -> [(String,String)] -> Int -> Er
 callAndWait2 sc clientId mType params timeout = doCallHubSAMP2 sc "callAndWait" args
     where
       args = [ValueString clientId, toSAMPMessage mType params, ValueString $ show timeout]
+
+-- should be done when creating everything; ie SAMPResponse shouldn't have an
+-- error condition
+--
+isOK :: SAMPResponse -> Err IO SAMPResponse
+isOK (SAMPError emsg evals) = throwError $ "ERROR: " ++ emsg ++ "\n" ++ show evals
+isOK r = return r
+
+setXmlrpcCallback2 :: SampClient -> String -> Err IO ()
+setXmlrpcCallback2 sc clientUrl = doCallHub2 sc "setXmlrpcCallback" [ValueString clientUrl] >>= isOK >> return ()
 
 {-
 unsafeRegisterClient :: String -> IO SampClient
