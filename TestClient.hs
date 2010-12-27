@@ -25,18 +25,24 @@ import qualified Control.Exception as CE
 
 import System.Exit (exitFailure, exitSuccess)
 import System.IO.Error
-import Control.Monad (forM_)
+import Control.Monad (msum, forM_)
 import Control.Monad.Error (catchError)
 import Control.Monad.Trans (liftIO)
-import Control.Concurrent (threadDelay)
+import Control.Concurrent (threadDelay, forkIO)
 import Control.Concurrent.ParallelIO.Global
 
-import Network.XmlRpc.Internals (Err, handleError, ioErrorToErr)
+import Network.XmlRpc.Internals (Value(..), Err, handleError, ioErrorToErr)
 
 import SAMP.Client
 
+import Happstack.Server.SimpleHTTP
+import Happstack.Server.HTTP.FileServe
+
+-- how 
 main :: IO ()
-main = doIt2
+main = do
+     _ <- forkIO doIt2
+     runServer pNum
 
 doIt :: IO ()
 doIt = do
@@ -104,11 +110,21 @@ processHub2 (ss, surl) = do
 Wait until the hub tells us it's about to shutdown.
 -}
 
+pNum :: Int
+pNum = 12345
+
+hostName :: Int -> String
+hostName portNum = "http://127.0.0.1:" ++ show portNum ++ "/"
+
+{-
+Should really make sure that the server has started up before registering
+the connection with the hub.
+-}
 waitForShutdown2 :: SampClient -> Err IO ()
 waitForShutdown2 cl = do
-  setXmlrpcCallback2 cl "http://127.0.0.1:8080/" -- need to set up a URL
-  liftIO $ putStrLn "About to register subcription to samp.hub.event.unregister"
-  declareSubscriptionsSimple2 cl ["samp.hub.event.unregister"]
+  setXmlrpcCallback2 cl $ hostName pNum ++ "xmlrpc"
+  liftIO $ putStrLn "About to register subcription to samp.hub.event.shutdown"
+  declareSubscriptionsSimple2 cl ["samp.hub.event.shutdown"]
   liftIO $ putStrLn "Done"
   return ()
 
@@ -128,7 +144,7 @@ makeClient ss = do
 makeClient2 :: SampInfo -> Err IO SampClient
 makeClient2 ss = do
            sc <- registerClient2 ss
-           _ <- declareMetadata2 sc "hsamp-test-client" "Test SAMP client using hSAMP." "0.0.1"
+           _ <- declareMetadata2 sc "hsamp-test-client" "Test SAMP client using hSAMP." "0.0.1" [("samp.icon.url", ValueString (hostName pNum ++ "icon.png"))]
            return sc
 
 wait :: Int -> IO ()
@@ -147,8 +163,8 @@ reportIt2 lbl msgs = do
 
 reportClients :: SampClient -> IO ()
 reportClients cl = do
-              resp <- getRegisteredClients cl
-              case resp of
+              rsp <- getRegisteredClients cl
+              case rsp of
                    Left te -> putStrLn $ "Unable to query hub: " ++ show te
                    Right ns -> do
                          putStrLn $ concat ["*** Found ", show (length ns), " clients"]
@@ -240,4 +256,20 @@ doClient2 cl = do
          pingItems2 cl
          waitForShutdown2 cl
          liftIO $ wait 10
+
+-- tid is so we can close t
+runServer :: Int -> IO ()
+runServer portNum = do
+          putStrLn $ "Starting server at port " ++ show portNum
+          simpleHTTP (nullConf { port =  portNum }) handlers
+
+handlers :: ServerPart Response
+-- handlers = msum [handleXmlRpc, handleIcon]
+handlers = msum [handleXmlRpc, handleIcon, anyRequest (notFound (toResponse "unknown request"))]
+
+handleXmlRpc :: ServerPart Response
+handleXmlRpc = dir "xmlrpc" $ (liftIO (putStrLn "xmlrpc method called") >> return (toResponse "Foo"))
+
+handleIcon :: ServerPart Response
+handleIcon = dir "icon.png" $ serveFile (asContentType "image/png") "public/icon.png"
 

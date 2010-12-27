@@ -496,12 +496,12 @@ declareMetadata sc name desc version = either Left (const (Right ())) `liftM` do
                            ("samp.description.text", ValueString desc),
                            ("internal.version", ValueString version)]
 
-declareMetadata2 :: SampClient -> String -> String -> String -> Err IO ()
-declareMetadata2 sc name desc version = doCallHub2 sc "declareMetadata" [mdata] >>= isOK >> return ()
+declareMetadata2 :: SampClient -> String -> String -> String -> [(String, Value)] -> Err IO ()
+declareMetadata2 sc name desc version opts = doCallHub2 sc "declareMetadata" [mdata] >>= isOK >> return ()
     where
-      mdata = ValueStruct [("samp.name", ValueString name),
-                           ("samp.description.text", ValueString desc),
-                           ("internal.version", ValueString version)]
+      mdata = ValueStruct $ opts ++ [("samp.name", ValueString name),
+                             ("samp.description.text", ValueString desc),
+                             ("internal.version", ValueString version)]
 
 sampToAssoc :: String -> SAMPResponse -> Err IO [(String, SAMPValue)]
 sampToAssoc _ (SAMPSuccess (SAMPMap m)) = return m
