@@ -28,7 +28,7 @@ import System.IO.Error
 import Control.Monad (msum, forM_)
 import Control.Monad.Error (catchError)
 import Control.Monad.Trans (liftIO)
-import Control.Concurrent (threadDelay, forkIO)
+import Control.Concurrent (ThreadId, killThread, threadDelay, forkIO, myThreadId)
 import Control.Concurrent.ParallelIO.Global
 
 import Network.XmlRpc.Internals (Value(..), Err, handleError, ioErrorToErr)
@@ -41,8 +41,9 @@ import Happstack.Server.HTTP.FileServe
 -- how 
 main :: IO ()
 main = do
-     _ <- forkIO doIt2
-     runServer pNum
+     tid <- myThreadId
+     _ <- forkIO $ runServer pNum tid
+     doIt2
 
 doIt :: IO ()
 doIt = do
@@ -53,17 +54,21 @@ doIt = do
 
 doIt2 :: IO ()
 doIt2 = let act = getHubInfo2 >>= \hi -> liftIO (putStrLn "Found hub.") >> processHub2 hi
-            hdlr :: CE.SomeException -> IO ()
-            hdlr e = do
-                   let ioe :: Maybe CE.IOException
-                       ioe = CE.fromException e
-                       emsg = case ioe of
-                            Just et -> if isUserError et then ioeGetErrorString et else show et
-                            _ -> show e
-                   putStrLn $ "ERROR: " ++ emsg
-                   exitFailure
+
+            ioHdlr :: CE.IOException -> IO ()
+            ioHdlr e = let emsg = if isUserError e then ioeGetErrorString e else show e
+                       in putStrLn ("ERROR: " ++ emsg) >> exitFailure
+
+            -- this assumes the only way to get a ThreadKilled is via a shutdown message
+            asyncHdlr :: CE.AsyncException -> IO ()
+            asyncHdlr e = let emsg = if e == CE.ThreadKilled then "SAMP Hub has shut down." else show e
+                          in putStrLn ("ERROR: " ++ emsg) >> exitFailure
+
+            otherHdlr :: CE.SomeException -> IO ()
+            otherHdlr e = putStrLn ("ERROR: " ++ (show e)) >> exitFailure
+
         in handleError fail act
-           `CE.catch` hdlr 
+           `CE.catches` [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
           
 
 processHub :: SampInfo -> IO ()
@@ -257,19 +262,17 @@ doClient2 cl = do
          waitForShutdown2 cl
          liftIO $ wait 10
 
--- tid is so we can close t
-runServer :: Int -> IO ()
-runServer portNum = do
+runServer :: Int -> ThreadId -> IO ()
+runServer portNum tid = do
           putStrLn $ "Starting server at port " ++ show portNum
-          simpleHTTP (nullConf { port =  portNum }) handlers
+          simpleHTTP (nullConf { port =  portNum }) (handlers tid)
 
-handlers :: ServerPart Response
--- handlers = msum [handleXmlRpc, handleIcon]
-handlers = msum [handleXmlRpc, handleIcon, anyRequest (notFound (toResponse "unknown request"))]
+handlers :: ThreadId -> ServerPart Response
+handlers tid = msum [handleXmlRpc tid, handleIcon, anyRequest (notFound (toResponse "unknown request"))]
 
-handleXmlRpc :: ServerPart Response
-handleXmlRpc = dir "xmlrpc" $ (liftIO (putStrLn "xmlrpc method called") >> return (toResponse "Foo"))
+handleXmlRpc :: ThreadId -> ServerPart Response
+handleXmlRpc tid = dir "xmlrpc" $ (liftIO (putStrLn "xmlrpc method called" >> killThread tid) >> return (toResponse "Foo"))
 
 handleIcon :: ServerPart Response
-handleIcon = dir "icon.png" $ serveFile (asContentType "image/png") "public/icon.png"
+handleIcon = dir "icon.png" $ liftIO (putStrLn "Served icon") >> serveFile (asContentType "image/png") "public/icon.png"
 
