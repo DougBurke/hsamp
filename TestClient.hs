@@ -25,20 +25,31 @@ import qualified Control.Exception as CE
 
 import System.Exit (exitFailure, exitSuccess)
 import System.IO.Error
-import Control.Monad (msum, forM_)
+import Control.Monad (msum, forM_, unless)
 import Control.Monad.Error (catchError)
 import Control.Monad.Trans (liftIO)
 import Control.Concurrent (ThreadId, killThread, threadDelay, forkIO, myThreadId)
 import Control.Concurrent.ParallelIO.Global
 
-import Network.XmlRpc.Internals (Value(..), Err, handleError, ioErrorToErr)
+import Network.XmlRpc.Internals (Value(..), Err, handleError, ioErrorToErr, parseResponse, parseCall)
+import Network.XmlRpc.Server (XmlRpcMethod, fun, methods)
 
 import SAMP.Client
 
 import Happstack.Server.SimpleHTTP
 import Happstack.Server.HTTP.FileServe
+import Happstack.Server.MessageWrap
 
--- how 
+import qualified Data.ByteString.Char8 as B
+import qualified Data.ByteString.Lazy.Char8 as L
+
+import Data.Maybe (fromJust)
+
+{-
+Todo: need to send hub info to the web server, which means we need
+to start that after finding the hub.
+-}
+
 main :: IO ()
 main = do
      tid <- myThreadId
@@ -55,6 +66,7 @@ doIt = do
 doIt2 :: IO ()
 doIt2 = let act = getHubInfo2 >>= \hi -> liftIO (putStrLn "Found hub.") >> processHub2 hi
 
+            -- could probably do this with a single hander
             ioHdlr :: CE.IOException -> IO ()
             ioHdlr e = let emsg = if isUserError e then ioeGetErrorString e else show e
                        in putStrLn ("ERROR: " ++ emsg) >> exitFailure
@@ -270,8 +282,100 @@ runServer portNum tid = do
 handlers :: ThreadId -> ServerPart Response
 handlers tid = msum [handleXmlRpc tid, handleIcon, anyRequest (notFound (toResponse "unknown request"))]
 
+methodList :: ThreadId -> [(String, XmlRpcMethod)]
+methodList tid = [("samp.client.receiveNotification", fun (receiveNotification tid))]
+
+{-
+From SAMP 1.2 document, callable clients must support
+
+nb a hidden first argument of string private-key
+
+receiveNotification(string sender-id, map message)
+
+Method called by the hub when dispatching a notification to its recip-
+ient. The form of the message map is given in Section 3.8.
+
+receiveCall(string sender-id, string msg-id, map message)
+
+Method called by the hub when dispatching a call to its recipient. The
+client MUST at some later time make a matching call to reply() on the
+hub. The form of the message map is given in Section 3.8.
+
+receiveResponse(string responder-id, string msg-tag, map response)
+
+Method used by the hub to dispatch to the sender the response of an
+earlier asynchronous call. The form of the response map is given in
+Section 3.9.
+
+-}
+
+{-
+TODO:
+
+could throw an error in 'Err m String ' monad
+so that there is some info about failure, or
+we catch such errors and return the necessary
+info for an error return.
+-}
+lookupJ :: String -> [(String, Value)] -> Value
+lookupJ s = fromJust . lookup s
+
+{-
+We fake a return value for the moment since there is no
+XmlRpcType encoding of (). I think, for notifications, no
+response is expected, but the SAMP 1.2 document is somewhat
+unclear from a quick read.
+
+TODO: dispatch on mtype
+check that secret is correct; should we also worry about the name
+field?
+
+-}
+receiveNotification :: ThreadId -> String -> String -> [(String, Value)] -> IO Int
+receiveNotification tid secret name struct = do
+                    let mtype = lookupJ "samp.mtype" struct
+                        mparams = lookupJ "samp.params" struct
+                    liftIO $ putStrLn "In receive Notification"
+                    liftIO $ putStrLn $ "  secret = " ++ secret
+                    liftIO $ putStrLn $ "  name   = " ++ name
+                    liftIO $ putStrLn $ "  mtype  = " ++ show mtype
+                    liftIO $ putStrLn $ "  mparams = " ++ show mparams
+                    killThread tid
+                    return 1
+
+getResponse :: ThreadId -> RqBody -> ServerPart ()
+getResponse tid (Body bdy) = do
+     mCall <- handleError fail $ parseCall (L.unpack bdy) -- better error handling needed
+     liftIO $ putStrLn "*** START CALL"
+     liftIO $ putStrLn $ show mCall
+     liftIO $ putStrLn "*** END CALL"
+     -- ans <- handleError fail $ methods (methodList tid) mCall -- better error handling needed
+     ans <- liftIO $ handleError fail $ methods (methodList tid) mCall -- better error handling needed
+     liftIO $ putStrLn "*** START ANSWER"
+     liftIO $ putStrLn $ show ans
+     liftIO $ putStrLn "*** END ANSWER"
+     return ()
+
+xmlct :: B.ByteString
+xmlct = B.pack "text/xml"
+
+-- XmlRpc is done via a HTML POST of an XML document
+--
 handleXmlRpc :: ThreadId -> ServerPart Response
-handleXmlRpc tid = dir "xmlrpc" $ (liftIO (putStrLn "xmlrpc method called" >> killThread tid) >> return (toResponse "Foo"))
+handleXmlRpc tid = dir "xmlrpc" $ do
+    methodM POST
+    cType <- getHeaderM "content-type"
+    unless (cType == Just xmlct) $ escape (badRequest (toResponse "Invalid content type")) -- not sure what to do here
+    -- decodeBody myPolicy
+    r <- askRq
+    rsp <- getResponse tid (rqBody r)
+    return (toResponse "Foo") -- what to return here?
+
+{-
+This is for the un-released Happstack
+myPolicy :: BodyPolicy
+myPolicy = defaultBodyPolicy "/tmp/" 0 4096 1024
+-}
 
 handleIcon :: ServerPart Response
 handleIcon = dir "icon.png" $ liftIO (putStrLn "Served icon") >> serveFile (asContentType "image/png") "public/icon.png"
