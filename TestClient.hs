@@ -52,11 +52,13 @@ to start that after finding the hub.
 
 main :: IO ()
 main = do
-     tid <- myThreadId
-     _ <- forkIO $ runServer pNum tid
      doIt
      exitSuccess
 
+{-
+ThreadKilled is thrown in processHub, so it should be caught there
+rather than the whole routine.
+-}
 doIt :: IO ()
 doIt = let act = getHubInfoE >>= \hi -> liftIO (putStrLn "Found hub.") >> processHub hi
 
@@ -75,7 +77,6 @@ doIt = let act = getHubInfoE >>= \hi -> liftIO (putStrLn "Found hub.") >> proces
 
        in handleError fail act
            `CE.catches` [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
-          
 
 {-
 I was hoping to keep everything within the Err IO monad
@@ -92,6 +93,10 @@ processHub :: SampInfo -> Err IO ()
 processHub (ss, surl) = do
            liftIO $ putStrLn $ "Samp secret: " ++ ss
            liftIO $ putStrLn $ "Samp hub:    " ++ surl
+
+           tid <- liftIO $ myThreadId
+           _ <- liftIO $ forkIO $ runServer pNum tid (ss,surl)
+
            cl <- makeClient (ss, surl)
 
            let hdlr :: CE.AsyncException -> IO ()
@@ -103,10 +108,6 @@ processHub (ss, surl) = do
 
            unregisterClientE cl
            liftIO $ putStrLn "Unregistered client"
-
-{-
-Wait until the hub tells us it's about to shutdown.
--}
 
 pNum :: Int
 pNum = 12345
@@ -161,13 +162,17 @@ reportSubscriptions cl msg = do
                     msgs <- getSubscribedClientsE cl msg
                     reportIt ("Subscriptions to " ++ msg) msgs
 
+{-
+TODO: try asynchronous ping
+-}
+
 pingItems :: SampClient -> Err IO ()
 pingItems cl = do
-     liftIO $ putStrLn "Calling clients that respond to samp.app.ping"
+     liftIO $ putStrLn "Calling clients that respond to samp.app.ping (synchronous)"
      rsp <- getSubscribedClientsE cl "samp.app.ping"
      liftIO $ parallel_ (map cp rsp)
      liftIO stopGlobalPool
-     liftIO $ putStrLn "Finished calling samp.app.ping"
+     liftIO $ putStrLn "Finished calling samp.app.ping (synchronous)"
 
          where
            cp r = handleError return (callPing (fst r)) >>= putStrLn
@@ -189,16 +194,16 @@ doClient cl = do
          waitForShutdown cl
          liftIO $ wait 10
 
-runServer :: Int -> ThreadId -> IO ()
-runServer portNum tid = do
+runServer :: Int -> ThreadId -> SampInfo -> IO ()
+runServer portNum tid si = do
           putStrLn $ "Starting server at port " ++ show portNum
-          simpleHTTP (nullConf { port =  portNum }) (handlers tid)
+          simpleHTTP (nullConf { port =  portNum }) (handlers tid si)
 
-handlers :: ThreadId -> ServerPart Response
-handlers tid = msum [handleXmlRpc tid, handleIcon, anyRequest (notFound (toResponse "unknown request"))]
+handlers :: ThreadId -> SampInfo -> ServerPart Response
+handlers tid si = msum [handleXmlRpc tid si, handleIcon, anyRequest (notFound (toResponse "unknown request"))]
 
-methodList :: ThreadId -> [(String, XmlRpcMethod)]
-methodList tid = [("samp.client.receiveNotification", fun (receiveNotification tid))]
+methodList :: ThreadId -> SampInfo -> [(String, XmlRpcMethod)]
+methodList tid si = [("samp.client.receiveNotification", fun (receiveNotification tid si))]
 
 {-
 From SAMP 1.2 document, callable clients must support
@@ -246,26 +251,33 @@ check that secret is correct; should we also worry about the name
 field?
 
 -}
-receiveNotification :: ThreadId -> String -> String -> [(String, Value)] -> IO Int
-receiveNotification tid secret name struct = do
-                    let mtype = lookupJ "samp.mtype" struct
-                        mparams = lookupJ "samp.params" struct
-                    liftIO $ putStrLn "In receive Notification"
-                    liftIO $ putStrLn $ "  secret = " ++ secret
-                    liftIO $ putStrLn $ "  name   = " ++ name
-                    liftIO $ putStrLn $ "  mtype  = " ++ show mtype
-                    liftIO $ putStrLn $ "  mparams = " ++ show mparams
-                    killThread tid
-                    return 1
 
-getResponse :: ThreadId -> RqBody -> ServerPart ()
-getResponse tid (Body bdy) = do
+signals :: [(String, ThreadId -> SampInfo -> String -> String -> Value -> IO Int)]
+signals = [("samp.hub.event.shutdown", handleShutdown)]
+
+handleShutdown :: ThreadId -> SampInfo -> String -> String -> Value -> IO Int
+handleShutdown tid _ _ name _ = do
+               putStrLn $ "Received a shutdown message from " ++ name
+               killThread tid
+               return 1
+
+receiveNotification :: ThreadId -> SampInfo -> String -> String -> [(String, Value)] -> IO Int
+receiveNotification tid si secret name struct = do
+                    let ValueString mtype = lookupJ "samp.mtype" struct
+                        mparams = lookupJ "samp.params" struct
+                    liftIO $ putStrLn $ "Sent mtype " ++ mtype ++ " by " ++ name
+                    case lookup mtype signals of
+                      Just fun -> fun tid si secret name mparams >>= return
+                      _ -> return $ 0
+
+getResponse :: ThreadId -> SampInfo -> RqBody -> ServerPart ()
+getResponse tid si (Body bdy) = do
      mCall <- handleError fail $ parseCall (L.unpack bdy) -- better error handling needed
      liftIO $ putStrLn "*** START CALL"
      liftIO $ print mCall
      liftIO $ putStrLn "*** END CALL"
      -- ans <- handleError fail $ methods (methodList tid) mCall -- better error handling needed
-     ans <- liftIO $ handleError fail $ methods (methodList tid) mCall -- better error handling needed
+     ans <- liftIO $ handleError fail $ methods (methodList tid si) mCall -- better error handling needed
      liftIO $ putStrLn "*** START ANSWER"
      liftIO $ print ans
      liftIO $ putStrLn "*** END ANSWER"
@@ -276,21 +288,16 @@ xmlct = B.pack "text/xml"
 
 -- XmlRpc is done via a HTML POST of an XML document
 --
-handleXmlRpc :: ThreadId -> ServerPart Response
-handleXmlRpc tid = dir "xmlrpc" $ do
+handleXmlRpc :: ThreadId -> SampInfo -> ServerPart Response
+handleXmlRpc tid si = dir "xmlrpc" $ do
     methodM POST
     cType <- getHeaderM "content-type"
-    unless (cType == Just xmlct) $ escape (badRequest (toResponse "Invalid content type")) -- not sure what to do here
-    -- decodeBody myPolicy
+    -- TODO: do we throw a sensible error (if so, how to get it back to the caller)
+    -- or just ignore the content type setting?
+    unless (cType == Just xmlct) $ escape (badRequest (toResponse "Invalid content type"))
     r <- askRq
-    rsp <- getResponse tid (rqBody r)
+    rsp <- getResponse tid si (rqBody r)
     return (toResponse "Foo") -- what to return here?
-
-{-
-This is for the un-released Happstack
-myPolicy :: BodyPolicy
-myPolicy = defaultBodyPolicy "/tmp/" 0 4096 1024
--}
 
 handleIcon :: ServerPart Response
 handleIcon = dir "icon.png" $ liftIO (putStrLn "Served icon") >> serveFile (asContentType "image/png") "public/icon.png"
