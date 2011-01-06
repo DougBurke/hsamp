@@ -9,7 +9,7 @@ is this still true?
 
 -}
 
-module SAMP.Standard.Types (
+module Network.SAMP.Standard.Types (
        SAMPConnection(..), SAMPInfo,
 
        Err, handleError, -- from XmlRpc

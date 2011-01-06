@@ -3,7 +3,7 @@
 Client code for the Standard SAMP profile.
 -}
 
-module SAMP.Standard.Client (
+module Network.SAMP.Standard.Client (
        -- * High-level interface
        getHubInfoE,
        registerClientE,
@@ -53,7 +53,7 @@ import System.Environment (getEnv)
 
 import System.IO.Error (isDoesNotExistError, isDoesNotExistErrorType, ioeGetErrorType)
 
-import SAMP.Standard.Types
+import Network.SAMP.Standard.Types
 
 -- the name of the SAMP client logging instance
 cLogger :: String

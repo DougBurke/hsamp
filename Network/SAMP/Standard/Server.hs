@@ -2,7 +2,7 @@
 Handle the server side of the SAMP Standard profile.
 -}
 
-module SAMP.Standard.Server (
+module Network.SAMP.Standard.Server (
 
        SAMPMethod, SAMPServerResult,
        SAMPFun, fun,
@@ -24,7 +24,7 @@ import qualified Control.Exception as CE
 
 import qualified Data.ByteString.Lazy.Char8 as L
 
-import SAMP.Standard.Types
+import Network.SAMP.Standard.Types
 
 -- the name of the SAMP client logging instance
 sLogger :: String

@@ -25,9 +25,9 @@ import Control.Monad.Trans (liftIO)
 import Control.Concurrent (ThreadId, killThread, threadDelay, forkIO, myThreadId)
 import Control.Concurrent.ParallelIO.Global
 
-import SAMP.Standard.Types
-import SAMP.Standard.Client
-import SAMP.Standard.Server
+import Network.SAMP.Standard.Types
+import Network.SAMP.Standard.Client
+import Network.SAMP.Standard.Server
 
 import Network.Socket (Socket, PortNumber, socketPort)
 import Happstack.Server.SimpleHTTP
