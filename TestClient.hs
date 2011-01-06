@@ -306,10 +306,9 @@ emptyResponse = toSAMPResponse []
 TODO:
   better error handling
 -}
-receiveNotification :: ThreadId -> SAMPConnection -> RString -> RString -> [SAMPKeyValue] -> IO Int
-receiveNotification tid si secret senderid struct = do
+receiveNotification :: ThreadId -> SAMPConnection -> RString -> RString -> SAMPMessage -> IO Int
+receiveNotification tid si secret senderid sm = do
     putStrLn ">>> in receiveNotification"
-    sm <- handleError fail (fromSValue (SAMPMap struct) :: Err IO SAMPMessage)
     let mtype = getSAMPMessageType sm
         mparams = getSAMPMessageParams sm
     putStrLn $ "Notification: sent mtype " ++ show mtype ++ " by " ++ show senderid
@@ -319,10 +318,9 @@ receiveNotification tid si secret senderid struct = do
            liftIO $ debugM "SAMP" $ "Unrecognized mtype for notification: " ++ show mtype
            fail $ "Unrecognized mtype for notification: " ++ show mtype
 
-receiveCall :: SAMPConnection -> RString -> RString -> RString -> [SAMPKeyValue] -> IO Int
-receiveCall si secret senderid msgid struct = do
+receiveCall :: SAMPConnection -> RString -> RString -> RString -> SAMPMessage -> IO Int
+receiveCall si secret senderid msgid sm = do
     putStrLn ">>> in receiveCall"
-    sm <- handleError fail (fromSValue (SAMPMap struct) :: Err IO SAMPMessage)
     let mtype = getSAMPMessageType sm
         mparams = getSAMPMessageParams sm
     putStrLn $ "Call: sent mtype " ++ show mtype ++ " by " ++ show senderid
