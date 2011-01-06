@@ -15,7 +15,6 @@ TODO:
  b) try out error conditions (like the hub disappearing)
  c) does it make sense to use something like a monad
     transformer for combining IO and Either
- d) register for hub shutting-down message
 
 -}
 
@@ -26,41 +25,44 @@ import qualified Control.Exception as CE
 import System.Exit (exitFailure, exitSuccess)
 import System.IO.Error
 import Control.Monad (msum, forM_, unless)
-import Control.Monad.Error (catchError)
+-- import Control.Monad.Error (catchError)
 import Control.Monad.Trans (liftIO)
 import Control.Concurrent (ThreadId, killThread, threadDelay, forkIO, myThreadId)
 import Control.Concurrent.ParallelIO.Global
 
-import Network.XmlRpc.Internals (Value(..), Err, handleError, ioErrorToErr, parseResponse, parseCall)
-import Network.XmlRpc.Server (XmlRpcMethod, fun, methods)
+-- should be from SAMP.Types I think
+import Network.XmlRpc.Internals (Err, handleError)
 
+import SAMP.Types
 import SAMP.Client
+import SAMP.Server
 
 import Happstack.Server.SimpleHTTP
 import Happstack.Server.HTTP.FileServe
-import Happstack.Server.MessageWrap
+-- import Happstack.Server.MessageWrap
 
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as L
 
-import Data.Maybe (fromJust)
+import System.Log.Logger
 
-{-
-Todo: need to send hub info to the web server, which means we need
-to start that after finding the hub.
--}
+import Data.Maybe (fromJust)
 
 main :: IO ()
 main = do
+     updateGlobalLogger "SAMP" (setLevel DEBUG)
      doIt
      exitSuccess
+
+putLn :: String -> Err IO ()
+putLn = liftIO . putStrLn
 
 {-
 ThreadKilled is thrown in processHub, so it should be caught there
 rather than the whole routine.
 -}
 doIt :: IO ()
-doIt = let act = getHubInfoE >>= \hi -> liftIO (putStrLn "Found hub.") >> processHub hi
+doIt = let act = getHubInfoE >>= \hi -> putLn "Found hub." >> processHub hi
 
            -- could probably do this with a single hander
            ioHdlr :: CE.IOException -> IO ()
@@ -89,25 +91,25 @@ messes some things up.
 Perhaps I want a finally/try rather than catch here?
 -}
 
-processHub :: SampInfo -> Err IO ()
-processHub (ss, surl) = do
-           liftIO $ putStrLn $ "Samp secret: " ++ ss
-           liftIO $ putStrLn $ "Samp hub:    " ++ surl
+processHub :: SAMPInfo -> Err IO ()
+processHub si@(ss, surl) = do
+           putLn $ "Samp secret: " ++ show ss
+           putLn $ "Samp hub:    " ++ show surl
 
-           tid <- liftIO $ myThreadId
-           _ <- liftIO $ forkIO $ runServer pNum tid (ss,surl)
+           tid <- liftIO myThreadId
+           _ <- liftIO $ forkIO $ runServer pNum tid si
 
-           cl <- makeClient (ss, surl)
+           cl <- makeClient si
 
            let hdlr :: CE.AsyncException -> IO ()
-               hdlr CE.UserInterrupt = handleError fail (unregisterClientE cl) >> CE.throwIO CE.UserInterrupt
+               hdlr CE.UserInterrupt = handleError fail (unregisterE cl) >> CE.throwIO CE.UserInterrupt
                hdlr e = CE.throwIO e
                    
            -- could use CE.catchJust here
-           liftIO $ handleError (\m -> handleError fail (unregisterClientE cl) >> fail m) (doClient cl) `CE.catch` hdlr
+           liftIO $ handleError (\m -> handleError fail (unregisterE cl) >> fail m) (doClient cl) `CE.catch` hdlr
 
-           unregisterClientE cl
-           liftIO $ putStrLn "Unregistered client"
+           unregisterE cl
+           putLn "Unregistered client"
 
 pNum :: Int
 pNum = 12345
@@ -115,95 +117,115 @@ pNum = 12345
 hostName :: Int -> String
 hostName portNum = "http://127.0.0.1:" ++ show portNum ++ "/"
 
+-- an unsafe routine
+tRS :: String -> RString
+tRS = fromJust . toRString
+
+makeClient :: SAMPInfo -> Err IO SAMPConnection
+makeClient si = do
+    cl <- registerClientE si
+    let md = toMetadata (tRS "hsamp-test-client")
+                        (Just (tRS "Test SAMP client using hSAMP."))
+                        Nothing
+                        (Just (tRS (hostName pNum ++ "icon.png")))
+                        Nothing
+    declareMetadataE cl $ (fromJust (toRString "internal.version"), toSValue (fromJust (toRString "0.0.1"))) : md
+    return cl
+
 {-
 Should really make sure that the server has started up before registering
 the connection with the hub.
 -}
-waitForShutdown :: SampClient -> Err IO ()
-waitForShutdown cl = do
-  setXmlrpcCallbackE cl $ hostName pNum ++ "xmlrpc"
-  liftIO $ putStrLn "About to register subcription to samp.hub.event.shutdown"
-  declareSubscriptionsSimpleE cl ["samp.hub.event.shutdown"]
-  liftIO $ putStrLn "Done"
-  return ()
 
-{-
-XXX TODO shouldn't we check that declareMetadata has returned a SAMPSuccess?
--}
+pingMT , shutdownMT :: MType
+pingMT = fromJust $ toMType "samp.app.ping"
+shutdownMT = fromJust $ toMType "samp.hub.event.shutdown"
 
-makeClient :: SampInfo -> Err IO SampClient
-makeClient ss = do
-           sc <- registerClientE ss
-           _ <- declareMetadataE sc "hsamp-test-client" "Test SAMP client using hSAMP." "0.0.1" [("samp.icon.url", ValueString (hostName pNum ++ "icon.png"))]
-           return sc
+setSubscriptions :: SAMPConnection -> Err IO ()
+setSubscriptions cl = do
+  setXmlrpcCallbackE cl $ tRS $ hostName pNum ++ "xmlrpc"
+  putLn "About to register subcriptions"
+  declareSubscriptionsSimpleE cl [pingMT, shutdownMT]
+  putLn "Done"
 
 wait :: Int -> IO ()
 wait = threadDelay . (1000000 *)
 
-reportIt :: String -> [(String,SAMPValue)] -> Err IO ()
+reportIt :: String -> [SAMPKeyValue] -> Err IO ()
 reportIt lbl msgs = do
-         liftIO $ putStrLn $ "    " ++ lbl
-         forM_ msgs $ \(n,v) -> liftIO $ putStrLn $ concat ["        ", n, " : ", showSAMPValue v]
+         putLn $ "    " ++ lbl
+         forM_ msgs $ \(n,v) -> putLn $ concat ["        ", show n, " : ", showSAMPValue v]
 
-reportClients :: SampClient -> Err IO ()
+reportClients :: SAMPConnection -> Err IO ()
 reportClients cl = do
               ns <- getRegisteredClientsE cl
-              liftIO $ putStrLn $ concat ["*** Found ", show (length ns), " clients"]
+              putLn $ concat ["*** Found ", show (length ns), " clients"]
               forM_ (zip ([1..]::[Int]) ns) $ \(n,name) -> do
-                    liftIO $ putStrLn $ concat ["   ", show n, " : ", name]
+                    putLn $ concat ["   ", show n, " : ", show name]
                     subs <- getSubscriptionsE cl name
                     reportIt "Subscriptions" subs
                     mds <- getMetadataE cl name
                     reportIt "Metadata" mds
-                    return ()
 
-reportSubscriptions :: SampClient -> String -> Err IO ()
+reportSubscriptions :: SAMPConnection -> MType -> Err IO ()
 reportSubscriptions cl msg = do
                     msgs <- getSubscribedClientsE cl msg
-                    reportIt ("Subscriptions to " ++ msg) msgs
+                    reportIt ("Subscriptions to " ++ show msg) msgs
+
+pingMsg :: (Monad m) => Err m SAMPMessage
+pingMsg = toSAMPMessage pingMT [] []
 
 {-
 TODO: try asynchronous ping
 -}
 
-pingItems :: SampClient -> Err IO ()
+pingItems :: SAMPConnection -> Err IO ()
 pingItems cl = do
-     liftIO $ putStrLn "Calling clients that respond to samp.app.ping (synchronous)"
-     rsp <- getSubscribedClientsE cl "samp.app.ping"
+     putLn "Calling clients that respond to samp.app.ping (synchronous)"
+     rsp <- getSubscribedClientsE cl pingMT
      liftIO $ parallel_ (map cp rsp)
      liftIO stopGlobalPool
-     liftIO $ putStrLn "Finished calling samp.app.ping (synchronous)"
+     putLn "Finished calling samp.app.ping (synchronous)"
 
          where
            cp r = handleError return (callPing (fst r)) >>= putStrLn
            callPing p = do
-             ret <- callAndWaitE cl p "samp.app.ping" [] 10
-             case ret of
-               (SAMPSuccess _) -> return $ "Successfuly called " ++ p
-               (SAMPError emsg _) -> return $ "ERROR calling " ++ p ++ "\n" ++ emsg
-               (SAMPWarning wmsg _ _) -> return $ "WARNING calling " ++ p ++ "\n" ++ wmsg
+             pmsg <- pingMsg
+             rsp <- callAndWaitE cl p pmsg (Just 10)
+             let pn = show p
+                 etxt = show (fromJust (getSAMPResponseErrorTxt rsp))
+             if isSAMPWarning rsp
+               then return $ "WARNING calling " ++ pn ++ "\n" ++ etxt
+               else if isSAMPSuccess rsp
+                 then return $ "Successfuly called " ++ pn
+                 else return $ "ERROR calling " ++ pn ++ "\n" ++ etxt
 
-doClient :: SampClient -> Err IO ()
+doClient :: SAMPConnection -> Err IO ()
 doClient cl = do
-         liftIO $ putStrLn $ "Registered client: public name = " ++ sampId cl
+         putLn $ "Registered client: public name = " ++ show (sampId cl)
+         pingE cl
+         putLn "Was able to ping the hub using the Standard profile's ping method"
          reportClients cl
-         liftIO $ putStrLn ""
-         reportSubscriptions cl "samp.app.ping"
-         reportSubscriptions cl "foo.bar"
+         putLn ""
+         reportSubscriptions cl pingMT
+         reportSubscriptions cl $ fromJust $ toMType "foo.bar"
          pingItems cl
-         waitForShutdown cl
+         setSubscriptions cl
          liftIO $ wait 10
 
-runServer :: Int -> ThreadId -> SampInfo -> IO ()
+runServer :: Int -> ThreadId -> SAMPInfo -> IO ()
 runServer portNum tid si = do
           putStrLn $ "Starting server at port " ++ show portNum
           simpleHTTP (nullConf { port =  portNum }) (handlers tid si)
 
-handlers :: ThreadId -> SampInfo -> ServerPart Response
+handlers :: ThreadId -> SAMPInfo -> ServerPart Response
 handlers tid si = msum [handleXmlRpc tid si, handleIcon, anyRequest (notFound (toResponse "unknown request"))]
 
-methodList :: ThreadId -> SampInfo -> [(String, XmlRpcMethod)]
-methodList tid si = [("samp.client.receiveNotification", fun (receiveNotification tid si))]
+methodList :: ThreadId -> SAMPInfo -> SAMPMethodMap
+methodList tid si =
+           [("samp.client.receiveNotification", fun (receiveNotification tid si)),
+           ("samp.client.receiveCall", fun (receiveCall si))
+           ]
 
 {-
 From SAMP 1.2 document, callable clients must support
@@ -229,75 +251,94 @@ Section 3.9.
 
 -}
 
+notifications :: [(MType, ThreadId -> SAMPInfo -> RString -> RString -> [SAMPKeyValue] -> IO RString)]
+notifications = [(shutdownMT, handleShutdown)]
+
+calls :: [(MType, SAMPInfo -> RString -> RString -> RString -> [SAMPKeyValue] -> IO RString)]
+calls = [(pingMT, handlePing)]
+
+handleShutdown :: ThreadId -> SAMPInfo -> RString -> RString -> [SAMPKeyValue] -> IO RString
+handleShutdown tid _ _ name _ = do
+               putStrLn $ "Received a shutdown message from " ++ show name
+               killThread tid
+               return emptyRString
+
+handlePing :: SAMPInfo -> RString -> RString -> RString -> [SAMPKeyValue] -> IO RString
+handlePing si _ senderid msgid _ = do
+               putStrLn $ "Received a ping request from " ++ show senderid
+               -- TODO: send a response to senderid via the hub
+               return emptyRString
+
+mt , sp :: RString
+mt = fromJust $ toRString "samp.mtype"
+sp = fromJust $ toRString "samp.params"
+
+{-
+QUS: should receiveNotification/Call be returning IO SAMPServerResult?
+-}
+
+sStringToMT :: SAMPValue -> Maybe MType
+sStringToMT (SAMPString s) = toMType (fromRString s)
+sStringToMT _ = Nothing
+
 {-
 TODO:
-
-could throw an error in 'Err m String ' monad
-so that there is some info about failure, or
-we catch such errors and return the necessary
-info for an error return.
+  better error handling
 -}
-lookupJ :: String -> [(String, Value)] -> Value
-lookupJ s = fromJust . lookup s
+receiveNotification :: ThreadId -> SAMPInfo -> RString -> RString -> [SAMPKeyValue] -> IO RString
+receiveNotification tid si secret senderid struct = do
+    sm <- handleError fail $ (fromSValue (SAMPMap struct) :: Err IO SAMPMessage)
+    let mtype = getSAMPMessageType sm
+        mparams = getSAMPMessageParams sm
+    putStrLn $ "Notification: sent mtype " ++ show mtype ++ " by " ++ show senderid
+    case lookup mtype notifications of
+      Just func -> func tid si secret senderid mparams
+      _ -> do
+           liftIO $ debugM "SAMP" $ "Unrecognized mtype for notification: " ++ show mtype
+           return emptyRString
+
+receiveCall :: SAMPInfo -> RString -> RString -> RString -> [SAMPKeyValue] -> IO RString
+receiveCall si secret senderid msgid struct = do
+    sm <- handleError fail $ (fromSValue (SAMPMap struct) :: Err IO SAMPMessage)
+    let mtype = getSAMPMessageType sm
+        mparams = getSAMPMessageParams sm
+    putStrLn $ "Call: sent mtype " ++ show mtype ++ " by " ++ show senderid
+    case lookup mtype calls of
+      Just func -> func si secret senderid msgid mparams
+      _ -> do
+           liftIO $ debugM "SAMP" $ "Unrecognized mtype for call: " ++ show mtype
+           return emptyRString
+
+-- this could be done by server (to some degree anyway?)
 
 {-
-We fake a return value for the moment since there is no
-XmlRpcType encoding of (). I think, for notifications, no
-response is expected, but the SAMP 1.2 document is somewhat
-unclear from a quick read.
-
-TODO: dispatch on mtype
-check that secret is correct; should we also worry about the name
-field?
-
+TODO:
+improve the error handling
 -}
 
-signals :: [(String, ThreadId -> SampInfo -> String -> String -> Value -> IO Int)]
-signals = [("samp.hub.event.shutdown", handleShutdown)]
-
-handleShutdown :: ThreadId -> SampInfo -> String -> String -> Value -> IO Int
-handleShutdown tid _ _ name _ = do
-               putStrLn $ "Received a shutdown message from " ++ name
-               killThread tid
-               return 1
-
-receiveNotification :: ThreadId -> SampInfo -> String -> String -> [(String, Value)] -> IO Int
-receiveNotification tid si secret name struct = do
-                    let ValueString mtype = lookupJ "samp.mtype" struct
-                        mparams = lookupJ "samp.params" struct
-                    liftIO $ putStrLn $ "Sent mtype " ++ mtype ++ " by " ++ name
-                    case lookup mtype signals of
-                      Just fun -> fun tid si secret name mparams >>= return
-                      _ -> return $ 0
-
-getResponse :: ThreadId -> SampInfo -> RqBody -> ServerPart ()
+getResponse :: ThreadId -> SAMPInfo -> RqBody -> ServerPart ()
 getResponse tid si (Body bdy) = do
-     mCall <- handleError fail $ parseCall (L.unpack bdy) -- better error handling needed
-     liftIO $ putStrLn "*** START CALL"
-     liftIO $ print mCall
-     liftIO $ putStrLn "*** END CALL"
-     -- ans <- handleError fail $ methods (methodList tid) mCall -- better error handling needed
-     ans <- liftIO $ handleError fail $ methods (methodList tid si) mCall -- better error handling needed
-     liftIO $ putStrLn "*** START ANSWER"
-     liftIO $ print ans
-     liftIO $ putStrLn "*** END ANSWER"
-     return ()
+     mCall <- handleError fail $ parseSAMPCall (L.unpack bdy)
+     liftIO $ debugM "SAMP" $ "SAMP call from hub is:\n" ++ show mCall
+     -- ans <- handleError fail $ methods (methodList tid) mCall
+     ans <- liftIO $ handleError fail $ methods (methodList tid si) mCall
+     liftIO $ debugM "SAMP" $ "SAMP response is:\n" ++ show ans
 
 xmlct :: B.ByteString
 xmlct = B.pack "text/xml"
 
 -- XmlRpc is done via a HTML POST of an XML document
 --
-handleXmlRpc :: ThreadId -> SampInfo -> ServerPart Response
+handleXmlRpc :: ThreadId -> SAMPInfo -> ServerPart Response
 handleXmlRpc tid si = dir "xmlrpc" $ do
     methodM POST
     cType <- getHeaderM "content-type"
     -- TODO: do we throw a sensible error (if so, how to get it back to the caller)
     -- or just ignore the content type setting?
-    unless (cType == Just xmlct) $ escape (badRequest (toResponse "Invalid content type"))
+    unless (cType == Just xmlct) $ escape (badRequest (toResponse ("Invalid content type: " ++ show cType)))
     r <- askRq
     rsp <- getResponse tid si (rqBody r)
-    return (toResponse "Foo") -- what to return here?
+    return (toResponse "") -- what to return here?
 
 handleIcon :: ServerPart Response
 handleIcon = dir "icon.png" $ liftIO (putStrLn "Served icon") >> serveFile (asContentType "image/png") "public/icon.png"
