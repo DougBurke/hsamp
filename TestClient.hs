@@ -99,7 +99,7 @@ eConf = nullConf { port = 0 }
 processHub :: SAMPInfo -> Err IO ()
 processHub si@(ss, surl) = do
            putLn $ "Samp secret: " ++ show ss
-           putLn $ "Samp hub:    " ++ show surl
+           putLn $ "Samp hub:    " ++ surl
 
            tid <- liftIO myThreadId
 
@@ -239,42 +239,11 @@ runServer (sock,portNum) tid si = do
 handlers :: ThreadId -> SAMPConnection -> ServerPart Response
 handlers tid si = msum [handleXmlRpc tid si, handleIcon, anyRequest (notFound (toResponse "unknown request"))]
 
-methodList :: ThreadId -> SAMPConnection -> SAMPMethodMap
-methodList tid si =
-           [("samp.client.receiveNotification", fun (receiveNotification tid si)),
-           ("samp.client.receiveCall", fun (receiveCall si)),
-           ("samp.client.receiveResponse", fun (receiveResponse si))
-           ]
+notifications :: ThreadId -> SAMPConnection -> [SAMPNotificationFunc]
+notifications tid ci = [(shutdownMT, handleShutdown tid ci)]
 
-{-
-From SAMP 1.2 document, callable clients must support
-
-nb a hidden first argument of string private-key
-
-receiveNotification(string sender-id, map message)
-
-Method called by the hub when dispatching a notification to its recip-
-ient. The form of the message map is given in Section 3.8.
-
-receiveCall(string sender-id, string msg-id, map message)
-
-Method called by the hub when dispatching a call to its recipient. The
-client MUST at some later time make a matching call to reply() on the
-hub. The form of the message map is given in Section 3.8.
-
-receiveResponse(string responder-id, string msg-tag, map response)
-
-Method used by the hub to dispatch to the sender the response of an
-earlier asynchronous call. The form of the response map is given in
-Section 3.9.
-
--}
-
-notifications :: [(MType, ThreadId -> SAMPConnection -> RString -> RString -> [SAMPKeyValue] -> IO ())]
-notifications = [(shutdownMT, handleShutdown)]
-
-calls :: [(MType, SAMPConnection -> RString -> RString -> RString -> [SAMPKeyValue] -> IO ())]
-calls = [(pingMT, handlePing)]
+calls :: SAMPConnection -> [SAMPCallFunc]
+calls ci = [(pingMT, handlePing ci)]
 
 handleShutdown :: ThreadId -> SAMPConnection -> RString -> RString -> [SAMPKeyValue] -> IO ()
 handleShutdown tid _ _ name _ = do
@@ -287,77 +256,23 @@ handlePing si _ senderid msgid _ = do
                _ <- handleError (const (return ())) $ replyE si msgid emptyResponse
                return ()
 
-mt , sp :: RString
-mt = fromJust $ toRString "samp.mtype"
-sp = fromJust $ toRString "samp.params"
-
-{-
-QUS: should receiveNotification/Call be returning IO SAMPServerResult?
--}
-
-sStringToMT :: SAMPValue -> Maybe MType
-sStringToMT (SAMPString s) = toMType (fromRString s)
-sStringToMT _ = Nothing
-
 emptyResponse :: SAMPResponse
 emptyResponse = toSAMPResponse []
 
-{-
-TODO:
-  better error handling
--}
-receiveNotification :: ThreadId -> SAMPConnection -> RString -> RString -> SAMPMessage -> IO ()
-receiveNotification tid si secret senderid sm = do
-    putStrLn ">>> in receiveNotification"
-    let mtype = getSAMPMessageType sm
-        mparams = getSAMPMessageParams sm
-    putStrLn $ "Notification: sent mtype " ++ show mtype ++ " by " ++ show senderid
-    case lookup mtype notifications of
-      Just func -> func tid si secret senderid mparams
-      _ -> do
-           liftIO $ debugM "SAMP" $ "Unrecognized mtype for notification: " ++ show mtype
-           fail $ "Unrecognized mtype for notification: " ++ show mtype
-
-receiveCall :: SAMPConnection -> RString -> RString -> RString -> SAMPMessage -> IO ()
-receiveCall si secret senderid msgid sm = do
-    putStrLn ">>> in receiveCall"
-    let mtype = getSAMPMessageType sm
-        mparams = getSAMPMessageParams sm
-    putStrLn $ "Call: sent mtype " ++ show mtype ++ " by " ++ show senderid
-    case lookup mtype calls of
-      Just func -> func si secret senderid msgid mparams
-      _ -> do
-           liftIO $ debugM "SAMP" $ "Unrecognized mtype for call: " ++ show mtype
-           fail $ "Unrecognized mtype for call: " ++ show mtype
-
-receiveResponse :: SAMPConnection -> RString -> RString -> RString -> SAMPResponse -> IO ()
-receiveResponse _ _ receiverid msgid rsp = do
-    putStrLn $ "Received a response to message " ++ show msgid ++ " from " ++ show receiverid
+rfunc :: SAMPResponseFunc
+-- rfunc secret receiverid msgid rsp =
+rfunc _ receiverid msgid rsp =
     if isSAMPSuccess rsp
-      then return ()
+      then do
+             putStrLn $ "Got a response to msg=" ++ show msgid ++ " from=" ++ show receiverid
+             return ()
       else putStrLn $ "ERROR: " ++ show (fromJust (getSAMPResponseErrorTxt rsp))
-
--- this could be done by server (to some degree anyway?)
-
-{-
-TODO:
-improve the error handling
--}
 
 getResponse :: ThreadId -> SAMPConnection -> RqBody -> ServerPart Response
 getResponse tid si (Body bdy) = do
-    liftIO $ debugM "SAMP" $ "SAMP body of call from Hub is:\n" ++ (L.unpack bdy)
-
-    -- _ <- liftIO $ server (methodList tid si) (L.unpack bdy)
-    -- return is a bytestring which encodes any error information
-    -- since server catches this and does the transformation
-    -- do we need to do anything other than just repsond as a 200?
-    -- ok ""
-
-    let act = parseSAMPCall (L.unpack bdy) >>= methods (methodList tid si)
-    _ <- liftIO (handleError fail act)
+    let call = L.unpack bdy
+    liftIO $ simpleServer (notifications tid si) (calls si) rfunc call
     ok (toResponse "")
-
 
 xmlct :: B.ByteString
 xmlct = B.pack "text/xml"
