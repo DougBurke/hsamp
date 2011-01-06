@@ -68,7 +68,7 @@ fun :: SAMPFun a => a -> SAMPMethod
 fun = toSAMPFun
 
 class SAMPFun a where
-    toSAMPFun :: a -> SAMPMethodCall -> SAMPServerResult
+    toSAMPFun :: a -> SAMPMethod
 
 instance SAMPFun (IO ()) where
     toSAMPFun x (SAMPMethodCall _ []) = handleIO x >> return ()
@@ -130,6 +130,7 @@ receiveCall funcs ci secret senderid msgid sm = do
     case lookup mtype funcs of
       Just func -> do
                      rsp <- func secret senderid msgid mparams
+                     dbg $ "Responding with " ++ show rsp
                      handleError (const (return ())) $ replyE ci msgid rsp
       _ -> do
              let emsg = "Unrecognized mtype for call: " ++ show mtype
@@ -179,7 +180,7 @@ handleSAMPCall f str = do
     dbg $ "SAMP body of call is:\n" ++ str
     handleError (const (return ())) (parseSAMPCall str >>= f)
 
--- | A simple SAMP server.
+-- | A simple SAMP server for a single call.
 simpleServer :: SAMPConnection -- ^ the connection information for the hub
              -> [SAMPNotificationFunc] -- ^ routines for handling notifications (samp.client.receiveNotification)
              -> [SAMPCallFunc] -- ^ routines for handling calls (samp.client.receiveCall)
