@@ -1,5 +1,4 @@
-{-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE OverlappingInstances #-}
+{-# LANGUAGE FlexibleInstances , OverlappingInstances #-}
 
 {-
 Types for the SAMP Standard Profile modules.
@@ -21,7 +20,8 @@ module SAMP.Standard.Types (
        SAMPType(..), SAMPValue(..), SAMPKeyValue, toSAMPKeyValue, fromSAMPKeyValue,
        toSAMPValue, showSAMPValue,
 
-       SAMPResponse, -- toSAMPResponse,
+       SAMPResponse, 
+       toSAMPResponse, toSAMPResponseError, toSAMPResponseWarning,
        getSAMPResponseResult, getSAMPResponseError, getSAMPResponseErrorTxt,
        getSAMPResponseExtra,
        isSAMPSuccess, isSAMPError, isSAMPErrorOnly, isSAMPWarning,
@@ -442,15 +442,23 @@ instance SAMPType SAMPResponse where
 
     fromSValue x = throwError $ "Expected a SAMP map but sent " ++ show x
 
-{-
-TODO: write 
--- | Constructor for a `SAMPResponse`.
--- toSAMPResponse :: MType -- ^ The `MType` of the message (this is the "samp.mtype" key).
---               -> [SAMPKeyValue]  -- ^ The parameters for the message (this is the "samp.params" key).
---               -> [SAMPKeyValue]  -- ^ Any other key/values in the message.
---               -> SAMPMessage
-toSAMPResponse = undefined
--}
+-- | Create a SAMP response that indicates success
+toSAMPResponse :: [SAMPKeyValue] -- ^ key,value pairs to return
+               -> SAMPResponse
+toSAMPResponse svals = SR (Just svals) Nothing []
+
+-- | Create a SAMP response that indicates an error
+toSAMPResponseError :: RString -- ^ the error test (samp.errortxt)
+                    -> [SAMPKeyValue] -- ^ other elements of the error
+                    -> SAMPResponse
+toSAMPResponseError emsg evals = SR Nothing (Just (emsg,evals)) []
+
+-- | Create a SAMP response that indicates a warning.
+toSAMPResponseWarning :: [SAMPKeyValue] -- ^ successful key,value pairs
+                      -> RString -- ^ error message (samp.errortxt)
+                      -> [SAMPKeyValue] -- ^ other elements of the error
+                      -> SAMPResponse
+toSAMPResponseWarning svals emsg evals = SR (Just svals) (Just (emsg,evals)) []
 
 sStatus , sResult , sError , sErrorTxt :: RString
 sStatus = RS "samp.status"

@@ -51,6 +51,17 @@ type SAMPMethod = (SAMPMethodCall -> SAMPServerResult)
 -- This is very-heavily inspired by the haxr Server module
 --
 
+{-
+TODO: look at making the return value be IO () since we have to reply
+separately.  This then changes the SAMPFun instances rather a lot,
+since we don't end up with a SAMPReturn, but need to investigate this
+at a later time.
+
+Of course, we could make it something like IO (Maybe SAMPResponse)
+and then call reply automatically if the response is returned, but let's see
+how things work out.
+-}
+
 -- | Turns any function 
 --   @(SAMPType t1, ..., SAMPType tn, SAMPType r) => 
 --   t1 -> ... -> tn -> IO r@
@@ -114,7 +125,7 @@ methods xs c@(SAMPMethodCall name _) = do
 
 -- | A simple SAMP server.
 server :: SAMPMethodMap 
-       -> String -- ^ the XmlRPC input containing the SAMP details of the call
+       -> String -- ^ the Xml-RPC input containing the SAMP details of the call
        -> IO L.ByteString -- ^ response
 server t = handleSAMPCall (methods t)
 
