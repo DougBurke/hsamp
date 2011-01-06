@@ -1,3 +1,5 @@
+{-# LANGUAGE FlexibleInstances #-}
+
 {-
 Handle the server side of the SAMP Standard profile.
 -}
@@ -15,14 +17,9 @@ module Network.SAMP.Standard.Server (
 import System.Log.Logger
 
 import Network.XmlRpc.Internals
--- import Network.XmlRpc.Server as S
 
--- import Control.Monad.Error (throwError)
 import Control.Monad.Trans (liftIO)
-
 import qualified Control.Exception as CE
-
-import qualified Data.ByteString.Lazy.Char8 as L
 
 import Network.SAMP.Standard.Types
 
@@ -41,7 +38,7 @@ handleIO :: IO a -> Err IO a
 handleIO io = liftIO (CE.try io) >>= either (fail . showException) return
 
 -- | The return result
-type SAMPServerResult = Err IO SAMPMethodResponse
+type SAMPServerResult = Err IO ()
 
 -- | The type of SAMP methods on the server.
 type SAMPMethod = (SAMPMethodCall -> SAMPServerResult)
@@ -51,20 +48,9 @@ type SAMPMethod = (SAMPMethodCall -> SAMPServerResult)
 -- This is very-heavily inspired by the haxr Server module
 --
 
-{-
-TODO: look at making the return value be IO () since we have to reply
-separately.  This then changes the SAMPFun instances rather a lot,
-since we don't end up with a SAMPReturn, but need to investigate this
-at a later time.
-
-Of course, we could make it something like IO (Maybe SAMPResponse)
-and then call reply automatically if the response is returned, but let's see
-how things work out.
--}
-
 -- | Turns any function 
---   @(SAMPType t1, ..., SAMPType tn, SAMPType r) => 
---   t1 -> ... -> tn -> IO r@
+--   @(SAMPType t1, ..., SAMPType tn) => 
+--   t1 -> ... -> tn -> IO ()
 --   into a 'SAMPMethod'
 fun :: SAMPFun a => a -> SAMPMethod
 fun = toSAMPFun
@@ -72,10 +58,8 @@ fun = toSAMPFun
 class SAMPFun a where
     toSAMPFun :: a -> SAMPMethodCall -> SAMPServerResult
 
-instance SAMPType a => SAMPFun (IO a) where
-    toSAMPFun x (SAMPMethodCall _ []) = do
-			      v <- handleIO x
-			      return (SAMPReturn (toSValue v))
+instance SAMPFun (IO ()) where
+    toSAMPFun x (SAMPMethodCall _ []) = handleIO x >> return ()
     toSAMPFun _ _ = fail "Too many arguments"
 
 instance (SAMPType a, SAMPFun b) => SAMPFun (a -> b) where
@@ -85,15 +69,14 @@ instance (SAMPType a, SAMPFun b) => SAMPFun (a -> b) where
     toSAMPFun _ _ = fail "Too few arguments"
 
 {-|
-Reads a SAMP method call from a string, uses the supplied method
-to generate a response and returns that response as a string
+Reads a SAMP method call from a string and uses the supplied method
+to process the call.
 -}
 handleSAMPCall :: (SAMPMethodCall -> SAMPServerResult) -- ^ method to call
            -> String -- ^ XmlRpc input containing the SAMP details of the call
-           -> IO L.ByteString -- ^ response
-handleSAMPCall f str = do
-    resp <- handleError (return . SAMPFault) (parseSAMPCall str >>= f)
-    return $ renderSAMPResponse resp
+           -> IO ()
+handleSAMPCall f str = 
+    handleError (const (return ())) (parseSAMPCall str >>= f)
 
 {-
 XXX TODO
@@ -119,14 +102,12 @@ methods xs c@(SAMPMethodCall name _) = do
     let mname = show name
     dbg $ "Executing SAMP method: " ++ mname
     method <- maybeToM ("Unknown SAMP method: " ++ mname) (lookup mname xs)
-    rsp <- method c
-    dbg $ "Result is:\n" ++ show rsp
-    return rsp
+    method c
 
 -- | A simple SAMP server.
 server :: SAMPMethodMap 
        -> String -- ^ the Xml-RPC input containing the SAMP details of the call
-       -> IO L.ByteString -- ^ response
+       -> IO ()
 server t = handleSAMPCall (methods t)
 
 {-

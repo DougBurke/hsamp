@@ -306,37 +306,36 @@ emptyResponse = toSAMPResponse []
 TODO:
   better error handling
 -}
-receiveNotification :: ThreadId -> SAMPConnection -> RString -> RString -> SAMPMessage -> IO Int
+receiveNotification :: ThreadId -> SAMPConnection -> RString -> RString -> SAMPMessage -> IO ()
 receiveNotification tid si secret senderid sm = do
     putStrLn ">>> in receiveNotification"
     let mtype = getSAMPMessageType sm
         mparams = getSAMPMessageParams sm
     putStrLn $ "Notification: sent mtype " ++ show mtype ++ " by " ++ show senderid
     case lookup mtype notifications of
-      Just func -> func tid si secret senderid mparams >> return 0
+      Just func -> func tid si secret senderid mparams
       _ -> do
            liftIO $ debugM "SAMP" $ "Unrecognized mtype for notification: " ++ show mtype
            fail $ "Unrecognized mtype for notification: " ++ show mtype
 
-receiveCall :: SAMPConnection -> RString -> RString -> RString -> SAMPMessage -> IO Int
+receiveCall :: SAMPConnection -> RString -> RString -> RString -> SAMPMessage -> IO ()
 receiveCall si secret senderid msgid sm = do
     putStrLn ">>> in receiveCall"
     let mtype = getSAMPMessageType sm
         mparams = getSAMPMessageParams sm
     putStrLn $ "Call: sent mtype " ++ show mtype ++ " by " ++ show senderid
     case lookup mtype calls of
-      Just func -> func si secret senderid msgid mparams >> return 0
+      Just func -> func si secret senderid msgid mparams
       _ -> do
            liftIO $ debugM "SAMP" $ "Unrecognized mtype for call: " ++ show mtype
            fail $ "Unrecognized mtype for call: " ++ show mtype
 
-receiveResponse :: SAMPConnection -> RString -> RString -> RString -> SAMPResponse -> IO Int
+receiveResponse :: SAMPConnection -> RString -> RString -> RString -> SAMPResponse -> IO ()
 receiveResponse _ _ receiverid msgid rsp = do
     putStrLn $ "Received a response to message " ++ show msgid ++ " from " ++ show receiverid
     if isSAMPSuccess rsp
       then return ()
       else putStrLn $ "ERROR: " ++ show (fromJust (getSAMPResponseErrorTxt rsp))
-    return 0
 
 -- this could be done by server (to some degree anyway?)
 
