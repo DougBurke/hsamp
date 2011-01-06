@@ -239,25 +239,21 @@ runServer (sock,portNum) tid si = do
 handlers :: ThreadId -> SAMPConnection -> ServerPart Response
 handlers tid si = msum [handleXmlRpc tid si, handleIcon, anyRequest (notFound (toResponse "unknown request"))]
 
-notifications :: ThreadId -> SAMPConnection -> [SAMPNotificationFunc]
-notifications tid ci = [(shutdownMT, handleShutdown tid ci)]
+notifications :: ThreadId -> [SAMPNotificationFunc]
+notifications tid = [(shutdownMT, handleShutdown tid)]
 
-calls :: SAMPConnection -> [SAMPCallFunc]
-calls ci = [(pingMT, handlePing ci)]
+calls :: [SAMPCallFunc]
+calls = [(pingMT, handlePing)]
 
-handleShutdown :: ThreadId -> SAMPConnection -> RString -> RString -> [SAMPKeyValue] -> IO ()
-handleShutdown tid _ _ name _ = do
+handleShutdown :: ThreadId  -> RString -> RString -> [SAMPKeyValue] -> IO ()
+handleShutdown tid _ name _ = do
                putStrLn $ "Received a shutdown message from " ++ show name
                killThread tid
 
-handlePing :: SAMPConnection -> RString -> RString -> RString -> [SAMPKeyValue] -> IO ()
-handlePing si _ senderid msgid _ = do
-               putStrLn $ "Received a ping request from " ++ show senderid
-               _ <- handleError (const (return ())) $ replyE si msgid emptyResponse
-               return ()
-
-emptyResponse :: SAMPResponse
-emptyResponse = toSAMPResponse []
+handlePing :: RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
+handlePing _ senderid msgid _ = do
+    putStrLn $ "Received a ping request from " ++ show senderid ++ " msgid=" ++ show msgid
+    return $ toSAMPResponse []
 
 rfunc :: SAMPResponseFunc
 -- rfunc secret receiverid msgid rsp =
@@ -271,7 +267,7 @@ rfunc _ receiverid msgid rsp =
 getResponse :: ThreadId -> SAMPConnection -> RqBody -> ServerPart Response
 getResponse tid si (Body bdy) = do
     let call = L.unpack bdy
-    liftIO $ simpleServer (notifications tid si) (calls si) rfunc call
+    liftIO $ simpleServer si (notifications tid) calls rfunc call
     ok (toResponse "")
 
 xmlct :: B.ByteString

@@ -30,6 +30,7 @@ import Control.Monad.Trans (liftIO)
 import qualified Control.Exception as CE
 
 import Network.SAMP.Standard.Types
+import Network.SAMP.Standard.Client (replyE)
 
 -- the name of the SAMP client logging instance
 sLogger :: String
@@ -104,7 +105,7 @@ Section 3.9.
 -}
 
 type SAMPNotificationFunc = (MType, RString -> RString -> [SAMPKeyValue] -> IO ())
-type SAMPCallFunc         = (MType, RString -> RString -> RString -> [SAMPKeyValue] -> IO ())
+type SAMPCallFunc         = (MType, RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse)
 type SAMPResponseFunc     = RString -> RString -> RString -> SAMPResponse -> IO ()
 
 receiveNotification :: [SAMPNotificationFunc] -> RString -> RString -> SAMPMessage -> IO ()
@@ -120,14 +121,16 @@ receiveNotification funcs secret senderid sm = do
              dbg emsg
              fail emsg
 
-receiveCall :: [SAMPCallFunc] -> RString -> RString -> RString -> SAMPMessage -> IO ()
-receiveCall funcs secret senderid msgid sm = do
+receiveCall :: [SAMPCallFunc] -> SAMPConnection -> RString -> RString -> RString -> SAMPMessage -> IO ()
+receiveCall funcs ci secret senderid msgid sm = do
     dbg "In receiveCall"
     let mtype = getSAMPMessageType sm
         mparams = getSAMPMessageParams sm
     dbg $ "Call mtype=" ++ show mtype ++ " sender=" ++ show senderid
     case lookup mtype funcs of
-      Just func -> func secret senderid msgid mparams
+      Just func -> do
+                     rsp <- func secret senderid msgid mparams
+                     handleError (const (return ())) $ replyE ci msgid rsp
       _ -> do
              let emsg = "Unrecognized mtype for call: " ++ show mtype
              dbg emsg
@@ -158,10 +161,10 @@ methods xs c@(SAMPMethodCall name _) = do
     method <- maybeToM ("Unknown SAMP method: " ++ mname) (lookup mname xs)
     method c
 
-methodList :: [SAMPNotificationFunc] -> [SAMPCallFunc] -> SAMPResponseFunc -> SAMPMethodMap
-methodList ns cs r =
+methodList :: SAMPConnection -> [SAMPNotificationFunc] -> [SAMPCallFunc] -> SAMPResponseFunc -> SAMPMethodMap
+methodList ci ns cs r =
            [("samp.client.receiveNotification", fun (receiveNotification ns)),
-           ("samp.client.receiveCall", fun (receiveCall cs)),
+           ("samp.client.receiveCall", fun (receiveCall cs ci)),
            ("samp.client.receiveResponse", fun (receiveResponse r))
            ]
 
@@ -177,9 +180,10 @@ handleSAMPCall f str = do
     handleError (const (return ())) (parseSAMPCall str >>= f)
 
 -- | A simple SAMP server.
-simpleServer :: [SAMPNotificationFunc] -- ^ routines for handling notifications (samp.client.receiveNotification)
+simpleServer :: SAMPConnection -- ^ the connection information for the hub
+             -> [SAMPNotificationFunc] -- ^ routines for handling notifications (samp.client.receiveNotification)
              -> [SAMPCallFunc] -- ^ routines for handling calls (samp.client.receiveCall)
              -> SAMPResponseFunc -- ^ routinr for handling responses (samp.client.receiveResponse)
              -> String -- ^ the Xml-RPC input containing the SAMP details of the call
              -> IO ()
-simpleServer ns cs r = handleSAMPCall (methods (methodList ns cs r))
+simpleServer ci ns cs r = handleSAMPCall (methods (methodList ci ns cs r))
