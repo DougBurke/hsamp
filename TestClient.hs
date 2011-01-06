@@ -155,7 +155,7 @@ setSubscriptions cl pNum = do
   setXmlrpcCallbackE cl $ tRS $ hostName pNum ++ "xmlrpc"
   putLn "About to register subcriptions"
   declareSubscriptionsSimpleE cl [pingMT, shutdownMT]
-  putLn "Done"
+  putLn "Finished registering subscriptions"
 
 wait :: Int -> IO ()
 wait = threadDelay . (1000000 *)
@@ -209,9 +209,18 @@ pingItems cl = do
                  then return $ "Successfuly pinged " ++ pn
                  else return $ "ERROR pinging " ++ pn ++ "\n" ++ etxt
 
+pingItemsAsync :: SAMPConnection -> Err IO ()
+pingItemsAsync cl = do
+     putLn "Calling clients that respond to samp.app.ping (asynchronous)"
+     msg <- pingMsg
+     let msgid = fromJust (toRString "need-a-better-system")
+     rsp <- callAllE cl msgid msg
+     liftIO $ forM_ rsp $ \(n,mid) -> putStrLn ("  contacted " ++ show n ++ " with id " ++ show mid)
+
 doClient :: SAMPConnection -> PortNumber -> Err IO ()
 doClient cl pNum = do
          putLn $ "Registered client: public name = " ++ show (sampId cl)
+         setSubscriptions cl pNum
          pingE cl
          putLn "Was able to ping the hub using the Standard profile's ping method"
          reportClients cl
@@ -219,8 +228,8 @@ doClient cl pNum = do
          reportSubscriptions cl pingMT
          reportSubscriptions cl $ fromJust $ toMType "foo.bar"
          pingItems cl
-         setSubscriptions cl pNum
-         liftIO $ wait 10
+         pingItemsAsync cl
+         liftIO $ putStrLn "Sleeping for 10 seconds." >> wait 10
 
 runServer :: (Socket,PortNumber) -> ThreadId -> SAMPConnection -> IO ()
 runServer (sock,portNum) tid si = do
@@ -267,9 +276,6 @@ notifications = [(shutdownMT, handleShutdown)]
 calls :: [(MType, SAMPConnection -> RString -> RString -> RString -> [SAMPKeyValue] -> IO ())]
 calls = [(pingMT, handlePing)]
 
-responses :: [(MType, SAMPConnection -> RString -> RString -> RString -> [SAMPKeyValue] -> IO ())]
-responses = []
-
 handleShutdown :: ThreadId -> SAMPConnection -> RString -> RString -> [SAMPKeyValue] -> IO ()
 handleShutdown tid _ _ name _ = do
                putStrLn $ "Received a shutdown message from " ++ show name
@@ -302,6 +308,7 @@ TODO:
 -}
 receiveNotification :: ThreadId -> SAMPConnection -> RString -> RString -> [SAMPKeyValue] -> IO Int
 receiveNotification tid si secret senderid struct = do
+    putStrLn ">>> in receiveNotification"
     sm <- handleError fail (fromSValue (SAMPMap struct) :: Err IO SAMPMessage)
     let mtype = getSAMPMessageType sm
         mparams = getSAMPMessageParams sm
@@ -312,13 +319,9 @@ receiveNotification tid si secret senderid struct = do
            liftIO $ debugM "SAMP" $ "Unrecognized mtype for notification: " ++ show mtype
            fail $ "Unrecognized mtype for notification: " ++ show mtype
 
-{-
-TODO: clean up receiveCall and receiveResponse
--}
--- this one needs to send a response to the hub
---
 receiveCall :: SAMPConnection -> RString -> RString -> RString -> [SAMPKeyValue] -> IO Int
 receiveCall si secret senderid msgid struct = do
+    putStrLn ">>> in receiveCall"
     sm <- handleError fail (fromSValue (SAMPMap struct) :: Err IO SAMPMessage)
     let mtype = getSAMPMessageType sm
         mparams = getSAMPMessageParams sm
@@ -329,17 +332,13 @@ receiveCall si secret senderid msgid struct = do
            liftIO $ debugM "SAMP" $ "Unrecognized mtype for call: " ++ show mtype
            fail $ "Unrecognized mtype for call: " ++ show mtype
 
-receiveResponse :: SAMPConnection -> RString -> RString -> RString -> [SAMPKeyValue] -> IO Int
-receiveResponse si secret receiverid msgid struct = do
-    sm <- handleError fail (fromSValue (SAMPMap struct) :: Err IO SAMPMessage)
-    let mtype = getSAMPMessageType sm
-        mparams = getSAMPMessageParams sm
-    putStrLn $ "Call: sent mtype " ++ show mtype ++ " by " ++ show receiverid
-    case lookup mtype calls of
-      Just func -> func si secret receiverid msgid mparams >> return 0
-      _ -> do
-           liftIO $ debugM "SAMP" $ "Unrecognized mtype for response: " ++ show mtype
-           fail $ "Unrecognized mtype for response: " ++ show mtype
+receiveResponse :: SAMPConnection -> RString -> RString -> RString -> SAMPResponse -> IO Int
+receiveResponse _ _ receiverid msgid rsp = do
+    putStrLn $ "Received a response to message " ++ show msgid ++ " from " ++ show receiverid
+    if isSAMPSuccess rsp
+      then return ()
+      else putStrLn $ "ERROR: " ++ show (fromJust (getSAMPResponseErrorTxt rsp))
+    return 0
 
 -- this could be done by server (to some degree anyway?)
 
