@@ -1,20 +1,10 @@
 {-
 Test out the SAMP client code.
 
-  ghc -Wall --make -o testclient -threaded -hide-package monads-fd TestClient.hs
-  ./testclient +RTS -N2 -RTS
-
-At the moment it doesn't work with monads-fd:
-
-  ghc -Wall --make -o testclient -threaded -hide-package mtl TestClient.hs
-
-
 TODO:
 
  a) work with monads-fd
  b) try out error conditions (like the hub disappearing)
- c) does it make sense to use something like a monad
-    transformer for combining IO and Either
 
 -}
 
@@ -30,12 +20,9 @@ import Control.Monad.Trans (liftIO)
 import Control.Concurrent (ThreadId, killThread, threadDelay, forkIO, myThreadId)
 import Control.Concurrent.ParallelIO.Global
 
--- should be from SAMP.Types I think
-import Network.XmlRpc.Internals (Err, handleError)
-
-import SAMP.Types
-import SAMP.Client
-import SAMP.Server
+import SAMP.Standard.Types
+import SAMP.Standard.Client
+import SAMP.Standard.Server
 
 import Happstack.Server.SimpleHTTP
 import Happstack.Server.HTTP.FileServe

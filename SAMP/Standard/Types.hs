@@ -2,7 +2,7 @@
 {-# LANGUAGE OverlappingInstances #-}
 
 {-
-Types for the SAMP code.
+Types for the SAMP Standard Profile modules.
 
 NEED TO USE
    -hide-package monads-fd
@@ -10,8 +10,10 @@ is this still true?
 
 -}
 
-module SAMP.Types (
+module SAMP.Standard.Types (
        SAMPConnection(..), SAMPInfo,
+
+       Err, handleError, -- from XmlRpc
 
        RString, emptyRString, toRString, toRStringE, fromRString, asIntegral, asFloating, asBool,
        MType, toMType, toMTypeE, fromMType, isMTWildCard,

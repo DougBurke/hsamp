@@ -1,35 +1,9 @@
-
 {-
 
-To do:
-
-  - return Haskell types (list, assoc list, strings) rather than SAMP types?
-
-  - add logging so we can see what is sent and received
-
-The SAMP hubs may return invalid XML-RPC responses on error: I have seen
-cases with both JSAMP and SAMPY. Mark has fixed JSAMP but not formally released,
-and I have sent a patch to SAMPY to Luigi to fix this, but it does mean we
-may have to deal with errors thrown because the error response can not be
-deconstructed (so losing the actual error message).
-
-NOTE: 
-
-  errors; could
-    - just use String for all errors, perhaps with some 'isThisASAMPError'
-      utilities
-    - newtype SAMPError a = ErrorT SAMPErrorType IO a    
-      and convert Err IO a to SAMPError a at earliest convenience
-  in both cases drop using Either
-
-could have several sets of routines;
-
-  ones that return 'Err IO SAMPResponse' or SAMPValue
-  ones that return 'IO SAMPValue'
-
+Client code for the Standard SAMP profile.
 -}
 
-module SAMP.Client (
+module SAMP.Standard.Client (
        -- * High-level interface
        getHubInfoE,
        registerClientE,
@@ -79,7 +53,7 @@ import System.Environment (getEnv)
 
 import System.IO.Error (isDoesNotExistError, isDoesNotExistErrorType, ioeGetErrorType)
 
-import SAMP.Types
+import SAMP.Standard.Types
 
 -- the name of the SAMP client logging instance
 cLogger :: String
