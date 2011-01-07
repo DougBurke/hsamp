@@ -14,7 +14,9 @@ applications, such as
 TopCat (<http://www.star.bris.ac.uk/~mbt/topcat/>),
 ds9 (<http://hea-www.harvard.edu/RD/ds9/>),
 Aladin (<http://aladin.u-strasbg.fr/>)
-and the WorldWide Telescope (WWT, <http://www.worldwidetelescope.org/Home.aspx>).
+and the WorldWide Telescope (WWT, <http://www.worldwidetelescope.org/Home.aspx>, although
+this only provides SAMP access in the Windows client which we currently do not
+support).
 
 This module almost supports the 1.2 version of the document. Incomplete
 features include:
