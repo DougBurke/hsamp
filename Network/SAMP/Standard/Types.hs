@@ -1,11 +1,7 @@
 {-# LANGUAGE FlexibleInstances , OverlappingInstances #-}
 
-{-
+{-|
 Types for the SAMP Standard Profile modules.
-
-NEED TO USE
-   -hide-package monads-fd
-is this still true?
 
 -}
 
@@ -17,8 +13,8 @@ module Network.SAMP.Standard.Types (
        RString, emptyRString, toRString, toRStringE, fromRString, asIntegral, asFloating, asBool,
        MType, toMType, toMTypeE, fromMType, isMTWildCard,
 
-       SAMPType(..), SAMPValue(..), SAMPKeyValue, toSAMPKeyValue, fromSAMPKeyValue,
-       toSAMPValue, showSAMPValue,
+       SAMPType(..), SAMPValue(..), SAMPKeyValue,
+       showSAMPValue,
 
        SAMPResponse, 
        toSAMPResponse, toSAMPResponseError, toSAMPResponseWarning,
@@ -57,24 +53,23 @@ isRChar :: Char -> Bool
 isRChar = (`elem` rchars)
 
 {-|
-A "restricted string" class that is limited to
-ASCII characters with hex codes 09,0a,0d or 20 to 7f
-as these are the only characters supproted by SAMP.
+A restricted string class that is limited to
+ASCII characters with hex codes @09@, @0a@, @0d@ or 
+@20 .. 7f@
+as these are the only characters supported by SAMP.
 
 RStrings can be empty.
 
-They are currently un-used by the interface.
+The type conversions below use the following BNF productions:
+
+>  <digit>         ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
+>  <digits>        ::= <digit> | <digits> <digit>
+>  <float-digits>  ::= <digits> | <digits> "." | "." <digits> | <digits> "." <digits>
+>  <sign>          ::= "+" | "-"
 
 TODO:
 
   - add a Read instance
-
-The type conversions below use the following BNF productions:
-
-  <digit>         ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
-  <digits>        ::= <digit> | <digits> <digit>
-  <float-digits>  ::= <digits> | <digits> "." | "." <digits> | <digits> "." <digits>
-  <sign>          ::= "+" | "-"
 
 -}
 
@@ -83,6 +78,7 @@ data RString = RS String deriving Eq
 instance Show RString where
     show (RS s) = s
 
+-- | The empty string.
 emptyRString :: RString
 emptyRString = RS ""
 
@@ -93,28 +89,22 @@ instance XmlRpcType RString where
 
     getType _ = TString
 
--- | Create a `RString` from a normal `String`.
+-- | Create a 'RString' from a normal 'String'.
 toRString :: String -> Maybe RString
 toRString s = if all isRChar s then Just (RS s) else Nothing
 
--- | Create a `RString` from a normal `String`.
+-- | Create a 'RString' from a normal 'String'.
 toRStringE :: (Monad m) => String -> Err m RString
 toRStringE s = maybeToM ("Unable to convert '" ++ s ++ "' to a SAMP string") (toRString s)
 
-{-
--- an unsafe conversion
-forceRS :: String -> RString
-forceRS = fromJust . toRString
--}
-
--- | Extract the contents of the `RString`.
+-- | Extract the contents of the 'RString'.
 fromRString :: RString -> String
 fromRString (RS s) = s
 
 {-|
- Convert an `RString` to an `Integral` value using the rule:
+ Convert an 'RString' to an 'Integral' value using the rule:
 
-    <SAMP int> ::= [ <sign> ] <digits>
+>    <SAMP int> ::= [ <sign> ] <digits>
 -}
 asIntegral :: (Read a, Integral a) => RString -> Maybe a
 asIntegral (RS []) = Nothing
@@ -126,9 +116,12 @@ asIntegral (RS s@(x:xs)) | x == '-'  = fmap negate (conv xs)
       conv [] = Nothing
       conv vs = if all isDigit vs then Just (read vs) else Nothing
 
--- | Convert an `RString` to a `Floating` value using the rule:
--- |    <SAMP float> ::= [ <sign> ] <float-digits> [ "e" | "E" [ <sign> ] <digits> ]
--- |
+{-|
+Convert an 'RString' to a 'Floating' value using the rule:
+
+>    <SAMP float> ::= [ <sign> ] <float-digits> [ "e" | "E" [ <sign> ] <digits> ]
+-}
+
 asFloating :: (Read a, Floating a) => RString -> Maybe a
 asFloating (RS []) = Nothing
 asFloating (RS s@(x:xs)) | x == '-'  = fmap negate (conv xs)
@@ -167,30 +160,34 @@ True when the specification explicitly says to compare as
 integer values.
 -}
 
--- | Convert an `RString` into a `Bool`.
--- | The rule is
--- |    <SAMP boolean> ::= "0" | "1"
--- | although any integer value other than 0 can be used for `True`.
--- |
+{-| Convert an 'RString' into a 'Bool'.
+
+The rule is
+
+>   <SAMP boolean> ::= "0" | "1"
+
+although any integer value other than 0 can be used for 'True'.
+-}
 asBool :: RString -> Maybe Bool
 asBool rs = fmap (/=0) (asIntegral rs :: Maybe Integer)
 
-{-|
-
-A SAMP MType.
+{-| A SAMP MType. This is used to define the message
+names that SAMP passes around.
 
 They follow the following NBF productions:
 
-  <mchar> ::= [0-9a-z] | "-" | "_"
-  <atom>  ::= <mchar> | <atom> <mchar>
-  <mtype> ::= <atom> | <mtype> "." <atom>
+>   <mchar> ::= [0-9a-z] | "-" | "_"
+>   <atom>  ::= <mchar> | <atom> <mchar>
+>   <mtype> ::= <atom> | <mtype> "." <atom>
 
 We also allow wildcards in certain cases, which is
 
-  <msub>  ::= "*" | <mtype> "." "*"
+>  <msub>  ::= "*" | <mtype> "." "*"
 
 TODO:
-  add a Read instance
+
+ - add a Read instance
+
 -}
 
 data MType = MT [String] Bool deriving Eq
@@ -223,9 +220,11 @@ mtchars = ['a' .. 'z'] ++ "-_" ++ map chr [0..9]
 isMTChar :: Char -> Bool
 isMTChar = (`elem` mtchars)
 
--- | Create a `MType`. This includes wild cards such as
--- | "*" or "file.event.*".
--- |
+{-|
+Create a 'MType'. This includes wild cards such as
+@*@ or @file.event.*@.
+-}
+
 toMType :: String -> Maybe MType
 toMType [] = Nothing
 toMType xs = do
@@ -237,21 +236,20 @@ toMType xs = do
         forM_ tocheck $ guard . all isMTChar
         return $ MT tocheck flag
 
--- | Create a `MType`. This includes wild cards such as
--- | "*" or "file.event.*".
--- |
+-- | See 'toMType'.
 toMTypeE :: (Monad m) => String -> Err m MType
 toMTypeE mt = maybeToM ("Unable to convert '" ++ mt ++ "' to a SAMP MType") (toMType mt)
 
--- | Extract the contents of the `MType`.
+-- | Extract the contents of the 'MType'.
 fromMType :: MType -> String
 fromMType = show
 
--- | Is this a wild card `MType`?
+-- | Does the 'MType' contain a wild card?
 isMTWildCard :: MType -> Bool
 isMTWildCard (MT _ f) = f
 
 -- | This represents a key,value pair stored in a SAMP map.
+-- Note that the key is stored as a 'RString'.
 type SAMPKeyValue = (RString, SAMPValue)
 
 {-
@@ -267,10 +265,6 @@ than force Value, but need to look at to see if it is worth it.
 toSAMPKeyValue :: (Monad m) => (String, Value) -> Err m SAMPKeyValue
 toSAMPKeyValue (n,v) = toRStringE n >>= \ns -> fromValue v >>= \vs -> return (ns, vs)
 
--- | Convert a (RString, SAMPValue) tuple into (String, Value).
-fromSAMPKeyValue :: SAMPKeyValue -> (String, Value)
-fromSAMPKeyValue (n,v) = (fromRString n, toValue v)
-
 {-
 Remove the listed keys from the keylist.
 -}
@@ -284,11 +278,14 @@ cleanXKeys ks = filter (\(k,_) -> k `notElem` ks)
 a string, a list or a map (keys are strings and they
 can contain a SAMP data type).
 
-Strings are restricted to the `RString` class; they may
+Strings are restricted to the 'RString' class; they may
 be used to serialize numeric types, as defined by the
-message (ie `MType`). There are several routines for
-converting a `RString` to a numeric type following the
+message (ie 'MType'). There are several routines for
+converting a 'RString' to a numeric type following the
 syntax given in the SAMP recommendation.
+
+For SAMP maps we often just pass around @[SAMPKeyValue]@ rather
+than the @SAMPValue@ container.
 -}
 
 data SAMPValue =
@@ -307,15 +304,12 @@ instance XmlRpcType SAMPValue where
     fromValue (ValueStruct xs) = liftM SAMPMap $ mapM toSAMPKeyValue xs
     fromValue x = fail $ "Unable to convert to SAMP Value from " ++ show x
 
-    -- it's not obvious whether the argument is meant to be a
-    -- "phantom type" here, so there realy should be only one
-    -- type as an answer.
-    --
     getType (SAMPString _) = TString
     getType (SAMPList _) = TArray
     getType (SAMPMap _) = TStruct
 
--- | Convert a `SAMPValue` to a displayable string.
+-- | Convert a 'SAMPValue' to a displayable string. This is not intended for
+-- serialisation.
 showSAMPValue :: SAMPValue -> String
 showSAMPValue (SAMPString s) = show s
 showSAMPValue (SAMPList xs) = concat ["[", intercalate "," (map showSAMPValue xs), "]"]
@@ -323,17 +317,14 @@ showSAMPValue (SAMPMap ms) = concat ["{", intercalate "," vals, "}"]
          where
              vals = map (\(n,v) -> concat [show n, " -> ", showSAMPValue v]) ms
 
--- | This is a simplified form of the `fromValue` function of the
--- | `XmlRpcType` type.
-toSAMPValue :: Value -> Maybe SAMPValue
-toSAMPValue vs = handleError (const Nothing) (fromValue vs)
-
--- | Conversion routines for `SAMPValue` values.
+-- | Conversion routines for 'SAMPValue' values. This is intended to
+-- make it easier to convert between Haskell and SAMP types.
 class SAMPType a where
+    -- | Convert to a SAMP type
     toSValue :: a -> SAMPValue
-    fromSValue :: (Monad m) => SAMPValue -> Err m a
 
-    -- getSType :: a -> Type
+    -- | convert from a SAMP type
+    fromSValue :: (Monad m) => SAMPValue -> Err m a
 
 instance SAMPType RString where
     toSValue = SAMPString
@@ -385,6 +376,15 @@ instance SAMPType Float where
 -- which I'm sure there is; e.g. a phantom type or the use of
 -- monadic regions.
 --
+{-|
+This record stores the information needed by a client to talk to a hub.
+It is created by
+
+  - reading the SAMP hub location
+
+  - registering the client with the hub
+
+-}
 data SAMPConnection = SAMPConnection {
      sampSecret :: RString,
      sampHubURL :: String,
@@ -393,10 +393,18 @@ data SAMPConnection = SAMPConnection {
      sampId :: RString
      } deriving (Eq, Show)
 
--- | The response from a client to a SAMP call. Use the
--- | `isSAMPSuccess`, `isSAMPError` and `isSAMPWarning` routines
--- | to query the status of the response.
--- | 
+{-|
+The response from a client to a SAMP call. 
+
+Use the 'isSAMPSuccess', 'isSAMPError' and 'isSAMPWarning' routines to
+query the status of the response. The 'toSAMPResponse', 'toSAMPResponseError'
+and 'toSAMPResponseWarning' routines are used to create @SAMPResponse@
+values.
+
+TODO:
+
+  - remove the extra values we currently store as they are unused
+-}
 data SAMPResponse =
     SR (Maybe [SAMPKeyValue]) (Maybe (RString, [SAMPKeyValue])) [SAMPKeyValue]
     deriving (Eq, Show)
@@ -448,14 +456,14 @@ toSAMPResponse :: [SAMPKeyValue] -- ^ key,value pairs to return
 toSAMPResponse svals = SR (Just svals) Nothing []
 
 -- | Create a SAMP response that indicates an error
-toSAMPResponseError :: RString -- ^ the error test (samp.errortxt)
+toSAMPResponseError :: RString -- ^ the error test (@samp.errortxt@)
                     -> [SAMPKeyValue] -- ^ other elements of the error
                     -> SAMPResponse
 toSAMPResponseError emsg evals = SR Nothing (Just (emsg,evals)) []
 
 -- | Create a SAMP response that indicates a warning.
 toSAMPResponseWarning :: [SAMPKeyValue] -- ^ successful key,value pairs
-                      -> RString -- ^ error message (samp.errortxt)
+                      -> RString -- ^ error message (@samp.errortxt@)
                       -> [SAMPKeyValue] -- ^ other elements of the error
                       -> SAMPResponse
 toSAMPResponseWarning svals emsg evals = SR (Just svals) (Just (emsg,evals)) []
@@ -520,27 +528,28 @@ instance XmlRpcType SAMPResponse where
 
     getType _ = TStruct
 
-{-
-XXX TODO: add accessors so that we can avoid exposing the internals
-of SAMPResponse?
+{-|
+Does the response indicate success? Note that a warning will 
+return 'True' here; use 'isSAMPWarning' for an explicit check
+of this case.
 -}
-
--- | Does the response indicate success? Note that a warning will 
--- | return `True` here; use `isSAMPWarning` for an explicit check
--- | of this case.
 isSAMPSuccess :: SAMPResponse -> Bool
 isSAMPSuccess (SR (Just _) _ _) = True
 isSAMPSuccess _ = False
 
--- | Does the response indicate an error? Note that a warning will 
--- | return `True` here; use `isSAMPWarning` for an explicit check
--- | of this case.
+{-|
+Does the response indicate an error? Note that a warning will 
+return 'True' here; use 'isSAMPWarning' for an explicit check
+of this case.
+-}
 isSAMPError :: SAMPResponse -> Bool
 isSAMPError (SR _ (Just _) _) = True
 isSAMPError _ = False
 
--- | Does the response indicate an error? Unlike `isSAMPError` this 
--- | returns `False` if the response was a warning.
+{-|
+Does the response indicate an error? Unlike 'isSAMPError' this 
+returns 'False' if the response was a warning.
+-}
 isSAMPErrorOnly :: SAMPResponse -> Bool
 isSAMPErrorOnly rsp = isSAMPError rsp && not (isSAMPWarning rsp)
 
@@ -553,46 +562,67 @@ isSAMPWarning _ = False
 getSAMPResponseResult :: SAMPResponse -> Maybe [SAMPKeyValue]
 getSAMPResponseResult (SR r _ _) = r
 
--- | Return the error information stored in a SAMP response.
--- | The first element of the tuple is the "samp.errortxt"
--- | value, the second element is the other values of the error map.
+{-|
+Return the error information stored in a SAMP response.
+The first element of the tuple is the @samp.errortxt@
+value, the second element is the other values of the error map.
+-}
 getSAMPResponseError :: SAMPResponse -> Maybe (RString, [SAMPKeyValue])
 getSAMPResponseError (SR _ e _) = e
- 
--- | Return the contents of the "samp.errortxt" return value,
--- | if provided.
+
+{-|
+Return the contents of the @samp.errortxt@ return value,
+if provided.
+-}
 getSAMPResponseErrorTxt :: SAMPResponse -> Maybe RString
 getSAMPResponseErrorTxt = fmap fst . getSAMPResponseError
 
--- | Returns any extra information stored in the resonse beyond that
--- | specified in the profile.
+{-|
+Returns any extra information stored in the resonse beyond that
+specified in the profile.
+
+THIS IS DEPRECATED.
+-}
 getSAMPResponseExtra :: SAMPResponse -> [SAMPKeyValue]
 getSAMPResponseExtra (SR _ _ ex) = ex
 
--- | A SAMP message, which includes the message type (`MType`),
--- | message parameters and optional key,value pairs.
+{-|
+A SAMP message, which includes the message type ('MType'),
+message parameters and optional key,value pairs.
+-}
 data SAMPMessage = SM MType [SAMPKeyValue] [SAMPKeyValue] deriving (Eq, Show)
 
--- | Constructor for a `SAMPMessage`.
+{-|
+Constructor for a 'SAMPMessage'.
+
+TODO
+
+  - remove the extra key/value pairs parameter
+
+-}
 toSAMPMessage :: (Monad m) => 
-              MType -- ^ The `MType` of the message (this is the "samp.mtype" key). It can not contain a wild card.
-              -> [SAMPKeyValue]  -- ^ The parameters for the message (this is the "samp.params" key).
+              MType -- ^ The 'MType' of the message (this is the @samp.mtype@ key). It can not contain a wild card.
+              -> [SAMPKeyValue]  -- ^ The parameters for the message (this is the @samp.params@ key).
               -> [SAMPKeyValue]  -- ^ Any other key/values in the message.
               -> Err m SAMPMessage
 toSAMPMessage mtype params extra = 
     when (isMTWildCard mtype) (throwError "MType can not contain a wild card when creating a SAMP message.")
     >> return (SM mtype params extra)
 
--- | What is the `MType` of the message (the "samp.mtype" key)?
+-- | What is the 'MType' of the message (the @samp.mtype@ key)?
 getSAMPMessageType :: SAMPMessage -> MType
 getSAMPMessageType (SM mt _ _) = mt
 
--- | What are the parameters of the message (the "samp.params" key)?
+-- | What are the parameters of the message (the @samp.params@ key)?
 getSAMPMessageParams :: SAMPMessage -> [SAMPKeyValue]
 getSAMPMessageParams (SM _ ps _) = ps
 
--- | What are the extra parameters of the message (may be an empty
--- | list).
+{-|
+What are the extra parameters of the message (may be an empty
+list).
+
+THIS IS DEPRECATED.
+-}
 getSAMPMessageExtra :: SAMPMessage -> [SAMPKeyValue]
 getSAMPMessageExtra (SM _ _ ex) = ex
 
@@ -647,7 +677,7 @@ data SAMPMethodCall = SAMPMethodCall RString [SAMPValue]
      deriving (Eq, Show)
 
 {-
-XXX is it reallu necessary that the fault code be a restricted string
+XXX is it really necessary that the fault code be a restricted string
 or not? The spec is possibly fuzzy on the details.
 -}
 
