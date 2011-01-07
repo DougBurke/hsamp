@@ -14,12 +14,18 @@ to debugging information only.
 
 module Network.SAMP.Standard.Server (
 
-       -- * High level
+       -- * Asynchronous client calls
+ 
+       callE,
+       callAllE,
+       setXmlrpcCallbackE,
+
+       -- * High level server
 
        SAMPNotificationFunc, SAMPCallFunc, SAMPResponseFunc,
        simpleServer,
 
-       -- * Low level
+       -- * Low level server
 
        SAMPMethod, SAMPServerResult,
        SAMPFun, fun,
@@ -37,7 +43,7 @@ import Control.Monad.Trans (liftIO)
 import qualified Control.Exception as CE
 
 import Network.SAMP.Standard.Types
-import Network.SAMP.Standard.Client (replyE)
+import Network.SAMP.Standard.Client (makeCallE, replyE)
 
 -- the name of the SAMP client logging instance
 sLogger :: String
@@ -87,6 +93,44 @@ instance (SAMPType a, SAMPFun b) => SAMPFun (a -> b) where
 				  toSAMPFun (f v) (SAMPMethodCall n xs)
     toSAMPFun _ _ = fail "Too few arguments"
 
+-- | Register a XML-RPC endpoint that the client uses to receive
+-- information from the hub. This must be set up before either
+-- 'callE' or 'callAllE' can be used.
+setXmlrpcCallbackE :: SAMPConnection
+                   -> RString -- ^ the URL of the end point
+                   -> Err IO ()
+setXmlrpcCallbackE cl url =
+    makeCallE (sampHubURL cl) "samp.hub.setXmlrpcCallback"
+        [SAMPString (sampPrivateKey cl), SAMPString url]
+    >> return ()
+
+-- | Send a message asynchronously to the recipient. The return value is
+-- the message id given to this communication by the hub.
+-- The client must be callable for this to work (see 'setXmlrpcCallbackE'),
+-- although this module does not enforce this.
+callE :: SAMPConnection
+      -> RString -- ^ the name of the client to contact
+      -> RString -- ^ a unique identifier for the communication (the message tag)
+      -> SAMPMessage -- ^ the message
+      -> Err IO RString -- ^ the message identifier created by the hub for this communication
+callE cl clid msgtag msg =
+    makeCallE (sampHubURL cl) "samp.hub.call"
+        [SAMPString (sampPrivateKey cl), SAMPString clid, SAMPString msgtag, toSValue msg]
+    >>= fromSValue
+
+-- | Send a message asynchronously to all clients which are subscribed to the
+-- message type.
+-- The client must be callable for this to work (see 'setXmlrpcCallbackE'),
+-- although this module does not enforce this.
+callAllE :: SAMPConnection
+         -> RString -- ^ a unique identifier for the communication (the message tag)
+         -> SAMPMessage -- ^ the message
+         -> Err IO [SAMPKeyValue] -- ^ the key is the name of the client and the value is the message id for that communication
+callAllE cl msgtag msg =
+    makeCallE (sampHubURL cl) "samp.hub.callAll"
+        [SAMPString (sampPrivateKey cl), SAMPString msgtag, toSValue msg]
+    >>= fromSValue
+    
 {-
 From SAMP 1.2 document, callable clients must support
 

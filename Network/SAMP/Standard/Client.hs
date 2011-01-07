@@ -1,38 +1,10 @@
 {-|
 Client code for the Standard SAMP profile.
 
-From the SAMP documentation:
-
->   # Read information from lockfile to locate and register with hub.
->   string hub-url = readFromLockfile("samp.hub.xmlprc.url");
->   string samp-secret = readFromLockfile("samp.secret");
->
->   # Establish XML-RPC connection with hub
->   # (uses some generic XML-RPC library)
->   xmlrpcServer hub = xmlrpcConnect(hub-url);
->
->   # Register with hub.
->   map reg-info = hub.xmlrpcCall("samp.hub.register", samp-secret);
->   string private-key = reg-info.getValue("samp.private-key");
->
->   # Store metadata in hub for use by other applications.
->   map metadata = ("samp.name" -> "dummy",
->                   "samp.description.text" -> "Test Application",
->                   "dummy.version" -> "0.1-3");
->   hub.xmlrpcCall("samp.hub.declareMetadata", private-key, metadata);
->
->   # Send a message requesting file load to all other 
->   # registered clients, not wanting any response.
->   map loadParams = ("filename" -> "/tmp/foo.bar");
->   map loadMsg = ("samp.mtype" -> "file.load",
->                  "samp.params" -> loadParams);
->   hub.xmlrpcCall("samp.hub.notifyAll", private-key, loadMsg);
->
->   # Unregister
->   hub.xmlrpcCall("samp.hub.unregister", private-key);
-
-which could be written as
-
+Note that this is for clients that do not need
+to use the asynchronous call backs to receive
+information from a hub. These routines are provided
+by the "Network.SAMP.Standard.Server" module.
 -}
 
 module Network.SAMP.Standard.Client (
@@ -49,12 +21,9 @@ module Network.SAMP.Standard.Client (
        getSubscribedClientsE,
        notifyE,
        notifyAllE,
-       callE,
-       callAllE,
        callAndWaitE,
        replyE,
        pingE,
-       setXmlrpcCallbackE,
 
        -- * Low-level interface
 
@@ -415,33 +384,6 @@ notifyAllE cl msg =
           [SAMPString (sampPrivateKey cl), toSValue msg]
     >>= fromSValue
 
--- | Send a message asynchronously to the recipient. The return value is
--- the message id given to this communication by the hub.
--- The client must be callable for this to work (see 'setXmlrpcCallbackE'),
--- although this module does not enforce this.
-callE :: SAMPConnection
-      -> RString -- ^ the name of the client to contact
-      -> RString -- ^ a unique identifier for the communication (the message tag)
-      -> SAMPMessage -- ^ the message
-      -> Err IO RString -- ^ the message identifier created by the hub for this communication
-callE cl clid msgtag msg =
-    makeCallE (sampHubURL cl) "samp.hub.call"
-        [SAMPString (sampPrivateKey cl), SAMPString clid, SAMPString msgtag, toSValue msg]
-    >>= fromSValue
-
--- | Send a message asynchronously to all clients which are subscribed to the
--- message type.
--- The client must be callable for this to work (see 'setXmlrpcCallbackE'),
--- although this module does not enforce this.
-callAllE :: SAMPConnection
-         -> RString -- ^ a unique identifier for the communication (the message tag)
-         -> SAMPMessage -- ^ the message
-         -> Err IO [SAMPKeyValue] -- ^ the key is the name of the client and the value is the message id for that communication
-callAllE cl msgtag msg =
-    makeCallE (sampHubURL cl) "samp.hub.callAll"
-        [SAMPString (sampPrivateKey cl), SAMPString msgtag, toSValue msg]
-    >>= fromSValue
-    
 -- | Send a message to a client and wait for a response. The timeout parameter
 -- controls how long the wait will be before error-ing out (if given).
 -- Unlike 'callE' and 'callAllE', the client need not be callable to use
@@ -465,17 +407,6 @@ replyE :: SAMPConnection
 replyE cl msgid rsp =
     makeCallE (sampHubURL cl) "samp.hub.reply"
         [SAMPString (sampPrivateKey cl), SAMPString msgid, toSValue rsp]
-    >> return ()
-
--- | Register a XML-RPC endpoint that the client uses to receive
--- information from the hub. This must be set up before either
--- 'callE' or 'callAllE' can be used.
-setXmlrpcCallbackE :: SAMPConnection
-                   -> RString -- ^ the URL of the end point
-                   -> Err IO ()
-setXmlrpcCallbackE cl url =
-    makeCallE (sampHubURL cl) "samp.hub.setXmlrpcCallback"
-        [SAMPString (sampPrivateKey cl), SAMPString url]
     >> return ()
 
 -- | Ping the hub to see if it is running.

@@ -419,14 +419,14 @@ data SAMPResponse =
 
 instance SAMPType SAMPResponse where
     toSValue (SR (Just vs) Nothing) = 
-        SAMPMap $ [(sStatus, sOkVal), (sResult, SAMPMap vs)]
+        SAMPMap [(sStatus, sOkVal), (sResult, SAMPMap vs)]
     toSValue (SR Nothing (Just (emsg,es))) =
-        SAMPMap $ [(sStatus, sErrVal), (sError, SAMPMap nvs)]
+        SAMPMap [(sStatus, sErrVal), (sError, SAMPMap nvs)]
           where
             nvs = (sErrorTxt, SAMPString emsg) : es
     toSValue (SR (Just vs) (Just (emsg,es))) =
-        SAMPMap $ [(sStatus, sWarnVal), (sResult, SAMPMap vs),
-                   (sError, SAMPMap nvs)]
+        SAMPMap [(sStatus, sWarnVal), (sResult, SAMPMap vs),
+                 (sError, SAMPMap nvs)]
           where
             nvs = (sErrorTxt, SAMPString emsg) : es
     toSValue x = error $ "Invalid SAMPResponse: " ++ show x
@@ -618,8 +618,8 @@ getKey k xs = maybeToM ("Key " ++ show k ++ " not found")
                   (lookup k xs) >>= fromSValue
 
 instance SAMPType SAMPMessage where
-    toSValue (SM mt ps) = SAMPMap $ [(smtype, toSValue mt),
-                                     (sparams, SAMPMap ps)]
+    toSValue (SM mt ps) = SAMPMap [(smtype, toSValue mt),
+                                   (sparams, SAMPMap ps)]
 
     fromSValue (SAMPMap xs) = do
         mt <- getKey smtype xs
