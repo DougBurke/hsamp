@@ -1,0 +1,10 @@
+syntax: glob
+*~
+
+*.hi
+*.o
+
+testclient
+
+syntax: regexp
+(.*/)?\#[^/]*\#$
