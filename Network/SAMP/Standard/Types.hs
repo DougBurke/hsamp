@@ -27,7 +27,7 @@ module Network.SAMP.Standard.Types (
 
        SAMPType(..), SAMPValue(..), SAMPKeyValue,
        showSAMPValue,
-       getKey, stringToKeyValE,
+       getKey, stringToKeyValE, stringFromKeyValE,
 
        RString, emptyRString, toRString, toRStringE, fromRString, asIntegral, asFloating, asBool,
        MType, toMType, toMTypeE, fromMType, isMTWildCard,
@@ -279,6 +279,15 @@ stringToKeyValE :: (Monad m)
                 -> String -- ^ the value
                 -> Err m SAMPKeyValue
 stringToKeyValE k v = (,) `liftM` toRStringE k `ap` fmap toSValue (toRStringE v)
+
+-- | Convert a 'SAMPKeyValue' into a pair of strings.
+-- This fails if the 'SAMPValue' stored in the pair is not
+-- a 'SAMPString'.
+stringFromKeyValE :: Monad m
+                 => SAMPKeyValue
+                 -> Err m (String, String)
+stringFromKeyValE (k,SAMPString v) = return (fromRString k, fromRString v)
+stringFromKeyValE (_,x) = throwError $ "Expected a SAMP string but found " ++ show x
 
 {-
 The following routines could be made generic - ie use XmlRpcType a rather

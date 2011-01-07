@@ -52,7 +52,7 @@ import Data.List (stripPrefix)
 import Data.Maybe (fromJust, fromMaybe, catMaybes)
 
 import qualified Control.Arrow as CA
-import Control.Monad (liftM, ap, join, guard, when)
+import Control.Monad (liftM, ap, guard, when)
 
 import Control.Monad.Error (throwError)
 import Control.Monad.Trans (liftIO)
