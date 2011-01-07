@@ -180,7 +180,7 @@ reportSubscriptions cl msg = do
                     reportIt ("Subscriptions to " ++ show msg) msgs
 
 pingMsg :: (Monad m) => Err m SAMPMessage
-pingMsg = toSAMPMessage pingMT [] []
+pingMsg = toSAMPMessage pingMT []
 
 {-
 TODO: try asynchronous ping
