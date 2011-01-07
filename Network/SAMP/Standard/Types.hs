@@ -15,11 +15,6 @@ Logging is provided using the @SAMP.StandardProfile.Client@
 'System.Log.Logger.Logger' instance. At present this is limited
 to debugging information only.
 
-TODO:
-
-  - add a routine to convert (String, String) to
-    a SAMPKeyValue
-
 -}
 
 module Network.SAMP.Standard.Types (
@@ -32,7 +27,7 @@ module Network.SAMP.Standard.Types (
 
        SAMPType(..), SAMPValue(..), SAMPKeyValue,
        showSAMPValue,
-       getKey,
+       getKey, stringToKeyValE,
 
        RString, emptyRString, toRString, toRStringE, fromRString, asIntegral, asFloating, asBool,
        MType, toMType, toMTypeE, fromMType, isMTWildCard,
@@ -56,7 +51,7 @@ module Network.SAMP.Standard.Types (
        ) where
 
 import Control.Monad.Error (MonadError, throwError)
-import Control.Monad (forM_, liftM, guard, when)
+import Control.Monad (forM_, liftM, ap, guard, when)
 
 import Network.XmlRpc.Internals
 
@@ -276,9 +271,14 @@ isMTWildCard (MT _ f) = f
 -- Note that the key is stored as a 'RString'.
 type SAMPKeyValue = (RString, SAMPValue)
 
-{-
-XXX TODO: write in applicative style
--}
+-- | Convert a pair of strings into a 'SAMPKeyValue'.
+-- The routine fails if either of the input strings can not be
+-- converted into 'RString' values.
+stringToKeyValE :: (Monad m)
+                => String -- ^ the key name
+                -> String -- ^ the value
+                -> Err m SAMPKeyValue
+stringToKeyValE k v = (,) `liftM` toRStringE k `ap` fmap toSValue (toRStringE v)
 
 {-
 The following routines could be made generic - ie use XmlRpcType a rather
@@ -287,7 +287,7 @@ than force Value, but need to look at to see if it is worth it.
 
 -- | Convert a (String, Value) tuple into (RString, SAMPValue)
 toSAMPKeyValue :: (Monad m) => (String, Value) -> Err m SAMPKeyValue
-toSAMPKeyValue (n,v) = toRStringE n >>= \ns -> fromValue v >>= \vs -> return (ns, vs)
+toSAMPKeyValue (n,v) = (,) `liftM` toRStringE n `ap` fromValue v
 
 {-
 Remove the listed keys from the keylist.
@@ -504,24 +504,10 @@ sOkVal   = SAMPString (RS sampOK)
 sErrVal  = SAMPString (RS sampError)
 sWarnVal = SAMPString (RS sampWarning)
 
--- TODO: can we simplify the following by using the SAMPType instance?
 instance XmlRpcType SAMPResponse where
     toValue = toValue . toSValue
-    {-
-    toValue (SR (Just vs) Nothing ex) = 
-        toValue $ [(sStatus, sOkVal), (sResult, SAMPMap vs)] ++ ex
-    toValue (SR Nothing (Just (emsg,es)) ex) =
-        toValue $ [(sStatus, sErrVal), (sError, SAMPMap nvs)] ++ ex
-          where
-            nvs = (RS "samp.errortxt", SAMPString (RS emsg)) : es
-    toValue (SR (Just vs) (Just (emsg,es)) ex) =
-        toValue $ [(sStatus, sWarnVal), (sResult, SAMPMap vs),
-                   (sError, SAMPMap nvs)] ++ ex
-          where
-            nvs = (RS "samp.errortxt", SAMPString (RS emsg)) : es
-    toValue x = error $ "Invalid SAMPResponse: " ++ show x
-    -}
 
+    -- TODO: can we simplify the following by using the SAMPType instance?
     fromValue (ValueStruct xs) = do
         ss <- getField "samp.status" xs
         case ss of
