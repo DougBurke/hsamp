@@ -1,11 +1,25 @@
 {-# LANGUAGE FlexibleInstances , OverlappingInstances #-}
 
 {-|
+Module      :  Network.SAMP.Standard.Types
+Copyright   :  (c) Smithsonian Astrophysical Observatory 2011
+License     :  BSD-like
+
+Maintainer  :  dburke@cfa.harvard.edu
+Stability   :  unstable
+Portability :  requires haxr
+
 Types for the SAMP Standard Profile modules.
 
 Logging is provided using the @SAMP.StandardProfile.Client@
 'System.Log.Logger.Logger' instance. At present this is limited
 to debugging information only.
+
+TODO:
+
+  - add a routine to convert (String, String) to
+    a SAMPKeyValue
+
 -}
 
 module Network.SAMP.Standard.Types (

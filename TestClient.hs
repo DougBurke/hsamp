@@ -6,10 +6,6 @@ TODO:
  a) work with monads-fd
  b) try out error conditions (like the hub disappearing)
 
-A simple TCP server at 
-  http://sequence.complete.org/node/258
-may be useful reading.
-
 -}
 
 module Main where

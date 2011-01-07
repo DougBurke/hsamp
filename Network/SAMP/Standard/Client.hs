@@ -1,4 +1,12 @@
 {-|
+Module      :  Network.SAMP.Standard.Client
+Copyright   :  (c) Smithsonian Astrophysical Observatory 2011
+License     :  BSD-like
+
+Maintainer  :  dburke@cfa.harvard.edu
+Stability   :  unstable
+Portability :  requires haxr
+
 Client code for the Standard SAMP profile.
 
 Note that this is for clients that do not need

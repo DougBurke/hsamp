@@ -1,11 +1,17 @@
 {-# LANGUAGE FlexibleInstances #-}
 
 {- |
-Implementation of the server side of the Standard
-SAMP profile.
+Module      :  Network.SAMP.Standard.Server
+Copyright   :  (c) Smithsonian Astrophysical Observatory 2011
+License     :  BSD-like
 
-At present it is limited to support for the needs of a
-callable SAMP client. Work on supporting a SAMP hub is planned.
+Maintainer  :  dburke@cfa.harvard.edu
+Stability   :  unstable
+Portability :  requires haxr
+
+Implementation of the server side of the Standard
+SAMP profile; that is, support for those clients that
+are callable. Work on supporting a SAMP hub is planned.
 
 Logging is provided using the @SAMP.StandardProfile.Server@
 'System.Log.Logger.Logger' instance. At present this is limited
@@ -26,6 +32,8 @@ module Network.SAMP.Standard.Server (
        simpleServer,
 
        -- * Low level server
+
+       -- | Most clients should not need to use these routines.
 
        SAMPMethod, SAMPServerResult,
        SAMPFun, fun,
