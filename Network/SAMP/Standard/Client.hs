@@ -21,7 +21,8 @@ module Network.SAMP.Standard.Client (
        getHubInfoE,
        registerClientE,
        unregisterE,
-       toMetadata, declareMetadataE,
+       toMetadata, toMetadataE,
+       declareMetadataE,
        getMetadataE,
        declareSubscriptionsE, declareSubscriptionsSimpleE,
        getSubscriptionsE,
@@ -51,7 +52,7 @@ import Data.List (stripPrefix)
 import Data.Maybe (fromJust, fromMaybe, catMaybes)
 
 import qualified Control.Arrow as CA
-import Control.Monad (liftM, ap, guard, when)
+import Control.Monad (liftM, ap, join, guard, when)
 
 import Control.Monad.Error (throwError)
 import Control.Monad.Trans (liftIO)
@@ -272,7 +273,7 @@ sIcon = fromJust $ toRString "samp.icon.url"
 sDoc  = fromJust $ toRString "samp.documentaion.url"
 
 -- | Create the key/value pairs used by 'declareMetadataE'
--- for the common metadata settings.
+-- for the common metadata settings. Also see 'toMetadataE'.
 toMetadata :: RString -- ^ A one-word title for the application (@samp.name@)
            -> Maybe RString -- ^ A short description of the application in plain text (@samp.description.text@)
            -> Maybe RString -- ^ A description of the application in HTML (@samp.description.html@)
@@ -284,14 +285,31 @@ toMetadata m txt html icon doc =
         ms = [f sTxt txt, f sHtml html, f sIcon icon, f sDoc doc]
     in (sName, SAMPString m) : catMaybes ms
 
--- | Declare the metadata for the client. The metadata is provided as
--- a list of (key,value) pairs (this is slightly different from the
--- SAMP API which has the return being a map; here we extract the 
--- contents of the map). See 'toMetadata' for a convenience routine
--- for setting the common metadata fields.
--- 
--- This overwrites the existing metadata stored in the hub for the
--- client. 
+-- | Create the key/value pairs used by 'declareMetadataE'
+-- for the common metadata settings. Also see 'toMetadata'.
+toMetadataE :: Monad m
+            => String -- ^ A one-word title for the application (@samp.name@)
+            -> Maybe String -- ^ A short description of the application in plain text (@samp.description.text@)
+            -> Maybe String -- ^ A description of the application in HTML (@samp.description.html@)
+            -> Maybe String -- ^ The URL of an icon in png, gif or jpeg format (@samp.icon.url@)
+            -> Maybe String -- ^ The URL of a documentation web page (@samp.documentation.url@)
+            -> Err m [SAMPKeyValue]
+toMetadataE m txt html icon doc = 
+    let f k (Just v) = toRStringE v >>= \vs -> return $ Just (k, SAMPString vs)
+        f _ _ = return Nothing
+        ms = [f sName (Just m), f sTxt txt, f sHtml html, f sIcon icon, f sDoc doc]
+    in fmap catMaybes $ sequence ms
+
+{-|
+Declare the metadata for the client. The metadata is provided as a
+list of (key,value) pairs (this is slightly different from the SAMP
+API which has the return being a map; here we extract the contents of
+the map). See 'toMetadata' and 'toMetadataE' for convenience routines
+for setting the common metadata fields.
+
+This overwrites the existing metadata stored in the hub for the
+client.
+-}
 declareMetadataE :: SAMPConnection
                  -> [SAMPKeyValue] -- ^ the key/value pairs to declare 
                  -> Err IO ()

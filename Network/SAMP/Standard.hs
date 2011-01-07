@@ -130,9 +130,9 @@ which could be written as
 >
 >     -- Store metadata in hub for use by other applications.
 >     vkey <- stringToKeyValE "dummy.version" "0.1-3"
->     let md = vkey : toMetadata (tRS "dummy") (Just (tRS "Test Application"))
->                                Nothing Nothing Nothing
->     declareMetadataE conn md
+>     md <- toMetadataE "dummy" (Just "Test Application")
+>                       Nothing Nothing Nothing
+>     declareMetadataE conn (vkey : md)
 >     
 >     -- Send a message requesting file load to all other
 >     -- registered clients, not wanting any response.

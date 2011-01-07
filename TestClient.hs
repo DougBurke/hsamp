@@ -127,12 +127,13 @@ tRS = fromJust . toRString
 makeClient :: SAMPInfo -> PortNumber -> Err IO SAMPConnection
 makeClient si pNum = do
     cl <- registerClientE si
-    let md = toMetadata (tRS "hsamp-test-client")
-                        (Just (tRS "Test SAMP client using hSAMP."))
-                        Nothing
-                        (Just (tRS (hostName pNum ++ "icon.png")))
-                        Nothing
-    declareMetadataE cl $ (fromJust (toRString "internal.version"), toSValue (fromJust (toRString "0.0.1"))) : md
+    v <- stringToKeyValE "internal.version" "0.0.1"
+    md <- toMetadataE "hsamp-test-client"
+          (Just "Test SAMP cluent using hSAMP.")
+          Nothing
+          (Just (hostName pNum ++ "icon.png"))
+          Nothing
+    declareMetadataE cl $ v : md
     return cl
 
 {-
@@ -207,7 +208,7 @@ pingItemsAsync :: SAMPConnection -> Err IO ()
 pingItemsAsync cl = do
      putLn "Calling clients that respond to samp.app.ping (asynchronous)"
      msg <- pingMsg
-     let msgid = fromJust (toRString "need-a-better-system")
+     msgid <- toRStringE "need-a-better-system"
      rsp <- callAllE cl msgid msg
      liftIO $ forM_ rsp $ \(n,mid) -> putStrLn ("  contacted " ++ show n ++ " with id " ++ show mid)
 
@@ -220,7 +221,8 @@ doClient cl pNum = do
          reportClients cl
          putLn ""
          reportSubscriptions cl pingMT
-         reportSubscriptions cl $ fromJust $ toMType "foo.bar"
+         bar <- toMTypeE "foo.bar"
+         reportSubscriptions cl bar
          pingItems cl
          pingItemsAsync cl
          liftIO $ putStrLn "Sleeping for 10 seconds." >> wait 10
