@@ -1,9 +1,42 @@
-{-
-
+{-|
 Client code for the Standard SAMP profile.
+
+From the SAMP documentation:
+
+>   # Read information from lockfile to locate and register with hub.
+>   string hub-url = readFromLockfile("samp.hub.xmlprc.url");
+>   string samp-secret = readFromLockfile("samp.secret");
+>
+>   # Establish XML-RPC connection with hub
+>   # (uses some generic XML-RPC library)
+>   xmlrpcServer hub = xmlrpcConnect(hub-url);
+>
+>   # Register with hub.
+>   map reg-info = hub.xmlrpcCall("samp.hub.register", samp-secret);
+>   string private-key = reg-info.getValue("samp.private-key");
+>
+>   # Store metadata in hub for use by other applications.
+>   map metadata = ("samp.name" -> "dummy",
+>                   "samp.description.text" -> "Test Application",
+>                   "dummy.version" -> "0.1-3");
+>   hub.xmlrpcCall("samp.hub.declareMetadata", private-key, metadata);
+>
+>   # Send a message requesting file load to all other 
+>   # registered clients, not wanting any response.
+>   map loadParams = ("filename" -> "/tmp/foo.bar");
+>   map loadMsg = ("samp.mtype" -> "file.load",
+>                  "samp.params" -> loadParams);
+>   hub.xmlrpcCall("samp.hub.notifyAll", private-key, loadMsg);
+>
+>   # Unregister
+>   hub.xmlrpcCall("samp.hub.unregister", private-key);
+
+which could be written as
+
 -}
 
 module Network.SAMP.Standard.Client (
+
        -- * High-level interface
        getHubInfoE,
        registerClientE,
@@ -49,7 +82,6 @@ import Control.Monad.Trans (liftIO)
 import qualified Control.Exception as CE
 
 import System.Environment (getEnv)
--- import System.IO.Error (catch)
 
 import System.IO.Error (isDoesNotExistError, isDoesNotExistErrorType, ioeGetErrorType)
 
@@ -112,7 +144,12 @@ checkExists emsg act = do
      Right a -> return a
      Left _ -> throwError emsg
 
--- TODO: deal with SAMP_HUB environment variable
+{-|
+Returns the location of the lock file (assumed to be a file).
+
+At the moment this does not support the SAMP 1.2 @SAMP_HUB@
+environment variable and assumes a UNIC environment.
+-}
 sampLockFileE :: Err IO FilePath
 sampLockFileE = do
     home <- checkExists "The HOME environment variable is not defined." (getEnv "HOME")
@@ -161,11 +198,13 @@ extractHubInfo alist = do
     return (secret, url)
 
 {-|
-Return information about the SAMP hub.
-It assumes we are on a UNIX environment and at present
-ignores the SAMP_HUB environment variable.
+Return information about the SAMP hub needed by 'registerE' and
+'registerClientE'.
 
-This routine includes logging to the "SAMP.StandardProfile.Client"
+At the moment this does not support the SAMP 1.2 @SAMP_HUB@
+environment variable and assumes a UNIC environment.
+
+This routine includes logging to the @SAMP.StandardProfile.Client@
 logger (at present only debug-level information).
 -}
 getHubInfoE :: Err IO SAMPInfo
@@ -178,55 +217,12 @@ getHubInfoE = do
     let alist = processLockFile cts
     maybeToM "Unable to read hub info" (extractHubInfo alist)
 
-{-
--- Checks that the response was okay, throwing an error if not.
--- Warnings are not considered to be an error here.
-
-isOK :: SAMPResponse -> Err IO ()
-isOK rsp | isSAMPErrorOnly rsp = throwError $ "ERROR from response:\n" ++ show (fromJust $ getSAMPResponseErrorTxt rsp)
-         | otherwise           = return ()
--}
-
-{-
-
-From the SAMP documentation:
-
-   # Read information from lockfile to locate and register with hub.
-   string hub-url = readFromLockfile("samp.hub.xmlprc.url");
-   string samp-secret = readFromLockfile("samp.secret");
-
-   # Establish XML-RPC connection with hub
-   # (uses some generic XML-RPC library)
-   xmlrpcServer hub = xmlrpcConnect(hub-url);
-
-   # Register with hub.
-   map reg-info = hub.xmlrpcCall("samp.hub.register", samp-secret);
-   string private-key = reg-info.getValue("samp.private-key");
-
-   # Store metadata in hub for use by other applications.
-   map metadata = ("samp.name" -> "dummy",
-                   "samp.description.text" -> "Test Application",
-                   "dummy.version" -> "0.1-3");
-   hub.xmlrpcCall("samp.hub.declareMetadata", private-key, metadata);
-
-   # Send a message requesting file load to all other 
-   # registered clients, not wanting any response.
-   map loadParams = ("filename" -> "/tmp/foo.bar");
-   map loadMsg = ("samp.mtype" -> "file.load",
-                  "samp.params" -> loadParams);
-   hub.xmlrpcCall("samp.hub.notifyAll", private-key, loadMsg);
-
-   # Unregister
-   hub.xmlrpcCall("samp.hub.unregister", private-key);
-
--}
-
 {-|
 Call the hub with the given message and arguments.
 This is a low-level routine and users are expected to
 use more appropriate routines where available.
 
-This routine includes logging to the "SAMP.StandardProfile.Client"
+This routine includes logging to the @SAMP.StandardProfile.Client@
 logger (at present only debug-level information).
 -} 
 makeCallE :: 
@@ -242,8 +238,8 @@ makeCallE url msg args = do
          dbg (show rsp)
          fromValue rsp
 
--- | Register a client with a hub. See `registerClientE` for a simple
--- | way to register the client and process the return vaues.
+-- | Register a client with a hub. See 'registerClientE' for a simple
+-- way to register the client and process the return vaues.
 registerE :: SAMPInfo     -- ^ hub information
           -> Err IO [SAMPKeyValue] -- ^ Key/value pairs from the registration call.
 registerE (sKey,url) =
@@ -262,11 +258,11 @@ slookup k a = case lookup k a of
                 Just x              -> throwError $ "Expected a string for " ++ show k ++ " but found " ++ show x
                 _                   -> throwError $ "Unable to find key " ++ show k
 
--- | Create a `SAMPConnection` record from the hub information and response
--- | from `registerE`.
+-- | Create a 'SAMPConnection' record from the hub information and response
+-- from 'registerE'.
 getClientInfoE :: (Monad m) =>
                SAMPInfo   -- ^ hub information
-               -> [SAMPKeyValue] -- ^ response from `registerE`
+               -> [SAMPKeyValue] -- ^ response from 'registerE'
                -> Err m SAMPConnection
 getClientInfoE (sKey,url) ks = SAMPConnection `liftM`
                   return sKey 
@@ -275,8 +271,12 @@ getClientInfoE (sKey,url) ks = SAMPConnection `liftM`
                   `ap` slookup sHubId ks
                   `ap` slookup sSelfId ks
 
--- | Register the client with the hub and create the `SAMPConnection` record
--- | used for communication.
+-- | Register the client with the hub and create the 'SAMPConnection' record
+-- used for communication. This is basically
+--
+-- @
+--    'registerE' si >>= 'getClientInfoE' si
+-- @
 registerClientE :: SAMPInfo -> Err IO SAMPConnection
 registerClientE si = registerE si >>= getClientInfoE si
 
@@ -294,13 +294,13 @@ sHtml = fromJust $ toRString "samp.description.html"
 sIcon = fromJust $ toRString "samp.icon.url"
 sDoc  = fromJust $ toRString "samp.documentaion.url"
 
--- | Create the key/value pairs used by `declareMetadataE`
--- | for the common metadata settings.
-toMetadata :: RString -- ^ A one-word title for the application (samp.name)
-           -> Maybe RString -- ^ A short description of the application in plain text (samp.description.text)
-           -> Maybe RString -- ^ A description of the application in HTML (samp.description.html)
-           -> Maybe RString -- ^ The URL of an icon in png, gif or jpeg format (samp.icon.url)
-           -> Maybe RString -- ^ The URL of a documentation web page (samp.documentation.url)
+-- | Create the key/value pairs used by 'declareMetadataE'
+-- for the common metadata settings.
+toMetadata :: RString -- ^ A one-word title for the application (@samp.name@)
+           -> Maybe RString -- ^ A short description of the application in plain text (@samp.description.text@)
+           -> Maybe RString -- ^ A description of the application in HTML (@samp.description.html@)
+           -> Maybe RString -- ^ The URL of an icon in png, gif or jpeg format (@samp.icon.url@)
+           -> Maybe RString -- ^ The URL of a documentation web page (@samp.documentation.url@)
            -> [SAMPKeyValue]
 toMetadata m txt html icon doc =
     let f k = fmap $ (,) k . SAMPString
@@ -308,13 +308,13 @@ toMetadata m txt html icon doc =
     in (sName, SAMPString m) : catMaybes ms
 
 -- | Declare the metadata for the client. The metadata is provided as
--- | a list of (key,value) pairs (this is slightly different from the
--- | SAMP API which has the return being a map; here we extract the 
--- | contents of the map). See `toMetadata` for a convenience routine
--- | for setting the common metadata fields.
--- |
--- | This overwrites the existing metadata stored in the hub for the
--- | client. 
+-- a list of (key,value) pairs (this is slightly different from the
+-- SAMP API which has the return being a map; here we extract the 
+-- contents of the map). See 'toMetadata' for a convenience routine
+-- for setting the common metadata fields.
+-- 
+-- This overwrites the existing metadata stored in the hub for the
+-- client. 
 declareMetadataE :: SAMPConnection
                  -> [SAMPKeyValue] -- ^ the key/value pairs to declare 
                  -> Err IO ()
@@ -323,7 +323,7 @@ declareMetadataE cl ks =
     >> return ()
 
 -- | Return the metadata for another client of the SAMP hub as a
--- | list of (key,value) pairs.
+-- list of (key,value) pairs.
 getMetadataE :: SAMPConnection
              -> RString -- ^ The id of the SAMP client to query
              -> Err IO [SAMPKeyValue] -- ^ The metadata key/value pairs of the queried client
@@ -335,14 +335,14 @@ mtToRS :: MType -> RString
 mtToRS = fromJust . toRString . show
 
 -- | Declare the subscriptions for this client. The subscriptions are
--- | given as a list of (key,value) pairs where the keys are the MTypes
--- | of the messages to subscribe to and the value is determined by the
--- | selected `MType`.
--- |
--- | This overwrites the existing subscriptions for the client.
--- | 
--- | See `declareSubscriptionsSimpleE` for the case when the messages
--- | being subscribed to have no parameters.
+-- given as a list of (key,value) pairs where the keys are the MTypes
+-- of the messages to subscribe to and the value is determined by the
+-- selected 'MType'.
+-- 
+-- This overwrites the existing subscriptions for the client.
+-- 
+-- See 'declareSubscriptionsSimpleE' for the case when the messages
+-- being subscribed to have no parameters.
 declareSubscriptionsE :: SAMPConnection
                       -> [(MType, SAMPValue)] -- ^ the messages the client is subscribing to
                       -> Err IO ()
@@ -352,8 +352,8 @@ declareSubscriptionsE cl subs =
        >> return ()
 
 -- | Declare the subscriptions for this client. This can be used
--- | if all the messages require no parameters; use 
--- | `declareSubscriptionsE` for the general case.
+-- if all the messages require no parameters; use 
+-- 'declareSubscriptionsE' for the general case.
 declareSubscriptionsSimpleE :: SAMPConnection
                             -> [MType] -- ^ the messages the client is subscribing to
                             -> Err IO ()
@@ -363,7 +363,7 @@ declareSubscriptionsSimpleE cl mtypes =
        >> return ()
 
 -- | Get the message subscriptions of a client. The subscriptions are
--- | returned as a list of (key,value) pairs.
+-- returned as a list of (key,value) pairs.
 getSubscriptionsE :: SAMPConnection
                   -> RString -- ^ the name of the client to query
                   -> Err IO [SAMPKeyValue] -- ^ the (key,value) subscriptions of the queried client
@@ -372,7 +372,7 @@ getSubscriptionsE cl clid =
     >>= fromSValue
 
 -- | Return a list of all the registered clients of the hub - including
--- | itsels - but excluding this client.
+-- itself - but excluding this client.
 getRegisteredClientsE :: SAMPConnection
                       -> Err IO [RString] -- ^ the names of the registered clients
 getRegisteredClientsE cl =
@@ -380,11 +380,11 @@ getRegisteredClientsE cl =
     >>= fromSValue
 
 -- | Return a (key,value) list of all the clients that are subscibed to
--- | a given `MType` (the return value is slightly different from the
--- | SAMP API which has the return being a map; here we extract the 
--- | contents of the map).
--- |
--- | An error occurs if the MType contains a wild card
+-- a given 'MType' (the return value is slightly different from the
+-- SAMP API which has the return being a map; here we extract the 
+-- contents of the map).
+-- 
+-- An error occurs if the MType contains a wild card.
 getSubscribedClientsE :: SAMPConnection
                       -> MType -- ^ the message (it can not contain a wildcard)
                       -> Err IO [SAMPKeyValue]
@@ -394,7 +394,7 @@ getSubscribedClientsE cl mtype =
     >>= fromSValue
 
 -- | Send a message to a given client of the hub and do not
--- | wait for a response.
+-- wait for a response.
 notifyE :: SAMPConnection
         -> RString -- ^ the name of the client to notify
         -> SAMPMessage -- ^ the message
@@ -405,8 +405,8 @@ notifyE cl clid msg =
     >> return ()
 
 -- | Send a message to all clients and get back a list of those
--- | that were sent the message (i.e. are subscribed to it). Note that
--- | just because a client was sent a message does not mean it was successful.
+-- that were sent the message (i.e. are subscribed to it). Note that
+-- just because a client was sent a message does not mean it was successful.
 notifyAllE :: SAMPConnection
            -> SAMPMessage -- ^ the message
            -> Err IO [RString] -- ^ the list of clients that were sent the message
@@ -416,8 +416,9 @@ notifyAllE cl msg =
     >>= fromSValue
 
 -- | Send a message asynchronously to the recipient. The return value is
--- | the message id given to this communication by the hub.
--- | The client must be callable for this to work (see `setXmlrpcCallbackE`).
+-- the message id given to this communication by the hub.
+-- The client must be callable for this to work (see 'setXmlrpcCallbackE'),
+-- although this module does not enforce this.
 callE :: SAMPConnection
       -> RString -- ^ the name of the client to contact
       -> RString -- ^ a unique identifier for the communication (the message tag)
@@ -429,8 +430,9 @@ callE cl clid msgtag msg =
     >>= fromSValue
 
 -- | Send a message asynchronously to all clients which are subscribed to the
--- | message type.
--- | The client must be callable for this to work (see `setXmlrpcCallbackE`).
+-- message type.
+-- The client must be callable for this to work (see 'setXmlrpcCallbackE'),
+-- although this module does not enforce this.
 callAllE :: SAMPConnection
          -> RString -- ^ a unique identifier for the communication (the message tag)
          -> SAMPMessage -- ^ the message
@@ -441,9 +443,9 @@ callAllE cl msgtag msg =
     >>= fromSValue
     
 -- | Send a message to a client and wait for a response. The timeout parameter
--- | controls how long the wait will be before error-ing out (if given).
--- | Unlike `callE` and `callAllE`, the client need not be callable to use
--- | this routine.
+-- controls how long the wait will be before error-ing out (if given).
+-- Unlike 'callE' and 'callAllE', the client need not be callable to use
+-- this routine.
 callAndWaitE :: SAMPConnection
              -> RString -- ^ the name of the client to contact
              -> SAMPMessage -- ^ the message
@@ -457,7 +459,7 @@ callAndWaitE cl clid msg tout =
     
 -- | Reply to a message from another client.
 replyE :: SAMPConnection
-       -> RString -- ^ the message identifier (as returned by the hub from `callE` or `callAllE`)
+       -> RString -- ^ the message identifier (as returned by the hub from 'callE' or 'callAllE')
        -> SAMPResponse -- ^ the response
        -> Err IO ()
 replyE cl msgid rsp =
@@ -466,8 +468,8 @@ replyE cl msgid rsp =
     >> return ()
 
 -- | Register a XML-RPC endpoint that the client uses to receive
--- | information from the hub. This must be set up before either
--- | `callE` or `callAllE` can be used.
+-- information from the hub. This must be set up before either
+-- 'callE' or 'callAllE' can be used.
 setXmlrpcCallbackE :: SAMPConnection
                    -> RString -- ^ the URL of the end point
                    -> Err IO ()
@@ -477,14 +479,14 @@ setXmlrpcCallbackE cl url =
     >> return ()
 
 -- | Ping the hub to see if it is running.
--- |
--- | Note that we do not support calling this method without
--- | the private key (taken from the `SAMPConnection` record).
--- | Users who wish to see if a hub is alive and just have a URL
--- | can try using `makeCallE` directly - e.g.
--- |
--- |    makeCallE url "samp.hub.ping" [] >> return ()
--- |
+-- 
+-- Note that we do not support calling this method without
+-- the private key (taken from the 'SAMPConnection' record).
+-- Users who wish to see if a hub is alive and just have a URL
+-- can try using 'makeCallE' directly - e.g.
+-- 
+-- >    makeCallE url "samp.hub.ping" [] >> return ()
+-- 
 pingE :: SAMPConnection
       -> Err IO ()
 pingE cl =

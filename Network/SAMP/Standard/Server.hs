@@ -27,7 +27,6 @@ module Network.SAMP.Standard.Server (
        SAMPMethodMap,
        methods, handleSAMPCall,
 
-
        ) where
 
 import System.Log.Logger
@@ -118,7 +117,7 @@ type SAMPNotificationFunc = (MType, RString -> RString -> [SAMPKeyValue] -> IO (
 
 -- | A mapping from a 'MType' to the routine used to handle calls
 -- of this message. The response will be returned to the hub using the
--- @samp.hub.reply@ message.
+-- @samp.hub.reply@ message (using 'Network.SAMP.Standard.Client.replyE').
 type SAMPCallFunc = (MType, RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse)
 
 -- | The handler for SAMP response messages (those received by a callable client

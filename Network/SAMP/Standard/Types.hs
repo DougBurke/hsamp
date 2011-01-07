@@ -3,6 +3,9 @@
 {-|
 Types for the SAMP Standard Profile modules.
 
+Logging is provided using the @SAMP.StandardProfile.Client@
+'System.Log.Logger.Logger' instance. At present this is limited
+to debugging information only.
 -}
 
 module Network.SAMP.Standard.Types (

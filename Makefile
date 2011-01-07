@@ -10,7 +10,7 @@ testclient:	.dummy
 
 docs:	.dummy
 	@rm -rf html
-	@haddock -h -o html --optghc="-hide-package monads-fd" Network/SAMP/Standard/*hs
+	@haddock -h -o html --optghc="-hide-package monads-fd" Network/SAMP/*hs Network/SAMP/Standard/*hs
 
 .dummy:
 
