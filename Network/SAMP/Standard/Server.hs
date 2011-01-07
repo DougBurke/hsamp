@@ -1,6 +1,6 @@
 {-# LANGUAGE FlexibleInstances #-}
 
-{- |
+{-|
 Module      :  Network.SAMP.Standard.Server
 Copyright   :  (c) Smithsonian Astrophysical Observatory 2011
 License     :  BSD-like

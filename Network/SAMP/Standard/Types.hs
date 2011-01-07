@@ -32,6 +32,7 @@ module Network.SAMP.Standard.Types (
 
        SAMPType(..), SAMPValue(..), SAMPKeyValue,
        showSAMPValue,
+       getKey,
 
        RString, emptyRString, toRString, toRStringE, fromRString, asIntegral, asFloating, asBool,
        MType, toMType, toMTypeE, fromMType, isMTWildCard,
@@ -623,7 +624,8 @@ smtype , sparams :: RString
 smtype = RS "samp.mtype"
 sparams = RS "samp.params"
 
--- | Get a value from the contents of a SAMP Map.
+-- | Get a value from the contents of a SAMP Map (given as a list
+-- of key,value pairs).
 getKey :: (Monad m, SAMPType a) => 
 	  RString          -- ^ Field name
        -> [SAMPKeyValue]   -- ^ SAMP Map contents

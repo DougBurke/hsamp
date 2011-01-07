@@ -3,7 +3,7 @@ Module      :  Network.SAMP.Standard
 Copyright   :  (c) Smithsonian Astrophysical Observatory 2011
 License     :  BSD-like
 
-Maintainer  :  doug_j_burke@yahoo.com
+Maintainer  :  dburke@cfa.harvard.edu
 Stability   :  unstable
 Portability :  requires haxr
 
@@ -11,10 +11,10 @@ Support for the Simple Application Messaging Protocol (SAMP) Standard
 Profile, described at <http://www.ivoa.net/Documents/latest/SAMP.html>.
 This protocol is used in Astronomy to send control information between 
 applications, such as
-TopCat (<>),
-ds9 (<http://hea-www.harvard.edu/RD/ds9/>)
-and
-Aladdin (<>).
+TopCat (<http://www.star.bris.ac.uk/~mbt/topcat/>),
+ds9 (<http://hea-www.harvard.edu/RD/ds9/>),
+Aladin (<http://aladin.u-strasbg.fr/>)
+and the WorldWide Telescope (WWT, <http://www.worldwidetelescope.org/Home.aspx>).
 
 This module almost supports the 1.2 version of the document. Incomplete
 features include:
@@ -113,6 +113,15 @@ From the SAMP documentation:
 
 which could be written as
 
+> module Main where
+>
+> import Network.SAMP.Standard
+> import Data.Maybe (fromJust)
+>
+> -- unsafe conversion routine
+> tRS :: String -> RString
+> tRS = fromJust . toRString
+>
 > main :: IO ()
 > main = handleError fail $ do
 >
@@ -134,10 +143,6 @@ which could be written as
 >
 >     -- Unregister
 >     unregisterE conn
->
-> -- unsafe conversion routine
-> tRS :: String -> RString
-> tRS = fromJust . toRString
 
 -}
 
@@ -147,6 +152,49 @@ In this example we add a simple handler that will ensure the client is
 unregistered from the hub even if the
 @'Control.Exception.UserInterrupt'@ exception is thrown.
 
-Except that it is not written yet.
+> module Main where
+>
+> import qualified Control.Exception as CE
+> import Control.Monad (forM_)
+> import Control.Monad.Trans (liftIO)
+> import Data.Maybe (fromJust)
+>
+> import Network.SAMP.Standard 
+>
+> -- run a computation in the IO monad
+> runE :: Err IO a -> IO a
+> runE = handleError fail
+>
+> main :: IO ()
+> main = do
+>     -- register the client
+>     conn <- runE $ getHubInfoE >>= registerClientE
+>     putStrLn "Registered with the SAMP hub"
+>
+>     -- catch a user interrupt so that we can unregister the client
+>     let hdlr :: CE.AsyncException -> IO a
+>         hdlr CE.UserInterrupt = runE (unregisterE conn) >> CE.throwIO CE.UserInterrupt
+>         hdlr e = CE.throwIO e
+>
+>     -- awkward error handling to make sure we unregister on an error
+>     handleError (\m -> runE (unregisterE conn) >> fail m) (act conn) `CE.catch` hdlr
+>     runE $ unregisterE conn
+>     putStrLn "Unregistered client"
+>
+> sName :: RString
+> sName = fromJust $ toRString "samp.name"
+>
+> -- report on clients that are subscribed to the table.load.votable message
+> act :: SAMPConnection -> Err IO ()
+> act conn = do
+>     msg <- toMTypeE "table.load.votable"
+>     clients <- getSubscribedClientsE conn msg
+>     forM_ clients $ \cl -> do
+>         liftIO $ putStrLn $ "Client: " ++ show cl
+>         md <- getMetadataE conn cl
+>         -- this will error out if the @samp.name@ field is not set;
+>         -- so we really should handle this case
+>         name <- getKey sName md :: Err IO RString
+>         liftIO $ putStrLn $ "   aka: " ++ show name
 
 -}
