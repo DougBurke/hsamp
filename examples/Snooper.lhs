@@ -186,12 +186,22 @@ respond with an empty string).
 >     putStrLn ""
 
 > handlePingCall :: MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
-> handlePingCall _ _ _ _ _ = return $ toSAMPResponse []
+> handlePingCall _ _ name _ keys = do
+>     putStrLn $ "Snooper was pinged by " ++ show name
+>     forM_ keys $ \(k,v) -> putStrLn $ "  " ++ show k ++ " -> " ++ showSAMPValue v
+>     putStrLn ""
+>     return $ toSAMPResponse []
 
-Is it sensible to successfully reply to all messages?
+We return a warning to point out that we are just logging this message
+(basically copying the behavior of Mark's snooper here).
 
 > handleOtherCall :: MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
-> handleOtherCall _ _ _ _ _ = return $ toSAMPResponse []
+> handleOtherCall mtype _ name _ keys = do
+>     putStrLn $ "Call of " ++ show mtype ++ " by " ++ show name
+>     forM_ keys $ \(k,v) -> putStrLn $ "  " ++ show k ++ " -> " ++ showSAMPValue v
+>     putStrLn ""
+>     let emsg = fromJust $ toRString $ "The message " ++ show mtype ++ " has only been logged, not acted on."
+>     return $ toSAMPResponseWarning [] emsg []
 
 Not sure what to do about this at the moment.
 
