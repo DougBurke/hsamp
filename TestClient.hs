@@ -73,7 +73,7 @@ doIt = let act = getHubInfoE >>= \hi -> putLn "Found hub." >> processHub hi
            otherHdlr :: CE.SomeException -> IO ()
            otherHdlr e = putStrLn ("ERROR: " ++ show e) >> exitFailure
 
-       in handleError fail act
+       in runE act
            `CE.catches` [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
 
 {-
@@ -106,13 +106,13 @@ processHub si@(ss, surl) = do
            -- _ <- liftIO $ forkIO $ runServer (sock,pNum) tid cl
 
            let hdlr :: CE.AsyncException -> IO ()
-               hdlr CE.UserInterrupt = handleError fail (unregisterE cl) >> CE.throwIO CE.UserInterrupt
+               hdlr CE.UserInterrupt = runE (unregisterE cl) >> CE.throwIO CE.UserInterrupt
                hdlr e = CE.throwIO e
 
                act = liftIO (forkIO (runServer (sock,pNum) tid cl)) >> doClient cl pNum
 
            -- could use CE.catchJust here
-           liftIO $ handleError (\m -> handleError fail (unregisterE cl) >> fail m) act `CE.catch` hdlr
+           liftIO $ handleError (\m -> runE (unregisterE cl) >> fail m) act `CE.catch` hdlr
 
            unregisterE cl
            putLn "Unregistered client"

@@ -125,7 +125,7 @@ which could be written as
 > tRS = fromJust . toRString
 >
 > main :: IO ()
-> main = handleError fail $ do
+> main = runE $ do
 >
 >     -- Read information from lockfile to locate and register with hub.
 >     conn <- getHubInfoE >>= registerClientE 
@@ -163,10 +163,6 @@ unregistered from the hub even if the
 >
 > import Network.SAMP.Standard 
 >
-> -- run a computation in the IO monad
-> runE :: Err IO a -> IO a
-> runE = handleError fail
->
 > main :: IO ()
 > main = do
 >     -- register the client
@@ -178,7 +174,8 @@ unregistered from the hub even if the
 >         hdlr CE.UserInterrupt = runE (unregisterE conn) >> CE.throwIO CE.UserInterrupt
 >         hdlr e = CE.throwIO e
 >
->     -- awkward error handling to make sure we unregister on an error
+>     -- Awkward error handling to make sure we unregister on an error.
+>     -- It is also not quite correct.
 >     handleError (\m -> runE (unregisterE conn) >> fail m) (act conn) `CE.catch` hdlr
 >     runE $ unregisterE conn
 >     putStrLn "Unregistered client"

@@ -36,6 +36,9 @@ module Network.SAMP.Standard.Server (
        -- This /may/ change to supplying a comparator (e.g.
        -- @MType -> Bool@) if it is found to be necessary.
        --
+       -- One thing that /will/ change is inclusion of the @MType@
+       -- as an argument to the handler.
+       --
 
        SAMPNotificationFunc, SAMPCallFunc, SAMPResponseFunc,
        simpleClientServer,

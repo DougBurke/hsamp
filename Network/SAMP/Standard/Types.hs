@@ -46,7 +46,8 @@ module Network.SAMP.Standard.Types (
 
        -- * Error handling
 
-       Err, handleError -- from XmlRpc
+       -- in part from haxr
+       Err, runE, handleError
 
        ) where
 
@@ -61,6 +62,12 @@ import Data.Char (chr, isDigit)
 import Data.Maybe (fromJust)
 
 import qualified Data.ByteString.Lazy.Char8 as L
+
+-- | Runs the SAMP computation and returns the result.
+-- Any error is converted to a user exception. This is
+-- a specialised form of 'handleError'.
+runE :: Err IO a -> IO a
+runE = handleError fail
 
 -- | Information about the hub (the SAMP secret and the URL)
 type SAMPInfo = (RString, String)
