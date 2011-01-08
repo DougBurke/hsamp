@@ -28,8 +28,17 @@ module Network.SAMP.Standard.Server (
 
        -- * High level server
 
+       -- | These routines are used to define how to handle the
+       -- SAMP messages from the hub. The match is supplied by the
+       -- 'MType' components of the  'SAMPNotificationFunc' and
+       -- 'SAMPCallFunc' types. These can include wildtypes
+       -- if you want a single handler for multiple messages.
+       -- This /may/ change to supplying a comparator (e.g.
+       -- @MType -> Bool@) if it is found to be necessary.
+       --
+
        SAMPNotificationFunc, SAMPCallFunc, SAMPResponseFunc,
-       simpleServer,
+       simpleClientServer,
 
        -- * Low level server
 
@@ -39,7 +48,8 @@ module Network.SAMP.Standard.Server (
        SAMPFun, fun,
 
        SAMPMethodMap,
-       methods, handleSAMPCall,
+       clientMethods, handleSAMPCall,
+       clientMethodMap
 
        ) where
 
@@ -164,12 +174,13 @@ Section 3.9.
 -}
 
 -- | A mapping from a 'MType' to the routine used to handle notification
--- of this message.
+-- of the @samp.client.receiveNotification@ message.
 type SAMPNotificationFunc = (MType, RString -> RString -> [SAMPKeyValue] -> IO ())
 
 -- | A mapping from a 'MType' to the routine used to handle calls
--- of this message. The response will be returned to the hub using the
--- @samp.hub.reply@ message (using 'Network.SAMP.Standard.Client.replyE').
+-- of the message @samp.client.receiveCall@. The response will be returned to the hub using the
+-- @samp.hub.reply@ message (using 'Network.SAMP.Standard.Client.replyE')
+-- when using 'simpleClientServer'.
 type SAMPCallFunc = (MType, RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse)
 
 -- | The handler for SAMP response messages (those received by a callable client
@@ -223,19 +234,23 @@ and execute it.
 This routine includes logging to the @SAMP.StandardProfile.Server@
 logger (at present only debug-level information).
 -}
-methods :: SAMPMethodMap -> SAMPMethodCall -> SAMPServerResult
-methods xs c@(SAMPMethodCall name _) = do
+clientMethods :: SAMPMethodMap -> SAMPMethodCall -> SAMPServerResult
+clientMethods xs c@(SAMPMethodCall name _) = do
     let mname = show name
     dbgE $ "Executing SAMP method: " ++ mname
     method <- maybeToM ("Unknown SAMP method: " ++ mname) (lookup mname xs)
     method c
 
-{-
-TODO: make this available to users so that they can append to it
-if necessary.
+{-| Returns a map of handlers for messages received by a
+callable SAMP client. This can be appended to to handle
+extra messages beyond the SAMP Standard Profile.
 -}
-methodList :: SAMPConnection -> [SAMPNotificationFunc] -> [SAMPCallFunc] -> SAMPResponseFunc -> SAMPMethodMap
-methodList ci ns cs r =
+clientMethodMap :: SAMPConnection -- ^ the connection to use when replying to a message
+                 -> [SAMPNotificationFunc] -- ^ routines for handling notifications (@samp.client.receiveNotification@)
+                 -> [SAMPCallFunc] -- ^ routines for handling calls (@samp.client.receiveCall@)
+                 -> SAMPResponseFunc -- ^ routinr for handling responses (@samp.client.receiveResponse@)
+                 -> SAMPMethodMap -- ^ input for the 'clientMethods' routine
+clientMethodMap ci ns cs r =
            [("samp.client.receiveNotification", fun (receiveNotification ns)),
            ("samp.client.receiveCall", fun (receiveCall cs ci)),
            ("samp.client.receiveResponse", fun (receiveResponse r))
@@ -244,19 +259,23 @@ methodList ci ns cs r =
 {-|
 Reads a SAMP method call from a string and uses the supplied method
 to process the call.
+
+This routine includes logging to the @SAMP.StandardProfile.Server@
+logger (at present only debug-level information).
 -}
 handleSAMPCall :: (SAMPMethodCall -> SAMPServerResult) -- ^ method to call
-           -> String -- ^ XmlRpc input containing the SAMP details of the call
+           -> String -- ^ XML-RPC input containing the SAMP details of the call
            -> IO ()
 handleSAMPCall f str = do
     dbg $ "SAMP body of call is:\n" ++ str
     handleError (const (return ())) (parseSAMPCall str >>= f)
 
--- | A simple SAMP server for a single call.
-simpleServer :: SAMPConnection -- ^ the connection information for the hub
+-- | Handle the SAMP messages sent to a callable client. This processes a
+-- single call using the supplied handlers.
+simpleClientServer :: SAMPConnection -- ^ the connection information for the hub
              -> [SAMPNotificationFunc] -- ^ routines for handling notifications (@samp.client.receiveNotification@)
              -> [SAMPCallFunc] -- ^ routines for handling calls (@samp.client.receiveCall@)
              -> SAMPResponseFunc -- ^ routinr for handling responses (@samp.client.receiveResponse@)
              -> String -- ^ the Xml-RPC input containing the SAMP details of the call
              -> IO ()
-simpleServer ci ns cs r = handleSAMPCall (methods (methodList ci ns cs r))
+simpleClientServer ci ns cs r = handleSAMPCall (clientMethods (clientMethodMap ci ns cs r))

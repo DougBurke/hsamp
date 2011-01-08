@@ -129,7 +129,7 @@ makeClient si pNum = do
     cl <- registerClientE si
     v <- stringToKeyValE "internal.version" "0.0.1"
     md <- toMetadataE "hsamp-test-client"
-          (Just "Test SAMP cluent using hSAMP.")
+          (Just "Test SAMP client using hSAMP.")
           Nothing
           (Just (hostName pNum ++ "icon.png"))
           Nothing
@@ -263,7 +263,7 @@ rfunc _ receiverid msgid rsp =
 getResponse :: ThreadId -> SAMPConnection -> RqBody -> ServerPart Response
 getResponse tid si (Body bdy) = do
     let call = L.unpack bdy
-    liftIO $ simpleServer si (notifications tid) calls rfunc call
+    liftIO $ simpleClientServer si (notifications tid) calls rfunc call
     ok (toResponse "")
 
 xmlct :: B.ByteString

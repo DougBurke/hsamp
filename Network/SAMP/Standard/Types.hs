@@ -203,21 +203,50 @@ We also allow wildcards in certain cases, which is
 
 >  <msub>  ::= "*" | <mtype> "." "*"
 
+The 'Eq' instance for @MType@ supports wild cards in
+equality tests, so that
+
+>  toMType "image.*" == toMType "image.load.fits"
+
+is 'True'.
+
 TODO:
 
  - add a Read instance
 
 -}
 
-data MType = MT [String] Bool deriving Eq
+data MType = MT [String] Bool
 
 {-
-keeping as [String] rather than String is over kill
+Keeping as [String] rather than String is overkill. It
+isn't really a huge help in the Eq instance.
 -}
 
 instance Show MType where
     show (MT xs False) = intercalate "." xs
     show (MT xs True)  = intercalate "." (xs ++ ["*"])
+
+-- helper for matchMTypes
+qcomp :: [String] -> [String] -> Bool
+qcomp l r = all (uncurry (==)) $ zip l r
+
+{-|
+Returns 'True' if the two mtypes are equal. If neither
+include a wild card then the check is a simple compare.
+If one has a wild card then the comparison is defined
+by the wildcard, so that 'table.load.*' matches 'table.load.votable'.
+For two wildcards we match on the MType fragments,
+so that 'table.*' matches 'table.load.*'.
+-}
+matchMTypes :: MType -> MType -> Bool
+matchMTypes (MT lxs False) (MT rxs False) = lxs == rxs
+matchMTypes (MT lxs True)  (MT rxs True)  = qcomp lxs rxs
+matchMTypes (MT lxs True)  (MT rxs False) =  qcomp lxs (take (length lxs) rxs)
+matchMTypes (MT lxs False) (MT rxs True)  =  qcomp rxs (take (length rxs) lxs)
+
+instance Eq MType where
+    (==) = matchMTypes
 
 instance SAMPType MType where
     toSValue = SAMPString . RS . show
