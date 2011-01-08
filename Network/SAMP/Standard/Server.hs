@@ -36,9 +36,6 @@ module Network.SAMP.Standard.Server (
        -- This /may/ change to supplying a comparator (e.g.
        -- @MType -> Bool@) if it is found to be necessary.
        --
-       -- One thing that /will/ change is inclusion of the @MType@
-       -- as an argument to the handler.
-       --
 
        SAMPNotificationFunc, SAMPCallFunc, SAMPResponseFunc,
        simpleClientServer,
@@ -178,13 +175,13 @@ Section 3.9.
 
 -- | A mapping from a 'MType' to the routine used to handle notification
 -- of the @samp.client.receiveNotification@ message.
-type SAMPNotificationFunc = (MType, RString -> RString -> [SAMPKeyValue] -> IO ())
+type SAMPNotificationFunc = (MType, MType -> RString -> RString -> [SAMPKeyValue] -> IO ())
 
 -- | A mapping from a 'MType' to the routine used to handle calls
 -- of the message @samp.client.receiveCall@. The response will be returned to the hub using the
 -- @samp.hub.reply@ message (using 'Network.SAMP.Standard.Client.replyE')
 -- when using 'simpleClientServer'.
-type SAMPCallFunc = (MType, RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse)
+type SAMPCallFunc = (MType, MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse)
 
 -- | The handler for SAMP response messages (those received by a callable client
 -- via the @samp.client.receiveResponse@ message).
@@ -197,7 +194,7 @@ receiveNotification funcs secret senderid sm = do
         mparams = getSAMPMessageParams sm
     dbg $ "Notification mtype=" ++ show mtype ++ " sender=" ++ show senderid
     case lookup mtype funcs of
-      Just func -> func secret senderid mparams
+      Just func -> func mtype secret senderid mparams
       _ -> do
              let emsg = "Unrecognized mtype for notification: " ++ show mtype
              dbg emsg
@@ -211,7 +208,7 @@ receiveCall funcs ci secret senderid msgid sm = do
     dbg $ "Call mtype=" ++ show mtype ++ " sender=" ++ show senderid
     case lookup mtype funcs of
       Just func -> do
-                     rsp <- func secret senderid msgid mparams
+                     rsp <- func mtype secret senderid msgid mparams
                      dbg $ "Responding with " ++ show rsp
                      handleError (const (return ())) $ replyE ci msgid rsp
       _ -> do

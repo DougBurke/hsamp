@@ -241,13 +241,13 @@ notifications tid = [(shutdownMT, handleShutdown tid)]
 calls :: [SAMPCallFunc]
 calls = [(pingMT, handlePing)]
 
-handleShutdown :: ThreadId  -> RString -> RString -> [SAMPKeyValue] -> IO ()
-handleShutdown tid _ name _ = do
+handleShutdown :: ThreadId  -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
+handleShutdown tid _ _ name _ = do
                putStrLn $ "Received a shutdown message from " ++ show name
                killThread tid
 
-handlePing :: RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
-handlePing _ senderid msgid _ = do
+handlePing :: MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
+handlePing _ _ senderid msgid _ = do
     putStrLn $ "Received a ping request from " ++ show senderid ++ " msgid=" ++ show msgid
     return $ toSAMPResponse []
 
