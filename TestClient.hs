@@ -91,9 +91,12 @@ eConf :: Conf
 eConf = nullConf { port = 0 }
 
 processHub :: SAMPInfo -> Err IO ()
-processHub si@(ss, surl) = do
+processHub si@(ss, surl, ekeys) = do
            putLn $ "Samp secret: " ++ show ss
            putLn $ "Samp hub:    " ++ surl
+           unless (null ekeys) $ do
+                putLn "  extra info:"
+                forM_ ekeys $ \(k,v) -> putLn $ "   " ++ k ++ " -> " ++ v
 
            tid <- liftIO myThreadId
 

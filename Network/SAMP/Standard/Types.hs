@@ -69,8 +69,9 @@ import qualified Data.ByteString.Lazy.Char8 as L
 runE :: Err IO a -> IO a
 runE = handleError fail
 
--- | Information about the hub (the SAMP secret and the URL)
-type SAMPInfo = (RString, String)
+-- | Information about the hub (the SAMP secret, the URL and
+-- any other key,value entries).
+type SAMPInfo = (RString, String, [(String, String)])
 
 rchars :: String
 rchars = map chr $ [0x9, 0xa, 0xd] ++ [0x20 .. 0x7f]

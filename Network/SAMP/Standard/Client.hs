@@ -173,11 +173,13 @@ extractHubInfo :: [(String,String)] -> Maybe SAMPInfo
 extractHubInfo alist = do
     secret <- lookup "samp.secret" alist >>= toRString
     url <- lookup "samp.hub.xmlrpc.url" alist
-    return (secret, url)
+    return (secret, url,
+            filter ((`notElem` ["samp.secret","samp.hub.xmlrpc.url"]) . fst) alist)
 
 {-|
 Return information about the SAMP hub needed by 'registerE' and
-'registerClientE'.
+'registerClientE'. It also includes any extra key,value pairs
+included in the SAMP lock file.
 
 At the moment this does not support the SAMP 1.2 @SAMP_HUB@
 environment variable and assumes a UNIC environment.
@@ -220,7 +222,7 @@ makeCallE url msg args = do
 -- way to register the client and process the return vaues.
 registerE :: SAMPInfo     -- ^ hub information
           -> Err IO [SAMPKeyValue] -- ^ Key/value pairs from the registration call.
-registerE (sKey,url) =
+registerE (sKey,url,_) =
     makeCallE url "samp.hub.register" [SAMPString sKey]
     >>= fromSValue
 
@@ -242,7 +244,7 @@ getClientInfoE :: (Monad m) =>
                SAMPInfo   -- ^ hub information
                -> [SAMPKeyValue] -- ^ response from 'registerE'
                -> Err m SAMPConnection
-getClientInfoE (sKey,url) ks = SAMPConnection `liftM`
+getClientInfoE (sKey,url,_) ks = SAMPConnection `liftM`
                   return sKey 
                   `ap` return url
                   `ap` slookup sPrivateKey ks
