@@ -15,6 +15,11 @@ Logging is provided using the @SAMP.StandardProfile.Client@
 'System.Log.Logger.Logger' instance. At present this is limited
 to debugging information only.
 
+TODO:
+
+  - conversion to RString and MType should, when run in Err monad,
+    report the problem character
+
 -}
 
 module Network.SAMP.Standard.Types (
@@ -316,6 +321,21 @@ stringToKeyValE :: (Monad m)
                 -> String -- ^ the value
                 -> Err m SAMPKeyValue
 stringToKeyValE k v = (,) `liftM` toRStringE k `ap` fmap toSValue (toRStringE v)
+
+{-
+TODO
+  - document
+  - work out fixity
+  - decide if this is actualy sensible
+
+(|>) :: (Monad m)
+     => String
+     -> String
+     -> Err m SAMPKeyValue
+(|>) = stringToKeyValE
+
+and (<|) could be for conversion back to strings?
+-}
 
 -- | Convert a 'SAMPKeyValue' into a pair of strings.
 -- This fails if the 'SAMPValue' stored in the pair is not

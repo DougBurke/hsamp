@@ -60,6 +60,8 @@ import Network.XmlRpc.Internals
 import Control.Monad.Trans (liftIO)
 import qualified Control.Exception as CE
 
+import Data.Maybe (fromJust)
+
 import Network.SAMP.Standard.Types
 import Network.SAMP.Standard.Client (makeCallE, replyE)
 
@@ -225,7 +227,14 @@ receiveResponse f secret receiverid msgid rsp = do
 A map from SAMP method name to Haskell routine used to process
 the message.
 -}
-type SAMPMethodMap = [(String, SAMPMethod)]
+type SAMPMethodMap = [(RString -> Bool, SAMPMethod)]
+
+-- find the relevant entry in the input "map"
+
+find :: a -> [(a -> Bool, b)] -> Maybe b
+find _ [] = Nothing
+find a ((f,g):xs) | f a       = Just g
+                  | otherwise = find a xs
 
 {-|
 Look up the Haskell function to handle the SAMP method call
@@ -238,8 +247,11 @@ clientMethods :: SAMPMethodMap -> SAMPMethodCall -> SAMPServerResult
 clientMethods xs c@(SAMPMethodCall name _) = do
     let mname = show name
     dbgE $ "Executing SAMP method: " ++ mname
-    method <- maybeToM ("Unknown SAMP method: " ++ mname) (lookup mname xs)
+    method <- maybeToM ("Unknown SAMP method: " ++ mname) (find name xs)
     method c
+
+toCompare :: String -> (RString -> Bool)
+toCompare n = (== fromJust (toRString n))
 
 {-| Returns a map of handlers for messages received by a
 callable SAMP client. This can be appended to to handle
@@ -251,9 +263,9 @@ clientMethodMap :: SAMPConnection -- ^ the connection to use when replying to a 
                  -> SAMPResponseFunc -- ^ routinr for handling responses (@samp.client.receiveResponse@)
                  -> SAMPMethodMap -- ^ input for the 'clientMethods' routine
 clientMethodMap ci ns cs r =
-           [("samp.client.receiveNotification", fun (receiveNotification ns)),
-           ("samp.client.receiveCall", fun (receiveCall cs ci)),
-           ("samp.client.receiveResponse", fun (receiveResponse r))
+           [(toCompare "samp.client.receiveNotification", fun (receiveNotification ns)),
+           (toCompare "samp.client.receiveCall", fun (receiveCall cs ci)),
+           (toCompare "samp.client.receiveResponse", fun (receiveResponse r))
            ]
 
 {-|
