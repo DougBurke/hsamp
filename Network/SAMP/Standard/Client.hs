@@ -37,6 +37,7 @@ module Network.SAMP.Standard.Client (
        -- * Low-level interface
 
        makeCallE,
+       callHubE,
        registerE, getClientInfoE
 
        ) where
@@ -218,6 +219,22 @@ makeCallE url msg args = do
          dbg (show rsp)
          fromValue rsp
 
+{-|
+Similar to 'makeCallE' but takes a 'SAMPConnection' 
+as an argument. It automatically adds the private
+key to the start of the message arguments.
+
+This is a low-level routine and users are expected to
+use more appropriate routines where available.
+-} 
+callHubE :: SAMPConnection
+         -> String       -- ^ message name
+         -> [SAMPValue]  -- ^ message arguments
+         -> Err IO SAMPValue     -- ^ response
+callHubE conn msg args = 
+         makeCallE (sampHubURL conn) msg
+                   $ (SAMPString (sampPrivateKey conn)) : args
+
 -- | Register a client with a hub. See 'registerClientE' for a simple
 -- way to register the client and process the return vaues.
 registerE :: SAMPInfo     -- ^ hub information
@@ -264,8 +281,7 @@ registerClientE si = registerE si >>= getClientInfoE si
 unregisterE :: SAMPConnection
             -> Err IO ()
 unregisterE cl =
-    makeCallE (sampHubURL cl) "samp.hub.unregister" [SAMPString (sampPrivateKey cl)]
-    >> return ()
+    callHubE cl "samp.hub.unregister" [] >> return ()
 
 sName , sTxt, sHtml, sIcon, sDoc :: RString
 sName = fromJust $ toRString "samp.name"
@@ -316,7 +332,7 @@ declareMetadataE :: SAMPConnection
                  -> [SAMPKeyValue] -- ^ the key/value pairs to declare 
                  -> Err IO ()
 declareMetadataE cl ks = 
-    makeCallE (sampHubURL cl) "samp.hub.declareMetadata" [SAMPString (sampPrivateKey cl), SAMPMap ks]
+    callHubE cl "samp.hub.declareMetadata" [SAMPMap ks]
     >> return ()
 
 -- | Return the metadata for another client of the SAMP hub as a
@@ -325,7 +341,7 @@ getMetadataE :: SAMPConnection
              -> RString -- ^ The id of the SAMP client to query
              -> Err IO [SAMPKeyValue] -- ^ The metadata key/value pairs of the queried client
 getMetadataE cl clid =
-    makeCallE (sampHubURL cl) "samp.hub.getMetadata" [SAMPString (sampPrivateKey cl), SAMPString clid]
+    callHubE cl "samp.hub.getMetadata" [SAMPString clid]
     >>= fromSValue
 
 mtToRS :: MType -> RString
@@ -345,7 +361,7 @@ declareSubscriptionsE :: SAMPConnection
                       -> Err IO ()
 declareSubscriptionsE cl subs =
     let ks = map (CA.first mtToRS) subs
-    in makeCallE (sampHubURL cl) "samp.hub.declareSubscriptions" [SAMPString (sampPrivateKey cl), SAMPMap ks]
+    in callHubE cl "samp.hub.declareSubscriptions" [SAMPMap ks]
        >> return ()
 
 -- | Declare the subscriptions for this client. This can be used
@@ -355,8 +371,8 @@ declareSubscriptionsSimpleE :: SAMPConnection
                             -> [MType] -- ^ the messages the client is subscribing to
                             -> Err IO ()
 declareSubscriptionsSimpleE cl mtypes =
-    let ks = map (\(n) -> (mtToRS n, SAMPMap [])) mtypes
-    in makeCallE (sampHubURL cl) "samp.hub.declareSubscriptions" [SAMPString (sampPrivateKey cl), SAMPMap ks]
+    let ks = map (\n -> (mtToRS n, SAMPMap [])) mtypes
+    in callHubE cl "samp.hub.declareSubscriptions" [SAMPMap ks]
        >> return ()
 
 -- | Get the message subscriptions of a client. The subscriptions are
@@ -365,7 +381,7 @@ getSubscriptionsE :: SAMPConnection
                   -> RString -- ^ the name of the client to query
                   -> Err IO [SAMPKeyValue] -- ^ the (key,value) subscriptions of the queried client
 getSubscriptionsE cl clid = 
-    makeCallE (sampHubURL cl) "samp.hub.getSubscriptions" [SAMPString (sampPrivateKey cl), SAMPString clid]
+    callHubE cl "samp.hub.getSubscriptions" [SAMPString clid]
     >>= fromSValue
 
 -- | Return a list of all the registered clients of the hub - including
@@ -373,7 +389,7 @@ getSubscriptionsE cl clid =
 getRegisteredClientsE :: SAMPConnection
                       -> Err IO [RString] -- ^ the names of the registered clients
 getRegisteredClientsE cl =
-    makeCallE (sampHubURL cl) "samp.hub.getRegisteredClients" [SAMPString (sampPrivateKey cl)]
+    callHubE cl "samp.hub.getRegisteredClients" []
     >>= fromSValue
 
 -- | Return a (key,value) list of all the clients that are subscibed to
@@ -387,7 +403,7 @@ getSubscribedClientsE :: SAMPConnection
                       -> Err IO [SAMPKeyValue]
 getSubscribedClientsE cl mtype =
     when (isMTWildCard mtype) (throwError "MType can not contain a wild card when calling getSubscribedClients")
-    >> makeCallE (sampHubURL cl) "samp.hub.getSubscribedClients" [SAMPString (sampPrivateKey cl), toSValue mtype]
+    >> callHubE cl "samp.hub.getSubscribedClients" [toSValue mtype]
     >>= fromSValue
 
 -- | Send a message to a given client of the hub and do not
@@ -397,8 +413,7 @@ notifyE :: SAMPConnection
         -> SAMPMessage -- ^ the message
         -> Err IO ()
 notifyE cl clid msg =
-    makeCallE (sampHubURL cl) "samp.hub.notify"
-          [SAMPString (sampPrivateKey cl), SAMPString clid, toSValue msg]
+    callHubE cl "samp.hub.notify" [SAMPString clid, toSValue msg]
     >> return ()
 
 -- | Send a message to all clients and get back a list of those
@@ -408,8 +423,7 @@ notifyAllE :: SAMPConnection
            -> SAMPMessage -- ^ the message
            -> Err IO [RString] -- ^ the list of clients that were sent the message
 notifyAllE cl msg =
-    makeCallE (sampHubURL cl) "samp.hub.notifyAll"
-          [SAMPString (sampPrivateKey cl), toSValue msg]
+    callHubE cl "samp.hub.notifyAll" [toSValue msg]
     >>= fromSValue
 
 -- | Send a message to a client and wait for a response. The timeout parameter
@@ -423,8 +437,7 @@ callAndWaitE :: SAMPConnection
              -> Err IO SAMPResponse
 callAndWaitE cl clid msg tout = 
     let t = fromMaybe 0 tout
-    in makeCallE (sampHubURL cl) "samp.hub.callAndWait"
-          [SAMPString (sampPrivateKey cl), SAMPString clid, toSValue msg, toSValue t]
+    in callHubE cl "samp.hub.callAndWait" [SAMPString clid, toSValue msg, toSValue t]
     >>= fromSValue
     
 -- | Reply to a message from another client.
@@ -433,8 +446,7 @@ replyE :: SAMPConnection
        -> SAMPResponse -- ^ the response
        -> Err IO ()
 replyE cl msgid rsp =
-    makeCallE (sampHubURL cl) "samp.hub.reply"
-        [SAMPString (sampPrivateKey cl), SAMPString msgid, toSValue rsp]
+    callHubE cl "samp.hub.reply" [SAMPString msgid, toSValue rsp]
     >> return ()
 
 -- | Ping the hub to see if it is running.
@@ -448,6 +460,4 @@ replyE cl msgid rsp =
 -- 
 pingE :: SAMPConnection
       -> Err IO ()
-pingE cl =
-    makeCallE (sampHubURL cl) "samp.hub.ping" [SAMPString (sampPrivateKey cl)]
-    >> return ()
+pingE cl = callHubE cl "samp.hub.ping" [] >> return ()
