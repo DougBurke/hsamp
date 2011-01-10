@@ -351,7 +351,7 @@ stringFromKeyValE :: Monad m
                  => SAMPKeyValue
                  -> Err m (String, String)
 stringFromKeyValE (k,SAMPString v) = return (fromRString k, fromRString v)
-stringFromKeyValE (_,x) = throwError $ "Expected a SAMP string but found " ++ show x
+stringFromKeyValE (k,x) = throwError $ "Key " ++ show k ++ " should be a SAMP string but found " ++ show x
 
 {-
 The following routines could be made generic - ie use XmlRpcType a rather

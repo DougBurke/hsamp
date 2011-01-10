@@ -144,6 +144,7 @@ callE cl clid msgtag msg =
 
 -- | Send a message asynchronously to all clients which are subscribed to the
 -- message type.
+--
 -- The client must be callable for this to work (see 'setXmlrpcCallbackE'),
 -- although this module does not enforce this.
 callAllE :: SAMPConnection
