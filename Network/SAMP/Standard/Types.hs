@@ -20,6 +20,13 @@ TODO:
   - conversion to RString and MType should, when run in Err monad,
     report the problem character
 
+  - the Eq instance for 'MType' is wrong, since it thinks that
+    @foo.bar == foo.bar.*@.
+
+  - should the fields of the SAMPConnection change from 
+    @sampSecret@ to @scSAMPSecret@ or @scSecret@ (I think I
+    prefer the latter, ie drop the @samp@ prefix)?
+
 -}
 
 module Network.SAMP.Standard.Types (

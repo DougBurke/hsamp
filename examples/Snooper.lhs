@@ -7,6 +7,14 @@ Usage:
 
    ./snooper
 
+TODO:
+
+  - since we know when clients register/unregister from the hub
+    and any metadata they assert, we can keep a mapping from id to
+    samp.name, so this can be used in reports.
+
+  - look at error handling
+
 > module Main where
 >
 > import System.Environment (getArgs, getProgName)
@@ -181,7 +189,7 @@ respond with an empty string).
 
 > handleOther :: MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
 > handleOther mtype _ name keys = do
->     putStrLn $ "Notication of " ++ show mtype ++ " from " ++ show name
+>     putStrLn $ "Notification of " ++ show mtype ++ " from " ++ show name
 >     forM_ keys $ \(k,v) -> putStrLn $ "  " ++ show k ++ " -> " ++ showSAMPValue v
 >     putStrLn ""
 

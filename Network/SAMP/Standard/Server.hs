@@ -18,6 +18,10 @@ Logging is provided using the @SAMP.StandardProfile.Server@
 to debugging information only.
 -}
 
+{-
+TODO: look at the hbeanstalk code on hackage as may be relevant
+-}
+
 module Network.SAMP.Standard.Server (
 
        -- * Asynchronous client calls
