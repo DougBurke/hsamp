@@ -13,6 +13,9 @@ TODO:
     and any metadata they assert, we can keep a mapping from id to
     samp.name, so this can be used in reports.
 
+    Should we auto-convert the id parameter of messages to
+    include this information?
+
   - look at error handling
 
 > module Main where
@@ -24,10 +27,13 @@ TODO:
 >
 > import qualified Control.Exception as CE
 > import Control.Concurrent (ThreadId, killThread, myThreadId)
+> import Control.Concurrent.MVar
 >
 > import Control.Monad (msum, forM_, unless, when)
 > import Control.Monad.Trans (liftIO)
-> import Data.Maybe (fromJust)
+>
+> import Data.Maybe (fromJust, fromMaybe)
+> import qualified Data.Map as M
 >
 > import qualified Data.ByteString.Char8 as B
 > import qualified Data.ByteString.Lazy.Char8 as L
@@ -70,11 +76,18 @@ TODO:
 >     snoop `CE.catches` [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
 >     exitSuccess
 >
-> mdataMT , pingMT , shutdownMT , allMT :: MType
+> mdataMT , registerMT, unregisterMT, pingMT , shutdownMT , allMT :: MType
 > mdataMT = fromJust (toMType "samp.hub.event.metadata")
+> registerMT = fromJust (toMType "samp.hub.event.register")
+> unregisterMT = fromJust (toMType "samp.hub.event.unregister")
 > pingMT = fromJust (toMType "samp.app.ping")
 > shutdownMT = fromJust (toMType "samp.hub.event.shutdown")
 > allMT = fromJust (toMType "*")
+
+> sName , idLabel , mdataLabel :: RString
+> sName = fromJust (toRString "samp.name")
+> idLabel = fromJust (toRString "id")
+> mdataLabel = fromJust (toRString "metadata")
 
 Set up a simple client (i.e. with limited metadata)
 
@@ -140,16 +153,81 @@ Set up the subscriptions and run the server to process the requests.
 >     -- now run the server
 >     runServer sock pNum conn
 
+Try and ensure sequential output to the screen. Given that we want to respond
+to the hub and display a message it may be better to use a Channel to send
+the screen output to a separate display thread (to try and avoid any waiting for the
+barrier)?
+
+> type Barrier = MVar ()
+
+> newBarrier :: IO Barrier
+> newBarrier = newMVar ()
+
+> syncAction_ :: Barrier -> IO () -> IO ()
+> syncAction_ barrier = withMVar barrier . const
+
+The client map is a mapping from the client Id (identifies the
+SAMP client and is created by the hub) with a user friendly
+string, which is a combination of the id and the samp.name
+setting of the client (if defined).
+
+> type ClientMap = M.Map RString String
+> type ClientMapVar = MVar ClientMap
+
+> bracket :: RString -> String
+> bracket a = " (" ++ fromRString a ++ ")"
+
+> toClientName :: RString -> Maybe RString -> String
+> toClientName k v = fromRString k ++ fromMaybe "" (fmap bracket v)
+
+TODO: can we use M.fromListWithKey here?
+
+> newClientMap :: SAMPConnection -> IO ClientMapVar
+> newClientMap conn = do
+>     clients <- runE (getClientNamesE conn)
+>     let conv (k,v) = (k, toClientName k v)
+>     newMVar $ M.fromList $ map conv clients
+
+> getFromMap :: ClientMap -> RString -> String
+> getFromMap clmap clid = M.findWithDefault (fromRString clid) clid clmap
+
+Get the display name for a client
+
+> getDisplayName :: ClientMapVar -> RString -> IO String
+> getDisplayName clvar clid = do
+>     clmap <- readMVar clvar
+>     return $ getFromMap clmap clid
+
+Remove the client from the map, returning its display name
+
+> removeClient :: ClientMapVar -> RString -> IO String
+> removeClient clvar clid = 
+>     modifyMVar clvar $ \clmap -> do
+>         let rval = getFromMap clmap clid
+>         return (M.delete clid clmap, rval)
+
+Add the client to the map, returning its display name. Will overwrite
+existing values.
+
+> addClient :: ClientMapVar -> RString -> Maybe RString -> IO String
+> addClient clvar clid clname = do
+>     let name = toClientName clid clname
+>     modifyMVar clvar $ \clmap ->
+>         return (M.insert clid name clmap, name)
+
 Creates the server, listening to the assigned socket/port.
 
 > runServer :: Socket -> PortNumber -> SAMPConnection -> IO ()
 > runServer sock portNum conn = do
 >      tid <- myThreadId
+>      barrier <- newBarrier
+>      clvar <- newClientMap conn
 >      simpleHTTPWithSocket sock (nullConf { port = fromEnum portNum }) 
->          (handlers conn tid)
+>          (handlers conn tid barrier clvar)
 
-> handlers :: SAMPConnection -> ThreadId -> ServerPart Response
-> handlers conn tid = msum [handleXmlRpc conn tid, anyRequest (notFound (toResponse "unknown request"))]
+> handlers :: SAMPConnection -> ThreadId -> Barrier -> ClientMapVar -> ServerPart Response
+> handlers conn tid barrier clvar =
+>     msum [handleXmlRpc conn tid barrier clvar, anyRequest (notFound (toResponse "unknown request"))]
 
 XML-RPC is done via a HTML POST of an XML document.
 At present I enforce the content-type restriction but
@@ -158,32 +236,31 @@ this may be a bit OTT.
 > xmlct :: B.ByteString
 > xmlct = B.pack "text/xml"
 
-> handleXmlRpc :: SAMPConnection -> ThreadId -> ServerPart Response
-> handleXmlRpc conn tid = dir "xmlrpc" $ do
+> handleXmlRpc :: SAMPConnection -> ThreadId -> Barrier -> ClientMapVar -> ServerPart Response
+> handleXmlRpc conn tid barrier clvar = dir "xmlrpc" $ do
 >     methodM POST
 >     cType <- getHeaderM "content-type"
 >     unless (cType == Just xmlct) $ escape (badRequest (toResponse ("Invalid content type: " ++ show cType)))
 >     r <- askRq
->     getResponse conn tid (rqBody r)
+>     getResponse conn tid barrier clvar (rqBody r)
 
-I am not entirely convinced I am responding correctly here (the fact we
-respond with an empty string).
-
-> getResponse :: SAMPConnection -> ThreadId -> RqBody -> ServerPart Response
-> getResponse conn tid (Body bdy) = do
+> getResponse :: SAMPConnection -> ThreadId -> Barrier -> ClientMapVar -> RqBody -> ServerPart Response
+> getResponse conn tid barrier clvar (Body bdy) = do
 >     let call = L.unpack bdy
->     liftIO $ simpleClientServer conn (notifications tid) calls rfunc call
+>     liftIO $ simpleClientServer conn (notifications tid barrier clvar) (calls barrier clvar) (rfunc barrier clvar) call
 >     ok (toResponse "")
 
-> notifications :: ThreadId -> [SAMPNotificationFunc]
-> notifications tid =
->      [(shutdownMT, handleShutdown tid),
->       (mdataMT, handleMetadata),
->       (allMT, handleOther)
+> notifications :: ThreadId -> Barrier -> ClientMapVar -> [SAMPNotificationFunc]
+> notifications tid barrier clvar =
+>      [(registerMT, handleRegister barrier clvar),
+>       (unregisterMT, handleUnregister barrier clvar),
+>       (mdataMT, handleMetadata barrier clvar),
+>       (shutdownMT, handleShutdown tid),
+>       (allMT, handleOther barrier clvar)
 >      ]
 
-> calls :: [SAMPCallFunc]
-> calls = [(pingMT, handlePingCall), (allMT, handleOtherCall)]
+> calls :: Barrier -> ClientMapVar -> [SAMPCallFunc]
+> calls barrier clvar = [(pingMT, handlePingCall barrier clvar), (allMT, handleOtherCall barrier clvar)]
 
 > handleShutdown :: ThreadId -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
 > handleShutdown tid _ _ _ _ = killThread tid
@@ -191,43 +268,97 @@ respond with an empty string).
 > showKV :: SAMPKeyValue -> IO ()
 > showKV (k,v) = putStrLn $ "  " ++ fromRString k ++ " -> " ++ showSAMPValue v
 
-> handleMetadata :: MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
-> handleMetadata _ _ name keys = do
->     putStrLn $ "Metadata notification from " ++ fromRString name
->     forM_ keys showKV
->     putStrLn ""
+TODO: need to look for samp.name setting in keys setting to use with
 
-> handleOther :: MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
-> handleOther mtype _ name keys = do
->     putStrLn $ "Notification of " ++ show mtype ++ " from " ++ fromRString name
->     forM_ keys showKV
->     putStrLn ""
+> getKeyStr :: [SAMPKeyValue] -> RString -> Maybe RString
+> getKeyStr kvs key =
+>     case lookup key kvs of
+>         Just (SAMPString s) -> Just s
+>         _ -> Nothing
 
-> handlePingCall :: MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
-> handlePingCall _ _ name _ keys = do
->     putStrLn $ "Snooper was pinged by " ++ fromRString name
->     forM_ keys showKV
->     putStrLn ""
+Return the value of the key from the input list, along with the
+remaining key,value pairs. Only for string values.
+
+> getKeyVal :: [SAMPKeyValue] -> RString -> Maybe (RString, [SAMPKeyValue])
+> getKeyVal kvs key = 
+>     let f a = (a, filter ((/= key) . fst) kvs)
+>     in fmap f (getKeyStr kvs key)
+
+> handleRegister :: Barrier -> ClientMapVar -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
+> handleRegister barrier clvar _ _ name keys = 
+>    case getKeyVal keys idLabel of
+>        Nothing -> 
+>            syncAction_ barrier (putStrLn ("ERROR: unable to find id in parameters of registration call\n"))
+>        Just (clid,kvs) -> do
+>            clname <- addClient clvar clid Nothing
+>            syncAction_ barrier $ do
+>                putStrLn $ "Client has added itself to " ++ fromRString name ++ ": " ++ clname
+>                forM_ kvs showKV
+>                putStrLn ""
+
+> handleUnregister :: Barrier -> ClientMapVar -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
+> handleUnregister barrier clvar _ _ name keys = 
+>    case getKeyVal keys idLabel of
+>        Nothing -> 
+>            syncAction_ barrier (putStrLn ("ERROR: unable to find id in parameters of unregistration call\n"))
+>        Just (clid,kvs) -> do
+>            clname <- removeClient clvar clid
+>            syncAction_ barrier $ do
+>                putStrLn $ "Client has removed itself from " ++ fromRString name ++ ": " ++ clname
+>                forM_ kvs showKV
+>                putStrLn ""
+
+> handleMetadata :: Barrier -> ClientMapVar -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
+> handleMetadata barrier clvar _ _ name keys = do
+>    case getKeyVal keys idLabel of
+>        Nothing -> 
+>            syncAction_ barrier (putStrLn ("ERROR: unable to find id in parameters of metadata call\n"))
+>        Just (clid,kvs) -> do
+>            oclname <- getDisplayName clvar clid
+>            -- TODO: handle error condition when metadata isn't a map
+>            let SAMPMap mds = fromMaybe (SAMPMap []) (lookup mdataLabel kvs)
+>            nclname <- addClient clvar clid $ getKeyStr mds sName
+>            let clname = oclname ++ if oclname == nclname then "" else (" -> " ++ nclname)
+>            syncAction_ barrier $ do
+>                putStrLn $ "Metadata notification from " ++ fromRString name ++ " for " ++ clname
+>                forM_ kvs showKV
+>                putStrLn ""
+
+> handleOther :: Barrier -> ClientMapVar -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
+> handleOther barrier clvar mtype _ name keys = do
+>     clname <- getDisplayName clvar name
+>     syncAction_ barrier $ do
+>         putStrLn $ "Notification of " ++ show mtype ++ " from " ++ clname
+>         forM_ keys showKV
+>         putStrLn ""
+
+> handlePingCall :: Barrier -> ClientMapVar -> MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
+> handlePingCall barrier clvar _ _ name _ keys = do
+>     clname <- getDisplayName clvar name
+>     syncAction_ barrier
+>       (putStrLn ("hsamp-snooper was pinged by " ++ clname) >> forM_ keys showKV >> putStrLn "")
 >     return $ toSAMPResponse []
 
 We return a warning to point out that we are just logging this message
 (basically copying the behavior of Mark's snooper here).
 
-> handleOtherCall :: MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
-> handleOtherCall mtype _ name _ keys = do
->     putStrLn $ "Call of " ++ show mtype ++ " by " ++ fromRString name
->     forM_ keys showKV
->     putStrLn ""
+> handleOtherCall :: Barrier -> ClientMapVar -> MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
+> handleOtherCall barrier clvar mtype _ name _ keys = do
+>     clname <- getDisplayName clvar name
+>     syncAction_ barrier
+>       (putStrLn ("Call of " ++ show mtype ++ " by " ++ clname) >> forM_ keys showKV >> putStrLn "")
 >     let emsg = fromJust $ toRString $ "The message " ++ show mtype ++ " has only been logged, not acted on."
 >     return $ toSAMPResponseWarning [] emsg []
 
 Not sure what to do about this at the moment.
 
-> rfunc :: SAMPResponseFunc
-> rfunc _ receiverid msgid rsp =
->    if isSAMPSuccess rsp
->      then do
->             putStrLn $ "Got a response to msg=" ++ fromRString msgid ++ " from=" ++ fromRString receiverid
->             return ()
->      else putStrLn $ "ERROR: " ++ show (fromJust (getSAMPResponseErrorTxt rsp))
+> rfunc :: Barrier -> ClientMapVar -> SAMPResponseFunc
+> rfunc barrier clvar _ clid msgid rsp = do
+>    clname <- getDisplayName clvar clid
+>    let act = if isSAMPSuccess rsp
+>                then putStrLn $ "Got a response to msg=" ++ fromRString msgid ++ " from=" ++ clname
+>                else do
+>                       putStrLn $ "Error in response to msg=" ++ fromRString msgid ++ " from=" ++ clname
+>                       putStrLn $ show (fromJust (getSAMPResponseErrorTxt rsp))
+>    syncAction_ barrier act
 
