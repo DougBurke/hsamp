@@ -33,6 +33,7 @@ TODO:
 > import Control.Monad (msum, forM_, unless, when)
 > import Control.Monad.Trans (liftIO)
 > import Data.Maybe (fromJust)
+> import Data.List (intercalate)
 >
 > import Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
 >
@@ -167,12 +168,23 @@ step).
 >                         _ <- makeServer barrier tvar chan conn
 >                         clients <- sendASync tvar conn msg
 >
->                         -- TODO: more work to report which clients did not respons
 >                         bv <- newEmptyMVar
->                         _ <- forkIO (waitForCalls chan clients >> putMVar bv True)
+>                         cv <- newMVar clients
+>                         _ <- forkIO (waitForCalls chan cv >> putMVar bv True)
 >                         _ <- forkIO (sleep timeout >> putMVar bv False)
 >                         flag <- takeMVar bv
->                         unless flag $ fail "At least one client failed to respond!"
+>                         unless flag $ do
+>                           rclients <- takeMVar cv 
+>                           -- even if flag is True there is the possibility that all
+>                           -- the clients responded (as we haven't explicitly halted the
+>                           -- waitForCalls thread here) 
+>                           --
+>                           -- since we got no response we won't bother asking for their samp.name
+>                           -- settings either
+>                           unless (null rclients) $ case rclients of
+>                               [cl] -> fail $ "The following client failed to respond: " ++ fromRString cl
+>                               _ -> fail $ "The following clients failed to respond: " ++
+>                                       intercalate " " (map fromRString rclients)
 >                         
 >             Notify -> do
 >                         putStrLn "Notifications sent to:" 
@@ -261,19 +273,20 @@ TODO: need to handle errors more sensibly than runE here!
 > sendASync mt conn msg = do
 >     sTime <- getCurrentTime
 >     putMVar mt sTime
->     -- runE (callAllE conn msgId msg >>= mapM kvToRSE) >>= return . map fst
 >     fmap (map fst) $ runE (callAllE conn msgId msg >>= mapM kvToRSE)
 
 
-> waitForCalls :: Channel -> [RString] -> IO ()
-> waitForCalls _ [] = return ()
-> waitForCalls chan clients = do
->     receiverid <- readChan chan
->     if receiverid `elem` clients
->       then waitForCalls chan $ filter (/= receiverid) clients
->       else do
->         putStrLn $ "Ignoring unexpected response from " ++ fromRString receiverid
->         waitForCalls chan clients
+> waitForCalls :: Channel -> MVar [RString] -> IO ()
+> waitForCalls chan cv = do
+>    receiverid <- readChan chan
+>    modifyMVar_ cv $ \clients -> 
+>      if receiverid `elem` clients
+>        then return $ filter (/= receiverid) clients
+>        else do
+>           putStrLn $ "Ignoring unexpected response from " ++ fromRString receiverid
+>           return clients
+>    ncl <- readMVar cv
+>    if null ncl then return () else waitForCalls chan cv
 
 Basic configuration for setting up the server.
 
