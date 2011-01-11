@@ -105,7 +105,7 @@ TODO:
 
 -}
 
-data RString = RS String deriving Eq
+data RString = RS String deriving (Eq, Ord)
 
 instance Show RString where
     show (RS s) = show s
