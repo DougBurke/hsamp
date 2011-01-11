@@ -37,8 +37,7 @@ ghc -hide-package monads-fd --make -o errorclient -Wall ErrorClient.lhs
 >     clients <- getSubscribedClientsE conn msg
 >     forM_ clients $ \(cl,_) -> do
 >         liftIO $ putStrLn $ "Client: " ++ fromRString cl
->         md <- getMetadataE conn cl
->         -- this will error out if the @samp.name@ field is not set;
->         -- so we really should handle this case
->         name <- getKey sName md
->         liftIO $ putStrLn $ "   aka: " ++ fromRString name
+>         name <- getClientNameE conn cl
+>         case name of
+>             Just n -> liftIO $ putStrLn $ "   aka: " ++ fromRString n
+>             _ -> return ()

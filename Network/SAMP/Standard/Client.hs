@@ -24,6 +24,7 @@ module Network.SAMP.Standard.Client (
        toMetadata, toMetadataE,
        declareMetadataE,
        getMetadataE,
+       getClientNameE, getClientNamesE,
        declareSubscriptionsE, declareSubscriptionsSimpleE,
        getSubscriptionsE,
        getRegisteredClientsE,
@@ -53,7 +54,7 @@ import Data.List (stripPrefix)
 import Data.Maybe (fromJust, fromMaybe, catMaybes)
 
 import qualified Control.Arrow as CA
-import Control.Monad (liftM, ap, guard, when)
+import Control.Monad (liftM, forM, ap, guard, when)
 
 import Control.Monad.Error (throwError)
 import Control.Monad.Trans (liftIO)
@@ -233,7 +234,7 @@ callHubE :: SAMPConnection
          -> Err IO SAMPValue     -- ^ response
 callHubE conn msg args = 
          makeCallE (scHubURL conn) msg
-                   $ (SAMPString (scPrivateKey conn)) : args
+                   $ SAMPString (scPrivateKey conn) : args
 
 -- | Register a client with a hub. See 'registerClientE' for a simple
 -- way to register the client and process the return vaues.
@@ -340,8 +341,8 @@ declareMetadataE cl ks =
 getMetadataE :: SAMPConnection
              -> RString -- ^ The id of the SAMP client to query
              -> Err IO [SAMPKeyValue] -- ^ The metadata key/value pairs of the queried client
-getMetadataE cl clid =
-    callHubE cl "samp.hub.getMetadata" [SAMPString clid]
+getMetadataE conn clid =
+    callHubE conn "samp.hub.getMetadata" [SAMPString clid]
     >>= fromSValue
 
 mtToRS :: MType -> RString
@@ -449,15 +450,39 @@ replyE cl msgid rsp =
     callHubE cl "samp.hub.reply" [SAMPString msgid, toSValue rsp]
     >> return ()
 
--- | Ping the hub to see if it is running.
--- 
--- Note that we do not support calling this method without
--- the private key (taken from the 'SAMPConnection' record).
--- Users who wish to see if a hub is alive and just have a URL
--- can try using 'makeCallE' directly - e.g.
--- 
--- >    makeCallE url "samp.hub.ping" [] >> return ()
--- 
+{-|
+Ping the hub to see if it is running.
+
+Note that we do not support calling this method without
+the private key (taken from the 'SAMPConnection' record).
+Users who wish to see if a hub is alive and just have a URL
+can try using 'makeCallE' directly - e.g.
+
+>    makeCallE url "samp.hub.ping" [] >> return ()
+-}
 pingE :: SAMPConnection
       -> Err IO ()
 pingE cl = callHubE cl "samp.hub.ping" [] >> return ()
+
+{-|
+Get the names (@samp.name) of all the registered clients (excluding
+this one).
+-}
+getClientNamesE :: SAMPConnection
+                -> Err IO [(RString, Maybe RString)] -- ^ key is the client id and the value is the @samp.name@ value (if set)
+getClientNamesE conn = do
+    clients <- getRegisteredClientsE conn
+    forM clients $ \clid -> getClientNameE conn clid >>= return . ((,) clid)
+
+{-|
+Get the name (@samp.name) of the client, if set.
+-}
+getClientNameE :: SAMPConnection
+               -> RString -- ^ the client id
+               -> Err IO (Maybe RString) -- ^ the @samp.name@ value for the client, if set
+getClientNameE conn clid = do
+    md <- getMetadataE conn clid
+    case lookup sName md of
+        Just name -> fmap Just $ fromSValue name
+        _ -> return Nothing
+

@@ -253,7 +253,7 @@ clientMethods xs c@(SAMPMethodCall name _) = do
     method <- maybeToM ("Unknown SAMP method: " ++ mname) (find name xs)
     method c
 
-toCompare :: String -> (RString -> Bool)
+toCompare :: String -> RString -> Bool
 toCompare n = (== fromJust (toRString n))
 
 {-| Returns a map of handlers for messages received by a
