@@ -64,13 +64,13 @@ module Network.SAMP.Standard.Types (
        ) where
 
 import Control.Monad.Error (MonadError, throwError)
-import Control.Monad (forM_, liftM, ap, guard, when)
+import Control.Monad (liftM, ap, when)
 
 import Network.XmlRpc.Internals
 
-import Data.List (intercalate)
+import Data.List (intercalate, isPrefixOf)
 import Data.List.Split (splitOn, splitOneOf)
-import Data.Char (chr, isDigit)
+import Data.Char (chr, ord, isDigit, intToDigit)
 import Data.Maybe (fromJust)
 
 import qualified Data.ByteString.Lazy.Char8 as L
@@ -236,20 +236,13 @@ TODO:
 
 -}
 
-data MType = MT [String] Bool
-
-{-
-Keeping as [String] rather than String is overkill. It
-isn't really a huge help in the Eq instance.
--}
+data MType =
+     MT String -- if a wildcard then drop the * but NOT the last . (unless "*")
+     Bool -- is this a wildcard
 
 instance Show MType where
-    show (MT xs False) = intercalate "." xs
-    show (MT xs True)  = intercalate "." (xs ++ ["*"])
-
--- helper for matchMTypes
-qcomp :: [String] -> [String] -> Bool
-qcomp l r = all (uncurry (==)) $ zip l r
+    show (MT mt False) = mt
+    show (MT mt True)  = mt ++ "*"
 
 {-|
 Returns 'True' if the two mtypes are equal. If neither
@@ -260,10 +253,10 @@ For two wildcards we match on the MType fragments,
 so that 'table.*' matches 'table.load.*'.
 -}
 matchMTypes :: MType -> MType -> Bool
-matchMTypes (MT lxs False) (MT rxs False) = lxs == rxs
-matchMTypes (MT lxs True)  (MT rxs True)  = qcomp lxs rxs
-matchMTypes (MT lxs True)  (MT rxs False) =  qcomp lxs (take (length lxs) rxs)
-matchMTypes (MT lxs False) (MT rxs True)  =  qcomp rxs (take (length rxs) lxs)
+matchMTypes (MT l False) (MT r False) = l == r
+matchMTypes (MT l True)  (MT r False) = l `isPrefixOf` r
+matchMTypes (MT l False) (MT r True)  = r `isPrefixOf` l
+matchMTypes (MT l True)  (MT r True)  = l `isPrefixOf` r || r `isPrefixOf` l
 
 instance Eq MType where
     (==) = matchMTypes
@@ -283,7 +276,7 @@ instance XmlRpcType MType where
     getType _ = TString
 
 mtchars :: String
-mtchars = ['a' .. 'z'] ++ "-_" ++ map chr [0..9]
+mtchars = ['a' .. 'z'] ++ "-_." ++ map chr [0..9]
 
 isMTChar :: Char -> Bool
 isMTChar = (`elem` mtchars)
@@ -294,19 +287,32 @@ Create a 'MType'. This includes wild cards such as
 -}
 
 toMType :: String -> Maybe MType
-toMType [] = Nothing
-toMType xs = do
-        let terms = splitOn "." xs
-            flag = last terms == "*"
-            tocheck = if flag then init terms else terms
-        forM_ tocheck $ guard . all (/='*')
-        guard (all (not.null) tocheck)
-        forM_ tocheck $ guard . all isMTChar
-        return $ MT tocheck flag
+toMType = handleError (return Nothing) . toMTypeE
 
 -- | See 'toMType'.
 toMTypeE :: (Monad m) => String -> Err m MType
-toMTypeE mt = maybeToM ("Unable to convert '" ++ mt ++ "' to a SAMP MType") (toMType mt)
+toMTypeE mt = go mt ""
+     where
+       hdr = "Invalid MType '" ++ mt ++ "'"
+
+       -- really should use a simple parser/fsa
+       -- nb: we need to store the last '.' in a wildcard
+       --     for the Eq instance
+       go "" acc = return $ MT (reverse acc) False
+       go "*" "" = return $ MT "" True
+       go ".*" "" = throwError $ hdr ++ " (no characters before '.')"
+       go ".*" acc = return $ MT (reverse ('.':acc)) True
+       go "*" _ = throwError $ hdr ++ " (missing '.' before wildcard)"
+       go "." _ = throwError $ hdr ++ " (missing name or wildcard after '.')"
+       go ('*':_) _ = throwError $ hdr ++ " (wildcard can only appear at end)"
+       go ('.':'.':_) _ = throwError $ hdr ++ " (there must be characters between the '.')"
+       go (x:xs) acc | isMTChar x = go xs (x:acc)
+                     | otherwise  = throwError $ hdr ++ " (invalid character '" ++ [x] ++ "'/" ++ toHex x ++ ")" -- could include hex code
+
+toHex :: Char -> String
+toHex c = let x = ord c
+              y = [x `div` 16, x `mod` 16]
+          in "0x" ++ map intToDigit y
 
 -- | Extract the contents of the 'MType'.
 fromMType :: MType -> String

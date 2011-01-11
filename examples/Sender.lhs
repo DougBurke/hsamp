@@ -9,7 +9,7 @@ Usage:
 
 TODO:
 
-  - target name(s)
+  - target name(s) as well as ids
 
   - sendername/metadata
 
@@ -17,7 +17,7 @@ TODO:
 
   - better checks of responses
 
-  - time out for missing responses from async mode
+  - better command-line handling
 
 > module Main where
 >
