@@ -46,6 +46,13 @@ TODO:
 > import Network.Socket (Socket, PortNumber, socketPort)
 > import Happstack.Server.SimpleHTTP
 >
+
+> timeout :: Int
+> timeout = 10
+
+> sleep :: Int -> IO ()
+> sleep = threadDelay . (1000000 *)
+
 > -- unsafe conversion routine
 > tRS :: String -> RString
 > tRS = fromJust . toRString
@@ -96,13 +103,24 @@ TODO:
 >             do
 >               conn <- doE createClient
 >
->               -- the assumption is that we only need to unregister if we get
->               -- a user interrupt but not for other errors.
->               let cleanUp :: CE.AsyncException -> IO ()
->                   cleanUp e = when (e == CE.UserInterrupt) (doE (unregisterE conn)) >>
->                               hPutStrLn stderr ("ERROR: " ++ show e) >> exitFailure
+>               -- The assumption is that we only need to unregister if we get
+>               -- a user interrupt but not for other errors. This is actually not
+>               -- correct since we use runE/fail within processMessage for situations
+>               -- where we need to clean up. So also look for user exceptions.
+>
+>               let asyncHdlr :: CE.AsyncException -> IO ()
+>                   asyncHdlr e = when (e == CE.UserInterrupt) (doE (unregisterE conn)) >>
+>                                   hPutStrLn stderr ("ERROR: " ++ show e) >> exitFailure
 >     
->               processMessage conn x `CE.catch` cleanUp
+>                   ioHdlr :: CE.IOException -> IO ()
+>                   ioHdlr e | isUserError e = doE (unregisterE conn) >>
+>                                                hPutStrLn stderr ("ERROR: " ++ ioeGetErrorString e) >> exitFailure
+>                            | otherwise     = hPutStrLn stderr ("ERROR: " ++ show e) >> exitFailure
+>
+>                   otherHdlr :: CE.SomeException -> IO ()
+>                   otherHdlr e = putStrLn ("ERROR: " ++ show e) >> exitFailure
+>
+>               processMessage conn x `CE.catches` [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
 >               doE (unregisterE conn)
 >               exitSuccess
 
@@ -148,7 +166,13 @@ step).
 >                         mt <- newEmptyMVar
 >                         _ <- makeServer mv mt chan conn
 >                         clients <- sendASync mt conn msg
->                         waitForCalls chan clients
+>                         bv <- newEmptyMVar
+>                         _ <- forkIO (sleep timeout >> putMVar bv False)
+>                         _ <- forkIO (waitForCalls chan clients >> putMVar bv True)
+>                         -- TODO: more work to report which clients did not respons
+>                         flag <- takeMVar bv
+>                         unless flag $ fail "At least one client failed to respond!"
+>                         
 >             Notify -> putStrLn "Notifications sent to:" >> runE (notifyAllE conn msg) >>=
 >                       mapM_ (\n -> putStrLn ("    " ++ show n))
 
@@ -194,7 +218,7 @@ step).
 > sendSync :: Barrier -> SAMPConnection -> SAMPMessage -> RString -> IO ()
 > sendSync mv conn msg target = do
 >     sTime <- getCurrentTime
->     rsp <- runE (callAndWaitE conn target msg (Just 10))
+>     rsp <- runE (callAndWaitE conn target msg (Just timeout))
 >     eTime <- getCurrentTime
 >     printResponse mv (diffUTCTime eTime sTime) target rsp
 
