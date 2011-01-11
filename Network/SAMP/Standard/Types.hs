@@ -108,7 +108,7 @@ TODO:
 data RString = RS String deriving Eq
 
 instance Show RString where
-    show (RS s) = s
+    show (RS s) = show s
 
 -- | The empty string.
 emptyRString :: RString

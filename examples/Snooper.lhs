@@ -181,22 +181,25 @@ respond with an empty string).
 > handleShutdown :: ThreadId -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
 > handleShutdown tid _ _ _ _ = killThread tid
 
+> showKV :: SAMPKeyValue -> IO ()
+> showKV (k,v) = putStrLn $ "  " ++ fromRString k ++ " -> " ++ showSAMPValue v
+
 > handleMetadata :: MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
 > handleMetadata _ _ name keys = do
->     putStrLn $ "Metadata notification from " ++ show name
->     forM_ keys $ \(k,v) -> putStrLn $ "  " ++ show k ++ " -> " ++ showSAMPValue v
+>     putStrLn $ "Metadata notification from " ++ fromRString name
+>     forM_ keys showKV
 >     putStrLn ""
 
 > handleOther :: MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
 > handleOther mtype _ name keys = do
->     putStrLn $ "Notification of " ++ show mtype ++ " from " ++ show name
->     forM_ keys $ \(k,v) -> putStrLn $ "  " ++ show k ++ " -> " ++ showSAMPValue v
+>     putStrLn $ "Notification of " ++ show mtype ++ " from " ++ fromRString name
+>     forM_ keys showKV
 >     putStrLn ""
 
 > handlePingCall :: MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
 > handlePingCall _ _ name _ keys = do
->     putStrLn $ "Snooper was pinged by " ++ show name
->     forM_ keys $ \(k,v) -> putStrLn $ "  " ++ show k ++ " -> " ++ showSAMPValue v
+>     putStrLn $ "Snooper was pinged by " ++ fromRString name
+>     forM_ keys showKV
 >     putStrLn ""
 >     return $ toSAMPResponse []
 
@@ -205,8 +208,8 @@ We return a warning to point out that we are just logging this message
 
 > handleOtherCall :: MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
 > handleOtherCall mtype _ name _ keys = do
->     putStrLn $ "Call of " ++ show mtype ++ " by " ++ show name
->     forM_ keys $ \(k,v) -> putStrLn $ "  " ++ show k ++ " -> " ++ showSAMPValue v
+>     putStrLn $ "Call of " ++ show mtype ++ " by " ++ fromRString name
+>     forM_ keys showKV
 >     putStrLn ""
 >     let emsg = fromJust $ toRString $ "The message " ++ show mtype ++ " has only been logged, not acted on."
 >     return $ toSAMPResponseWarning [] emsg []
@@ -217,7 +220,7 @@ Not sure what to do about this at the moment.
 > rfunc _ receiverid msgid rsp =
 >    if isSAMPSuccess rsp
 >      then do
->             putStrLn $ "Got a response to msg=" ++ show msgid ++ " from=" ++ show receiverid
+>             putStrLn $ "Got a response to msg=" ++ fromRString msgid ++ " from=" ++ fromRString receiverid
 >             return ()
 >      else putStrLn $ "ERROR: " ++ show (fromJust (getSAMPResponseErrorTxt rsp))
 

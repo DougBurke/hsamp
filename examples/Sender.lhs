@@ -174,7 +174,7 @@ step).
 >                         unless flag $ fail "At least one client failed to respond!"
 >                         
 >             Notify -> putStrLn "Notifications sent to:" >> runE (notifyAllE conn msg) >>=
->                       mapM_ (\n -> putStrLn ("    " ++ show n))
+>                       mapM_ (\n -> putStrLn ("    " ++ fromRString n))
 
 > type Barrier = MVar ()
 
@@ -189,31 +189,34 @@ step).
 > syncAction :: Barrier -> IO () -> IO ()
 > syncAction mv act = withMVar mv $ const act
 
+> showKV :: SAMPKeyValue -> IO ()
+> showKV (k,v) = putStrLn $ "    " ++ fromRString k ++ " ->  " ++ show v
+
 > printSuccess :: NominalDiffTime -> RString -> SAMPResponse -> IO ()
 > printSuccess delta target rsp = do
->     putStrLn $ "Successful response from " ++ show target ++ " (" ++ show delta ++ " seconds)"
+>     putStrLn $ "Successful response from " ++ fromRString target ++ " (" ++ show delta ++ " seconds)"
 >     let Just svals = getSAMPResponseResult rsp
->     forM_ svals $ \(k,v) -> putStrLn $ "    " ++ show k ++ " ->  " ++ show v
+>     forM_ svals showKV
 
 > printError :: NominalDiffTime -> RString -> SAMPResponse -> IO ()
 > printError delta target rsp = do
->     putStrLn $ "Error response from " ++ show target ++ " (" ++ show delta ++ " seconds)"
+>     putStrLn $ "Error response from " ++ fromRString target ++ " (" ++ show delta ++ " seconds)"
 >     let Just (emsg, evals) = getSAMPResponseError rsp
->     putStrLn $ "    " ++ show emsg
->     forM_ evals $ \(k,v) -> putStrLn $ "    " ++ show k ++ " ->  " ++ show v
+>     putStrLn $ "    " ++ fromRString emsg
+>     forM_ evals showKV
 
 > printWarning :: NominalDiffTime -> RString -> SAMPResponse -> IO ()
 > printWarning delta target rsp = do
->     putStrLn $ "Warning response from " ++ show target ++ " (" ++ show delta ++ " seconds)"
+>     putStrLn $ "Warning response from " ++ fromRString target ++ " (" ++ show delta ++ " seconds)"
 >     let Just svals = getSAMPResponseResult rsp
 >         Just (emsg, evals) = getSAMPResponseError rsp
->     putStrLn $ "    " ++ show emsg
+>     putStrLn $ "    " ++ fromRString emsg
 >     unless (null svals) $ do
 >         putStrLn $ "  Response"
->         forM_ svals $ \(k,v) -> putStrLn $ "    " ++ show k ++ " ->  " ++ show v
+>         forM_ svals showKV
 >     unless (null evals) $ do
 >         putStrLn $ "  Error"
->         forM_ evals $ \(k,v) -> putStrLn $ "    " ++ show k ++ " ->  " ++ show v
+>         forM_ evals showKV
 
 > sendSync :: Barrier -> SAMPConnection -> SAMPMessage -> RString -> IO ()
 > sendSync mv conn msg target = do
@@ -229,7 +232,7 @@ Hardly unique!
 
 > kvToRSE :: (Monad m) => SAMPKeyValue -> Err m (RString, RString)
 > kvToRSE (k,SAMPString v) = return (k, v)
-> kvToRSE (k,v) = fail $ "Key " ++ show k ++ " should be a SAMP string but found " ++ show v
+> kvToRSE (k,v) = fail $ "Key " ++ fromRString k ++ " should be a SAMP string but found " ++ show v
 
 TODO: need to handle errors more sensibly than runE here!
 
@@ -246,7 +249,7 @@ TODO: need to handle errors more sensibly than runE here!
 >     if receiverid `elem` clients
 >       then waitForCalls chan $ filter (/= receiverid) clients
 >       else do
->         putStrLn $ "Ignoring unexpected response from " ++ show receiverid
+>         putStrLn $ "Ignoring unexpected response from " ++ fromRString receiverid
 >         waitForCalls chan clients
 
 Basic configuration for setting up the server.
@@ -325,8 +328,8 @@ TODO: support hub shutdown
 
 > handleOther :: MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
 > handleOther mtype _ name keys = do
->     putStrLn $ "Notification of " ++ show mtype ++ " from " ++ show name
->     forM_ keys $ \(k,v) -> putStrLn $ "  " ++ show k ++ " -> " ++ showSAMPValue v
+>     putStrLn $ "Notification of " ++ show mtype ++ " from " ++ fromRString name
+>     forM_ keys showKV
 >     putStrLn ""
 
 TODO: check that msgid is correct, which means it has to be sent in!

@@ -189,11 +189,11 @@ unregistered from the hub even if the
 >     msg <- toMTypeE "table.load.votable"
 >     clients <- getSubscribedClientsE conn msg
 >     forM_ clients $ \cl -> do
->         liftIO $ putStrLn $ "Client: " ++ show cl
+>         liftIO $ putStrLn $ "Client: " ++ fromRString cl
 >         md <- getMetadataE conn cl
 >         -- this will error out if the @samp.name@ field is not set;
 >         -- so we really should handle this case
->         name <- getKey sName md :: Err IO RString
->         liftIO $ putStrLn $ "   aka: " ++ show name
+>         name <- getKey sName md
+>         liftIO $ putStrLn $ "   aka: " ++ fromRString name
 
 -}
