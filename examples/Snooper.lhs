@@ -78,13 +78,17 @@ TODO:
 
 Set up a simple client (i.e. with limited metadata)
 
+> authorMetadata :: Err IO SAMPKeyValue
+> authorMetadata = stringToKeyValE "author.name" "Doug Burke"
+
 > createClient :: Err IO SAMPConnection
 > createClient =
+>      authorMetadata >>= \amd ->
 >      getHubInfoE >>=
 >      registerClientE >>= \conn ->
->      toMetadataE "snooper" (Just "Report on messages sent by the hub.")
->          Nothing Nothing Nothing >>=
->      declareMetadataE conn >>
+>      toMetadataE "hsamp-snooper" (Just "Report on messages sent by the hub.")
+>          Nothing Nothing Nothing >>= \md ->
+>      declareMetadataE conn (amd:md) >>
 >      return conn
 
 Basic configuration for setting up the server.
