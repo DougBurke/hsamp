@@ -91,7 +91,7 @@ TODO:
 > processArgs args = do
 >     let (conmode, args1) = getConnection args
 >     (mtype, args2) <- getMType args1
->     kvals <- sequence (map getKV args2)
+>     kvals <- mapM getKV args2
 >     return (conmode, mtype, kvals)
 
 > main :: IO ()
@@ -179,12 +179,10 @@ step).
 > type Barrier = MVar ()
 
 > printResponse :: Barrier -> NominalDiffTime -> RString -> SAMPResponse -> IO ()
-> printResponse mv delta target rsp = 
->     if isSAMPErrorOnly rsp
->         then syncAction mv $ printError delta target rsp
->         else if isSAMPWarning rsp
->           then syncAction mv $ printWarning delta target rsp
->           else syncAction mv $ printSuccess delta target rsp
+> printResponse mv delta target rsp
+>     | isSAMPErrorOnly rsp = syncAction mv $ printError delta target rsp
+>     | isSAMPWarning rsp   = syncAction mv $ printWarning delta target rsp
+>     | otherwise           = syncAction mv $ printSuccess delta target rsp
 
 > syncAction :: Barrier -> IO () -> IO ()
 > syncAction mv act = withMVar mv $ const act
@@ -212,10 +210,10 @@ step).
 >         Just (emsg, evals) = getSAMPResponseError rsp
 >     putStrLn $ "    " ++ fromRString emsg
 >     unless (null svals) $ do
->         putStrLn $ "  Response"
+>         putStrLn "  Response"
 >         forM_ svals showKV
 >     unless (null evals) $ do
->         putStrLn $ "  Error"
+>         putStrLn "  Error"
 >         forM_ evals showKV
 
 > sendSync :: Barrier -> SAMPConnection -> SAMPMessage -> RString -> IO ()
@@ -240,7 +238,9 @@ TODO: need to handle errors more sensibly than runE here!
 > sendASync mt conn msg = do
 >     sTime <- getCurrentTime
 >     putMVar mt sTime
->     runE (callAllE conn msgId msg >>= sequence . map kvToRSE) >>= return . map fst
+>     -- runE (callAllE conn msgId msg >>= mapM kvToRSE) >>= return . map fst
+>     fmap (map fst) $ runE (callAllE conn msgId msg >>= mapM kvToRSE)
+
 
 > waitForCalls :: Chan RString -> [RString] -> IO ()
 > waitForCalls _ [] = return ()
