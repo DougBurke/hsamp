@@ -67,7 +67,7 @@ import qualified Control.Exception as CE
 import Data.Maybe (fromJust)
 
 import Network.SAMP.Standard.Types
-import Network.SAMP.Standard.Client (makeCallE, replyE)
+import Network.SAMP.Standard.Client (callHubE, replyE)
 
 -- the name of the SAMP client logging instance
 sLogger :: String
@@ -123,9 +123,8 @@ instance (SAMPType a, SAMPFun b) => SAMPFun (a -> b) where
 setXmlrpcCallbackE :: SAMPConnection
                    -> RString -- ^ the URL of the end point
                    -> Err IO ()
-setXmlrpcCallbackE cl url =
-    makeCallE (sampHubURL cl) "samp.hub.setXmlrpcCallback"
-        [SAMPString (sampPrivateKey cl), SAMPString url]
+setXmlrpcCallbackE conn url =
+    callHubE conn "samp.hub.setXmlrpcCallback" [SAMPString url]
     >> return ()
 
 -- | Send a message asynchronously to the recipient. The return value is
@@ -137,9 +136,9 @@ callE :: SAMPConnection
       -> RString -- ^ a unique identifier for the communication (the message tag)
       -> SAMPMessage -- ^ the message
       -> Err IO RString -- ^ the message identifier created by the hub for this communication
-callE cl clid msgtag msg =
-    makeCallE (sampHubURL cl) "samp.hub.call"
-        [SAMPString (sampPrivateKey cl), SAMPString clid, SAMPString msgtag, toSValue msg]
+callE conn clid msgtag msg =
+    callHubE conn "samp.hub.call"
+        [SAMPString clid, SAMPString msgtag, toSValue msg]
     >>= fromSValue
 
 -- | Send a message asynchronously to all clients which are subscribed to the
@@ -151,9 +150,8 @@ callAllE :: SAMPConnection
          -> RString -- ^ a unique identifier for the communication (the message tag)
          -> SAMPMessage -- ^ the message
          -> Err IO [SAMPKeyValue] -- ^ the key is the name of the client and the value is the message id for that communication
-callAllE cl msgtag msg =
-    makeCallE (sampHubURL cl) "samp.hub.callAll"
-        [SAMPString (sampPrivateKey cl), SAMPString msgtag, toSValue msg]
+callAllE conn msgtag msg =
+    callHubE conn "samp.hub.callAll" [SAMPString msgtag, toSValue msg]
     >>= fromSValue
     
 {-
