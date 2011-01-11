@@ -209,12 +209,12 @@ step).
 
 > printResponse :: Barrier -> NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> IO ()
 > printResponse barrier delta target rsp
->     | isSAMPErrorOnly rsp = syncAction barrier $ printError delta target rsp
->     | isSAMPWarning rsp   = syncAction barrier $ printWarning delta target rsp
->     | otherwise           = syncAction barrier $ printSuccess delta target rsp
+>     | isSAMPErrorOnly rsp = syncAction_ barrier $ printError delta target rsp
+>     | isSAMPWarning rsp   = syncAction_ barrier $ printWarning delta target rsp
+>     | otherwise           = syncAction_ barrier $ printSuccess delta target rsp
 
-> syncAction :: Barrier -> IO () -> IO ()
-> syncAction barrier act = withMVar barrier $ const act
+> syncAction_ :: Barrier -> IO () -> IO ()
+> syncAction_ barrier = withMVar barrier . const 
 
 > showKV :: SAMPKeyValue -> IO ()
 > showKV (k,v) = putStrLn $ "    " ++ fromRString k ++ " ->  " ++ show v
