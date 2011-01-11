@@ -131,8 +131,11 @@ Run a set of SAMP commands and exit on error.
 > doE = handleError
 >         (\emsg -> hPutStrLn stderr ("ERROR: " ++ emsg) >> exitFailure)
 
-> authorMetadata :: Err IO SAMPKeyValue
-> authorMetadata = stringToKeyValE "author.name" "Doug Burke"
+> authorMetadata :: Err IO [SAMPKeyValue]
+> authorMetadata = sequence $ map (uncurry stringToKeyValE)
+>     [("author.name", "Doug Burke"),
+>      ("author.affiliation", "Smithsonian Astrophysical Observatory"),
+>      ("author.mail", "dburke@cfa.harvard.edu")]
 
 Set up a simple client (i.e. with limited metadata)
 
@@ -143,7 +146,7 @@ Set up a simple client (i.e. with limited metadata)
 >      registerClientE >>= \conn ->
 >      toMetadataE "hsamp-sender" (Just "Send a message to interested clients.")
 >          Nothing Nothing Nothing >>= \md ->
->      declareMetadataE conn (amd:md) >>
+>      declareMetadataE conn (md++amd) >>
 >      return conn
 
 There is a chance that targets may be added or removed in between the

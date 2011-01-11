@@ -13,20 +13,20 @@ help:
 all:	basicclient errorclient snooper sender 
 
 sender:	.dummy
-	@$(GHC) --make -o sender Sender.lhs
-	@echo "Created: sender"
+	@$(GHC) --make -o hsamp-sender Sender.lhs
+	@echo "Created: hsamp-sender"
 
 snooper:	.dummy
-	@$(GHC) --make -o snooper Snooper.lhs
-	@echo "Created: snooper"
+	@$(GHC) --make -o hsamp-snooper Snooper.lhs
+	@echo "Created: hsamp-snooper"
 
 basicclient:	.dummy
-	@$(GHC) --make -o basicclient BasicClient.lhs
-	@echo "Created: basicclient"
+	@$(GHC) --make -o hsamp-basicclient BasicClient.lhs
+	@echo "Created: hsamp-basicclient"
 
 errorclient:	.dummy
-	@$(GHC) --make -o errorclient ErrorClient.lhs
-	@echo "Created: errorclient"
+	@$(GHC) --make -o hsamp-errorclient ErrorClient.lhs
+	@echo "Created: hsamp-errorclient"
 
 .dummy:
 

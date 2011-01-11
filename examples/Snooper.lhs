@@ -78,8 +78,11 @@ TODO:
 
 Set up a simple client (i.e. with limited metadata)
 
-> authorMetadata :: Err IO SAMPKeyValue
-> authorMetadata = stringToKeyValE "author.name" "Doug Burke"
+> authorMetadata :: Err IO [SAMPKeyValue]
+> authorMetadata = sequence $ map (uncurry stringToKeyValE)
+>     [("author.name", "Doug Burke"),
+>      ("author.affiliation", "Smithsonian Astrophysical Observatory"),
+>      ("author.mail", "dburke@cfa.harvard.edu")]
 
 > createClient :: Err IO SAMPConnection
 > createClient =
@@ -88,7 +91,7 @@ Set up a simple client (i.e. with limited metadata)
 >      registerClientE >>= \conn ->
 >      toMetadataE "hsamp-snooper" (Just "Report on messages sent by the hub.")
 >          Nothing Nothing Nothing >>= \md ->
->      declareMetadataE conn (amd:md) >>
+>      declareMetadataE conn (md ++ amd) >>
 >      return conn
 
 Basic configuration for setting up the server.
