@@ -10,7 +10,14 @@ Usage:
 TODO:
 
   - target name(s)
+
   - sendername/metadata
+
+  - improved error handling
+
+  - better checks of responses
+
+  - time out for missing responses from async mode
 
 > module Main where
 >
@@ -27,7 +34,7 @@ TODO:
 > import Control.Monad.Trans (liftIO)
 > import Data.Maybe (fromJust)
 >
-> import Data.Time.Clock (UTCTime, getCurrentTime, diffUTCTime)
+> import Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
 >
 > import qualified Data.ByteString.Char8 as B
 > import qualified Data.ByteString.Lazy.Char8 as L
@@ -136,43 +143,44 @@ step).
 >           mv <- newMVar () -- not needed for notification but do anyway
 >           case cmode of
 >             Sync   -> parallel_ (map (sendSync mv conn msg . fst) targets) >> stopGlobalPool
->             ASync  -> newEmptyMVar >>= \amv -> makeServer amv conn >> sendASync amv conn msg >> stopGlobalPool
+>             ASync  -> do
+>                         chan <- newChan
+>                         mt <- newEmptyMVar
+>                         _ <- makeServer mv mt chan conn
+>                         clients <- sendASync mt conn msg
+>                         waitForCalls chan clients
 >             Notify -> putStrLn "Notifications sent to:" >> runE (notifyAllE conn msg) >>=
 >                       mapM_ (\n -> putStrLn ("    " ++ show n))
 
-> type AMVar = (UTCTime, [(RString, RString)])
+> type Barrier = MVar ()
 
-TODO:
-
-could report response time
-
-> printResponse :: MVar () -> RString -> SAMPResponse -> IO ()
-> printResponse mv target rsp = 
+> printResponse :: Barrier -> NominalDiffTime -> RString -> SAMPResponse -> IO ()
+> printResponse mv delta target rsp = 
 >     if isSAMPErrorOnly rsp
->         then syncAction mv $ printError target rsp
+>         then syncAction mv $ printError delta target rsp
 >         else if isSAMPWarning rsp
->           then syncAction mv $ printWarning target rsp
->           else syncAction mv $ printSuccess target rsp
+>           then syncAction mv $ printWarning delta target rsp
+>           else syncAction mv $ printSuccess delta target rsp
 
-> syncAction :: MVar () -> IO () -> IO ()
-> syncAction mv act = withMVar mv $ \_ -> act
+> syncAction :: Barrier -> IO () -> IO ()
+> syncAction mv act = withMVar mv $ const act
 
-> printSuccess :: RString -> SAMPResponse -> IO ()
-> printSuccess target rsp = do
->     putStrLn $ "Successful response from " ++ show target
+> printSuccess :: NominalDiffTime -> RString -> SAMPResponse -> IO ()
+> printSuccess delta target rsp = do
+>     putStrLn $ "Successful response from " ++ show target ++ " (" ++ show delta ++ " seconds)"
 >     let Just svals = getSAMPResponseResult rsp
 >     forM_ svals $ \(k,v) -> putStrLn $ "    " ++ show k ++ " ->  " ++ show v
 
-> printError :: RString -> SAMPResponse -> IO ()
-> printError target rsp = do
->     putStrLn $ "Error response from " ++ show target
+> printError :: NominalDiffTime -> RString -> SAMPResponse -> IO ()
+> printError delta target rsp = do
+>     putStrLn $ "Error response from " ++ show target ++ " (" ++ show delta ++ " seconds)"
 >     let Just (emsg, evals) = getSAMPResponseError rsp
 >     putStrLn $ "    " ++ show emsg
 >     forM_ evals $ \(k,v) -> putStrLn $ "    " ++ show k ++ " ->  " ++ show v
 
-> printWarning :: RString -> SAMPResponse -> IO ()
-> printWarning target rsp = do
->     putStrLn $ "Warning response from " ++ show target
+> printWarning :: NominalDiffTime -> RString -> SAMPResponse -> IO ()
+> printWarning delta target rsp = do
+>     putStrLn $ "Warning response from " ++ show target ++ " (" ++ show delta ++ " seconds)"
 >     let Just svals = getSAMPResponseResult rsp
 >         Just (emsg, evals) = getSAMPResponseError rsp
 >     putStrLn $ "    " ++ show emsg
@@ -183,9 +191,12 @@ could report response time
 >         putStrLn $ "  Error"
 >         forM_ evals $ \(k,v) -> putStrLn $ "    " ++ show k ++ " ->  " ++ show v
 
-> sendSync :: MVar () -> SAMPConnection -> SAMPMessage -> RString -> IO ()
-> sendSync mv conn msg target = 
->     runE (callAndWaitE conn target msg (Just 10)) >>= printResponse mv target
+> sendSync :: Barrier -> SAMPConnection -> SAMPMessage -> RString -> IO ()
+> sendSync mv conn msg target = do
+>     sTime <- getCurrentTime
+>     rsp <- runE (callAndWaitE conn target msg (Just 10))
+>     eTime <- getCurrentTime
+>     printResponse mv (diffUTCTime eTime sTime) target rsp
 
 Hardly unique!
 
@@ -198,10 +209,21 @@ Hardly unique!
 
 TODO: need to handle errors more sensibly than runE here!
 
-> sendASync :: MVar AMVar -> SAMPConnection -> SAMPMessage -> IO ()
-> sendASync amv conn msg = do
+> sendASync :: MVar UTCTime -> SAMPConnection -> SAMPMessage -> IO [RString]
+> sendASync mt conn msg = do
 >     sTime <- getCurrentTime
->     runE (callAllE conn msgId msg >>= sequence . map kvToRSE >>= liftIO . putMVar amv . ((,) sTime))
+>     putMVar mt sTime
+>     runE (callAllE conn msgId msg >>= sequence . map kvToRSE) >>= return . map fst
+
+> waitForCalls :: Chan RString -> [RString] -> IO ()
+> waitForCalls _ [] = return ()
+> waitForCalls chan clients = do
+>     receiverid <- readChan chan
+>     if receiverid `elem` clients
+>       then waitForCalls chan $ filter (/= receiverid) clients
+>       else do
+>         putStrLn $ "Ignoring unexpected response from " ++ show receiverid
+>         waitForCalls chan clients
 
 Basic configuration for setting up the server.
 
@@ -219,11 +241,8 @@ TODO: should we respond to the hub shutting down? Almost certainly
 (especially for the synchronous case where we currently aren't planning
 on setting up the server).
 
-TODO: will need some what of keeping the server alive until it has
-received responses from all contacted clients (or timed out).
-
-> makeServer :: MVar AMVar -> SAMPConnection -> IO ThreadId
-> makeServer amv conn = do
+> makeServer :: Barrier -> MVar UTCTime -> Chan RString -> SAMPConnection -> IO ThreadId
+> makeServer mv mt chan conn = do
 >     -- what is the address of the server?
 >     sock <- bindPort eConf
 >     pNum <- socketPort sock
@@ -234,18 +253,18 @@ received responses from all contacted clients (or timed out).
 >            declareSubscriptionsSimpleE conn []
 >
 >     -- now run the server
->     forkIO (runServer amv sock pNum conn)
+>     forkIO (runServer mv mt chan sock pNum conn)
 
 Creates the server, listening to the assigned socket/port.
 
-> runServer :: MVar AMVar -> Socket -> PortNumber -> SAMPConnection -> IO ()
-> runServer amv sock portNum conn = do
+> runServer :: Barrier -> MVar UTCTime -> Chan RString -> Socket -> PortNumber -> SAMPConnection -> IO ()
+> runServer mv mt chan sock portNum conn = do
 >      tid <- myThreadId
 >      simpleHTTPWithSocket sock (nullConf { port = fromEnum portNum }) 
->          (handlers amv conn tid)
+>          (handlers mv mt chan conn tid)
 
-> handlers :: MVar AMVar -> SAMPConnection -> ThreadId -> ServerPart Response
-> handlers amv conn tid = msum [handleXmlRpc amv conn tid, anyRequest (notFound (toResponse "unknown request"))]
+> handlers :: Barrier -> MVar UTCTime -> Chan RString -> SAMPConnection -> ThreadId -> ServerPart Response
+> handlers mv mt chan conn tid = msum [handleXmlRpc mv mt chan conn tid, anyRequest (notFound (toResponse "unknown request"))]
 
 XML-RPC is done via a HTML POST of an XML document.
 At present I enforce the content-type restriction but
@@ -254,18 +273,18 @@ this may be a bit OTT.
 > xmlct :: B.ByteString
 > xmlct = B.pack "text/xml"
 
-> handleXmlRpc :: MVar AMVar -> SAMPConnection -> ThreadId -> ServerPart Response
-> handleXmlRpc amv conn tid = dir "xmlrpc" $ do
+> handleXmlRpc :: Barrier -> MVar UTCTime -> Chan RString -> SAMPConnection -> ThreadId -> ServerPart Response
+> handleXmlRpc mv mt chan conn tid = dir "xmlrpc" $ do
 >     methodM POST
 >     cType <- getHeaderM "content-type"
 >     unless (cType == Just xmlct) $ escape (badRequest (toResponse ("Invalid content type: " ++ show cType)))
 >     r <- askRq
->     getResponse amv conn tid (rqBody r)
+>     getResponse mv mt chan conn tid (rqBody r)
 
-> getResponse :: MVar AMVar -> SAMPConnection -> ThreadId -> RqBody -> ServerPart Response
-> getResponse amv conn tid (Body bdy) = do
+> getResponse :: Barrier -> MVar UTCTime -> Chan RString -> SAMPConnection -> ThreadId -> RqBody -> ServerPart Response
+> getResponse mv mt chan conn tid (Body bdy) = do
 >     let call = L.unpack bdy
->     liftIO $ simpleClientServer conn (notifications tid) calls (rfunc amv) call
+>     liftIO $ simpleClientServer conn (notifications tid) calls (rfunc mv mt chan) call
 >     ok (toResponse "")
 
 TODO: support hub shutdown
@@ -286,16 +305,13 @@ TODO: support hub shutdown
 >     forM_ keys $ \(k,v) -> putStrLn $ "  " ++ show k ++ " -> " ++ showSAMPValue v
 >     putStrLn ""
 
-TODO: check for client/msg id in clients list.
+TODO: check that msgid is correct, which means it has to be sent in!
 
-> rfunc :: MVar AMVar -> SAMPResponseFunc
-> rfunc amv _ receiverid msgid rsp = do
+> rfunc :: Barrier -> MVar UTCTime -> Chan RString -> SAMPResponseFunc
+> rfunc mv mt chan _ receiverid msgid rsp = do
 >    eTime <- getCurrentTime
->    (sTime, clients) <- readMVar amv
->    if isSAMPSuccess rsp
->      then do
->             let delta = diffUTCTime eTime sTime
->             putStrLn $ "Response from " ++ show receiverid ++ " took " ++ show delta ++ " seconds."
->             return ()
->      else putStrLn $ "ERROR: " ++ show (fromJust (getSAMPResponseErrorTxt rsp))
+>    sTime <- readMVar mt
+>    printResponse mv (diffUTCTime eTime sTime) receiverid rsp
+>    writeChan chan receiverid
+
 
