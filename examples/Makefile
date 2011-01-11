@@ -3,18 +3,22 @@ GHC = ghc -Wall -threaded -hide-package monads-fd -i..
 
 help:
 	@echo "Targets are:"
-	@echo "    snooper"
+	@echo "    all"
+	@echo ""
 	@echo "    sender"
-	@echo "    basicclient"
+	@echo "    snooper"
 	@echo "    errorclient"
+	@echo "    basicclient"
 
-snooper:	.dummy
-	@$(GHC) --make -o snooper Snooper.lhs
-	@echo "Created: snooper"
+all:	basicclient errorclient snooper sender 
 
 sender:	.dummy
 	@$(GHC) --make -o sender Sender.lhs
 	@echo "Created: sender"
+
+snooper:	.dummy
+	@$(GHC) --make -o snooper Snooper.lhs
+	@echo "Created: snooper"
 
 basicclient:	.dummy
 	@$(GHC) --make -o basicclient BasicClient.lhs
