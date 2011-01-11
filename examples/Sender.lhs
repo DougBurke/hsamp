@@ -174,8 +174,10 @@ step).
 >                         flag <- takeMVar bv
 >                         unless flag $ fail "At least one client failed to respond!"
 >                         
->             Notify -> putStrLn "Notifications sent to:" >> runE (notifyAllE conn msg >>= mapM (\n -> getClientNameE conn n >>= return . (,) n)) >>=
->                       mapM_ (\t -> putStrLn ("    " ++ showTarget t))
+>             Notify -> do
+>                         putStrLn "Notifications sent to:" 
+>                         tgts <- runE (notifyAllE conn msg >>= mapM (\n -> fmap ((,) n) (getClientNameE conn n)))
+>                         forM_ tgts $ \t -> putStrLn ("    " ++ showTarget t)
 
 > type Barrier = MVar ()
 > type TimeVar = MVar UTCTime
