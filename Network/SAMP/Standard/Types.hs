@@ -17,15 +17,8 @@ to debugging information only.
 
 TODO:
 
-  - conversion to RString and MType should, when run in Err monad,
+  - conversion to RString should, when run in Err monad,
     report the problem character
-
-  - the Eq instance for 'MType' is wrong, since it thinks that
-    @foo.bar == foo.bar.*@.
-
-  - should the fields of the SAMPConnection change from 
-    @sampSecret@ to @scSAMPSecret@ or @scSecret@ (I think I
-    prefer the latter, ie drop the @samp@ prefix)?
 
 -}
 
@@ -479,6 +472,7 @@ instance SAMPType Float where
 -- which I'm sure there is; e.g. a phantom type or the use of
 -- monadic regions.
 --
+
 {-|
 This record stores the information needed by a client to talk to a hub.
 It is created by
@@ -488,14 +482,14 @@ It is created by
   - registering the client with the hub
 
 which should be done by routines from the "Network.SAMP.Standard.Client"
-module.
+module (e.g. 'Network.SAMP.Standard.Client.registerClientE').
 -}
 data SAMPConnection = SAMPConnection {
-     sampSecret :: RString, -- ^ the SAMP secret, from the hub file
-     sampHubURL :: String, -- ^ the URL of the server
-     sampPrivateKey :: RString, -- ^ the private key assigned to the client by the hub
-     sampHubId :: RString, -- ^ the name of the hub
-     sampId :: RString -- ^ the name of the client (assigned by the hub)
+     scSecret :: RString, -- ^ the SAMP secret, from the hub file
+     scHubURL :: String, -- ^ the URL of the server
+     scPrivateKey :: RString, -- ^ the private key assigned to the client by the hub
+     scHubId :: RString, -- ^ the name of the hub
+     scId :: RString -- ^ the name of the client (assigned by the hub)
      } deriving (Eq, Show)
 
 {-|

@@ -216,18 +216,18 @@ pingItemsAsync cl = do
      liftIO $ forM_ rsp $ \(n,mid) -> putStrLn ("  contacted " ++ show n ++ " with id " ++ show mid)
 
 doClient :: SAMPConnection -> PortNumber -> Err IO ()
-doClient cl pNum = do
-         putLn $ "Registered client: public name = " ++ show (sampId cl)
-         setSubscriptions cl pNum
-         pingE cl
+doClient conn pNum = do
+         putLn $ "Registered client: public name = " ++ show (scId conn)
+         setSubscriptions conn pNum
+         pingE conn
          putLn "Was able to ping the hub using the Standard profile's ping method"
-         reportClients cl
+         reportClients conn
          putLn ""
-         reportSubscriptions cl pingMT
+         reportSubscriptions conn pingMT
          bar <- toMTypeE "foo.bar"
-         reportSubscriptions cl bar
-         pingItems cl
-         pingItemsAsync cl
+         reportSubscriptions conn bar
+         pingItems conn
+         pingItemsAsync conn
          liftIO $ putStrLn "Sleeping for 10 seconds." >> wait 10
 
 runServer :: (Socket,PortNumber) -> ThreadId -> SAMPConnection -> IO ()

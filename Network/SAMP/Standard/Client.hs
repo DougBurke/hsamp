@@ -232,8 +232,8 @@ callHubE :: SAMPConnection
          -> [SAMPValue]  -- ^ message arguments
          -> Err IO SAMPValue     -- ^ response
 callHubE conn msg args = 
-         makeCallE (sampHubURL conn) msg
-                   $ (SAMPString (sampPrivateKey conn)) : args
+         makeCallE (scHubURL conn) msg
+                   $ (SAMPString (scPrivateKey conn)) : args
 
 -- | Register a client with a hub. See 'registerClientE' for a simple
 -- way to register the client and process the return vaues.
