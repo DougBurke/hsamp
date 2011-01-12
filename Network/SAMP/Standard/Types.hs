@@ -274,15 +274,14 @@ mtchars = ['a' .. 'z'] ++ "-_." ++ map chr [0..9]
 isMTChar :: Char -> Bool
 isMTChar = (`elem` mtchars)
 
+-- | See 'toMTypeE'.
+toMType :: String -> Maybe MType
+toMType = handleError (return Nothing) . toMTypeE
+
 {-|
 Create a 'MType'. This includes wild cards such as
 @*@ or @file.event.*@.
 -}
-
-toMType :: String -> Maybe MType
-toMType = handleError (return Nothing) . toMTypeE
-
--- | See 'toMType'.
 toMTypeE :: (Monad m) => String -> Err m MType
 toMTypeE mt = go mt ""
      where

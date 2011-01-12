@@ -72,10 +72,8 @@ TODO:
 > getMType :: [String] -> Either String (MType, [String])
 > getMType [] = Left "Missing required mtype argument"
 > getMType (name:xs) = 
->     case toMType name of
->         Just mtype -> Right (mtype, xs)
->         _ -> Left $ "Invalid mtype: " ++ name
-                     
+>     handleError (Left) $ toMTypeE name >>= return . flip (,) xs
+
 > getKV :: String -> Either String SAMPKeyValue
 > getKV arg = do
 >     let (l,r) = break (=='=') arg
