@@ -80,18 +80,20 @@ TODO:
 >     snoop `CE.catches` [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
 >     exitSuccess
 >
-> mdataMT , registerMT, unregisterMT, pingMT , shutdownMT , allMT :: MType
+> mdataMT , registerMT, unregisterMT, subscribeMT, pingMT , shutdownMT , allMT :: MType
 > mdataMT = fromJust (toMType "samp.hub.event.metadata")
 > registerMT = fromJust (toMType "samp.hub.event.register")
 > unregisterMT = fromJust (toMType "samp.hub.event.unregister")
+> subscribeMT = fromJust (toMType "samp.hub.event.subscriptions")
 > pingMT = fromJust (toMType "samp.app.ping")
 > shutdownMT = fromJust (toMType "samp.hub.event.shutdown")
 > allMT = fromJust (toMType "*")
 
-> sName , idLabel , mdataLabel :: RString
+> sName , idLabel , mdataLabel, subscribeLabel :: RString
 > sName = fromJust (toRString "samp.name")
 > idLabel = fromJust (toRString "id")
 > mdataLabel = fromJust (toRString "metadata")
+> subscribeLabel = fromJust (toRString "subscriptions")
 
 Set up a simple client (i.e. with limited metadata)
 
@@ -260,11 +262,17 @@ this may be a bit OTT.
 >     liftIO $ simpleClientServer conn (notifications tid barrier clvar) (calls barrier clvar) (rfunc barrier clvar) call
 >     ok (toResponse "")
 
+TODO: should we have a handler for samp.hub.event.* which then 
+
+  - checks for id field
+  - processes remaining contents
+
 > notifications :: ThreadId -> Barrier -> ClientMapVar -> [SAMPNotificationFunc]
 > notifications tid barrier clvar =
 >      [(registerMT, handleRegister barrier clvar),
 >       (unregisterMT, handleUnregister barrier clvar),
 >       (mdataMT, handleMetadata barrier clvar),
+>       (subscribeMT, handleSubscriptions barrier clvar),
 >       (shutdownMT, handleShutdown tid),
 >       (allMT, handleOther barrier clvar)
 >      ]
@@ -334,8 +342,6 @@ the other required/suggested keys too.
 >         syncPrint_ barrier $ displayWithKeys
 >             ["Client has removed itself from " ++ fromRString name ++ ": " ++ clname] kvs []
 
-TODO: handleSubscriptions
-
 > handleMetadata :: Barrier -> ClientMapVar -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
 > handleMetadata barrier clvar _ _ name keys = 
 >     withId "metadata" barrier keys $ \clid kvs -> do
@@ -358,6 +364,27 @@ TODO: handleSubscriptions
 >                        "  ERROR missing metadata parameter"] kvs []
 >
 >         maybeWithLabel (flip lookup) mdataLabel kvs doIt failIt
+
+> handleSubscriptions :: Barrier -> ClientMapVar -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
+> handleSubscriptions barrier clvar _ _ name keys = 
+>     withId "subscriptions" barrier keys $ \clid kvs -> do
+>         clname <- getDisplayName clvar clid
+>         let doIt subs k2 = do
+>               case subs of
+>                   SAMPMap sds -> do
+>                                    syncPrint_ barrier $ displayWithKeys
+>                                        ["Subscriptions notification from " ++ fromRString name ++ " for " ++ clname]
+>                                        sds (if null k2 then [] else " Other arguments:" : map displayKV k2)
+>
+>                   _ -> syncPrint_ barrier $ displayWithKeys
+>                          ["Subscriptions notification from " ++ fromRString name ++ " for " ++ clname,
+>                          "  ERROR Expected subscriptions to be a map!"] kvs []
+>
+>             failIt = syncPrint_ barrier $ displayWithKeys
+>                        ["Subscriptions notification from " ++ fromRString name ++ " for " ++ clname,
+>                        "  ERROR missing subscriptions parameter"] kvs []
+>
+>         maybeWithLabel (flip lookup) subscribeLabel kvs doIt failIt
 
 > handleOther :: Barrier -> ClientMapVar -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
 > handleOther barrier clvar mtype msgid name keys = 
