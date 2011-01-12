@@ -30,10 +30,10 @@ TODO:
 > import System.IO.Error
 >
 > import qualified Control.Exception as CE
-> import Control.Concurrent (ThreadId, killThread, myThreadId)
+> import Control.Concurrent (ThreadId, killThread, myThreadId, forkIO)
 > import Control.Concurrent.MVar
 >
-> import Control.Monad (msum, forM_, unless, when)
+> import Control.Monad (msum, unless, when)
 > import Control.Monad.Trans (liftIO)
 >
 > import Data.Maybe (fromJust, fromMaybe)
@@ -167,8 +167,14 @@ barrier)?
 > newBarrier :: IO Barrier
 > newBarrier = newMVar ()
 
-> syncAction_ :: Barrier -> IO () -> IO ()
-> syncAction_ barrier = withMVar barrier . const
+Displays the given string to stdout, ensuring that it is done as an
+atomic operation (as long as other displays are also done with
+syncPrint_ using the same barrier). The print occurs in a separate
+thread so that if there is a delay due to the barrier being used
+elsewhere it won't affect the calling routine.
+
+> syncPrint_ :: Barrier -> String -> IO ()
+> syncPrint_ barrier msg = forkIO (withMVar barrier $ \_ -> putStrLn msg) >> return ()
 
 The client map is a mapping from the client Id (identifies the
 SAMP client and is created by the hub) with a user friendly
@@ -269,8 +275,11 @@ this may be a bit OTT.
 > handleShutdown :: ThreadId -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
 > handleShutdown tid _ _ _ _ = killThread tid
 
+> displayKV :: SAMPKeyValue -> String
+> displayKV (k,v) = "  " ++ fromRString k ++ " -> " ++ showSAMPValue v
+
 > showKV :: SAMPKeyValue -> IO ()
-> showKV (k,v) = putStrLn $ "  " ++ fromRString k ++ " -> " ++ showSAMPValue v
+> showKV = putStrLn . displayKV
 
 > getKeyStr :: [SAMPKeyValue] -> RString -> Maybe RString
 > getKeyStr kvs key =
@@ -299,32 +308,31 @@ the other required/suggested keys too.
 > maybeWithId :: [SAMPKeyValue] -> (RString -> [SAMPKeyValue] -> IO ()) -> IO () -> IO ()
 > maybeWithId = maybeWithLabel getKeyStr idLabel
 
+> displayWithKeys :: [String] -> [SAMPKeyValue] -> [String] -> String
+> displayWithKeys hdr keys footer = unlines (hdr ++ map displayKV keys ++ footer)
+
 > withId :: String -> Barrier -> [SAMPKeyValue] -> (RString -> [SAMPKeyValue] -> IO ()) -> IO ()
 > withId lbl barrier keys hasId = 
->    let noId = syncAction_ barrier 
->                   (putStrLn ("ERROR: unable to find id in parameters of " ++ lbl ++ " call") >> forM_ keys showKV >> putStrLn "")
+>    let noId = syncPrint_ barrier $ displayWithKeys
+>                   ["ERROR: unable to find id in parameters of " ++ lbl ++ " call"] keys []
 >    in maybeWithId keys hasId noId
 
-> putMsgId :: RString -> IO ()
-> putMsgId msgid = putStrLn ("  Message id: " ++ fromRString msgid)
+> displayMsgId :: RString -> String
+> displayMsgId msgid = "  Message id: " ++ fromRString msgid
 
 > handleRegister :: Barrier -> ClientMapVar -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
 > handleRegister barrier clvar _ _ name keys = 
 >     withId "registration" barrier keys $ \clid kvs -> do
 >         clname <- addClient clvar clid Nothing
->         syncAction_ barrier $ do
->             putStrLn $ "Client has added itself to " ++ fromRString name ++ ": " ++ clname
->             forM_ kvs showKV
->             putStrLn ""
+>         syncPrint_ barrier $ displayWithKeys
+>             ["Client has added itself to " ++ fromRString name ++ ": " ++ clname] kvs []
 
 > handleUnregister :: Barrier -> ClientMapVar -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
 > handleUnregister barrier clvar _ _ name keys = 
 >     withId "unregistration" barrier keys $ \clid kvs -> do
 >         clname <- removeClient clvar clid
->         syncAction_ barrier $ do
->             putStrLn $ "Client has removed itself from " ++ fromRString name ++ ": " ++ clname
->             forM_ kvs showKV
->             putStrLn ""
+>         syncPrint_ barrier $ displayWithKeys
+>             ["Client has removed itself from " ++ fromRString name ++ ": " ++ clname] kvs []
 
 TODO: handleSubscriptions
 
@@ -337,23 +345,17 @@ TODO: handleSubscriptions
 >                   SAMPMap mds -> do
 >                                    nclname <- addClient clvar clid $ getKeyStr mds sName
 >                                    let clname = oclname ++ if oclname == nclname then "" else " -> " ++ nclname
->                                    syncAction_ barrier $ do
->                                        putStrLn $ "Metadata notification from " ++ fromRString name ++ " for " ++ clname
->                                        forM_ mds showKV
->                                        unless (null k2) $ putStrLn " Other arguments:" >> forM_ k2 showKV
->                                        putStrLn ""
+>                                    syncPrint_ barrier $ displayWithKeys
+>                                        ["Metadata notification from " ++ fromRString name ++ " for " ++ clname]
+>                                        mds (if null k2 then [] else " Other arguments:" : map displayKV k2)
 >
->                   _ -> syncAction_ barrier $ do
->                          putStrLn $ "Metadata notification from " ++ fromRString name ++ " for " ++ oclname
->                          putStrLn "  ERROR Expected metadata to be a map!"
->                          forM_ kvs showKV
->                          putStrLn ""
+>                   _ -> syncPrint_ barrier $ displayWithKeys
+>                          ["Metadata notification from " ++ fromRString name ++ " for " ++ oclname,
+>                          "  ERROR Expected metadata to be a map!"] kvs []
 >
->             failIt = syncAction_ barrier $ do
->                        putStrLn $ "Metadata notification from " ++ fromRString name ++ " for " ++ oclname
->                        putStrLn "  ERROR missing metadata parameter"
->                        forM_ kvs showKV
->                        putStrLn ""
+>             failIt = syncPrint_ barrier $ displayWithKeys
+>                        ["Metadata notification from " ++ fromRString name ++ " for " ++ oclname,
+>                        "  ERROR missing metadata parameter"] kvs []
 >
 >         maybeWithLabel (flip lookup) mdataLabel kvs doIt failIt
 
@@ -361,27 +363,23 @@ TODO: handleSubscriptions
 > handleOther barrier clvar mtype msgid name keys = 
 >     let noId = do
 >             clname <- getDisplayName clvar name
->             syncAction_ barrier $ do
->                 putStrLn $ "Notification of " ++ show mtype ++ " from " ++ clname
->                 putMsgId msgid
->                 forM_ keys showKV
->                 putStrLn ""
+>             syncPrint_ barrier $ displayWithKeys
+>                 ["Notification of " ++ show mtype ++ " from " ++ clname,
+>                  displayMsgId msgid] keys []
 >         
 >         hasId clid kvs = do
 >             clname <- getDisplayName clvar clid
->             syncAction_ barrier $ do
->                 putStrLn $ "Notification of " ++ show mtype ++ " from " ++ fromRString name ++ " for " ++ clname
->                 putMsgId msgid
->                 forM_ kvs showKV
->                 putStrLn ""
+>             syncPrint_ barrier $ displayWithKeys
+>                 ["Notification of " ++ show mtype ++ " from " ++ fromRString name ++ " for " ++ clname,
+>                  displayMsgId msgid] kvs []
 >
 >     in maybeWithId keys hasId noId
 
 > handlePingCall :: Barrier -> ClientMapVar -> MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
 > handlePingCall barrier clvar _ _ name _ keys = do
 >     clname <- getDisplayName clvar name
->     syncAction_ barrier
->       (putStrLn ("hsamp-snooper was pinged by " ++ clname) >> forM_ keys showKV >> putStrLn "")
+>     syncPrint_ barrier $ displayWithKeys
+>       ["hsamp-snooper was pinged by " ++ clname] keys []
 >     return $ toSAMPResponse []
 
 We return a warning to point out that we are just logging this message
@@ -390,8 +388,8 @@ We return a warning to point out that we are just logging this message
 > handleOtherCall :: Barrier -> ClientMapVar -> MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
 > handleOtherCall barrier clvar mtype _ name msgid keys = do
 >     clname <- getDisplayName clvar name
->     syncAction_ barrier
->       (putStrLn ("Call of " ++ show mtype ++ " by " ++ clname) >> putMsgId msgid >> forM_ keys showKV >> putStrLn "")
+>     syncPrint_ barrier $ displayWithKeys
+>       ["Call of " ++ show mtype ++ " by " ++ clname, displayMsgId msgid] keys []
 >     let emsg = fromJust $ toRString $ "The message " ++ show mtype ++ " has only been logged, not acted on."
 >     return $ toSAMPResponseWarning [] emsg []
 
@@ -400,10 +398,9 @@ Not sure what to do about this at the moment.
 > rfunc :: Barrier -> ClientMapVar -> SAMPResponseFunc
 > rfunc barrier clvar _ clid msgid rsp = do
 >    clname <- getDisplayName clvar clid
->    let act = if isSAMPSuccess rsp
->                then putStrLn $ "Got a response to msg=" ++ fromRString msgid ++ " from=" ++ clname
->                else do
->                       putStrLn $ "Error in response to msg=" ++ fromRString msgid ++ " from=" ++ clname
->                       print $ fromJust (getSAMPResponseErrorTxt rsp)
->    syncAction_ barrier act
+>    let msg = if isSAMPSuccess rsp
+>                then "Got a response to msg=" ++ fromRString msgid ++ " from=" ++ clname
+>                else unlines ["Error in response to msg=" ++ fromRString msgid ++ " from=" ++ clname,
+>                              show (fromJust (getSAMPResponseErrorTxt rsp))]
+>    syncPrint_ barrier msg
 
