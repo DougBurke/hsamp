@@ -346,7 +346,7 @@ the other required/suggested keys too.
 > handleMetadata barrier clvar _ _ name keys = 
 >     withId "metadata" barrier keys $ \clid kvs -> do
 >         oclname <- getDisplayName clvar clid
->         let doIt mdata k2 = do
+>         let doIt mdata k2 = 
 >               case mdata of
 >                   SAMPMap mds -> do
 >                                    nclname <- addClient clvar clid $ getKeyStr mds sName
@@ -369,12 +369,11 @@ the other required/suggested keys too.
 > handleSubscriptions barrier clvar _ _ name keys = 
 >     withId "subscriptions" barrier keys $ \clid kvs -> do
 >         clname <- getDisplayName clvar clid
->         let doIt subs k2 = do
+>         let doIt subs k2 = 
 >               case subs of
->                   SAMPMap sds -> do
->                                    syncPrint_ barrier $ displayWithKeys
->                                        ["Subscriptions notification from " ++ fromRString name ++ " for " ++ clname]
->                                        sds (if null k2 then [] else " Other arguments:" : map displayKV k2)
+>                   SAMPMap sds -> syncPrint_ barrier $ displayWithKeys
+>                                      ["Subscriptions notification from " ++ fromRString name ++ " for " ++ clname]
+>                                      sds (if null k2 then [] else " Other arguments:" : map displayKV k2)
 >
 >                   _ -> syncPrint_ barrier $ displayWithKeys
 >                          ["Subscriptions notification from " ++ fromRString name ++ " for " ++ clname,
@@ -420,7 +419,7 @@ We return a warning to point out that we are just logging this message
 >     let emsg = fromJust $ toRString $ "The message " ++ show mtype ++ " has only been logged, not acted on."
 >     return $ toSAMPResponseWarning [] emsg []
 
-Not sure what to do about this at the moment.
+TODO: handle warning case
 
 > rfunc :: Barrier -> ClientMapVar -> SAMPResponseFunc
 > rfunc barrier clvar _ clid msgid rsp = do

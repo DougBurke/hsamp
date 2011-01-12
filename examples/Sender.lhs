@@ -72,7 +72,7 @@ TODO:
 > getMType :: [String] -> Either String (MType, [String])
 > getMType [] = Left "Missing required mtype argument"
 > getMType (name:xs) = 
->     handleError (Left) $ toMTypeE name >>= return . flip (,) xs
+>     handleError Left $ fmap (flip (,) xs) (toMTypeE name)
 
 > getKV :: String -> Either String SAMPKeyValue
 > getKV arg = do
