@@ -1,5 +1,5 @@
 
-ghc -hide-package monads-fd --make -o snooper -Wall Snooper.lhs
+ghc -hide-package monads-fd --make -o snooper -Wall Snooper.lhs -i..
 
 Try and log messages sent from the SAMP hub.
 
@@ -15,6 +15,10 @@ TODO:
 
     Should we auto-convert the id parameter of messages to
     include this information?
+
+  - most (if not all) messages will have an id field in the parameter,
+    so we should recognize this and extract/display it. Which means
+    some helper routines.
 
   - look at error handling
 
@@ -92,7 +96,7 @@ TODO:
 Set up a simple client (i.e. with limited metadata)
 
 > authorMetadata :: Err IO [SAMPKeyValue]
-> authorMetadata = sequence $ map (uncurry stringToKeyValE)
+> authorMetadata = mapM (uncurry stringToKeyValE)
 >     [("author.name", "Doug Burke"),
 >      ("author.affiliation", "Smithsonian Astrophysical Observatory"),
 >      ("author.mail", "dburke@cfa.harvard.edu")]
@@ -288,7 +292,7 @@ remaining key,value pairs. Only for string values.
 > handleRegister barrier clvar _ _ name keys = 
 >    case getKeyVal keys idLabel of
 >        Nothing -> 
->            syncAction_ barrier (putStrLn ("ERROR: unable to find id in parameters of registration call\n"))
+>            syncAction_ barrier (putStrLn "ERROR: unable to find id in parameters of registration call\n")
 >        Just (clid,kvs) -> do
 >            clname <- addClient clvar clid Nothing
 >            syncAction_ barrier $ do
@@ -300,7 +304,7 @@ remaining key,value pairs. Only for string values.
 > handleUnregister barrier clvar _ _ name keys = 
 >    case getKeyVal keys idLabel of
 >        Nothing -> 
->            syncAction_ barrier (putStrLn ("ERROR: unable to find id in parameters of unregistration call\n"))
+>            syncAction_ barrier (putStrLn "ERROR: unable to find id in parameters of unregistration call\n")
 >        Just (clid,kvs) -> do
 >            clname <- removeClient clvar clid
 >            syncAction_ barrier $ do
@@ -309,16 +313,16 @@ remaining key,value pairs. Only for string values.
 >                putStrLn ""
 
 > handleMetadata :: Barrier -> ClientMapVar -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
-> handleMetadata barrier clvar _ _ name keys = do
+> handleMetadata barrier clvar _ _ name keys = 
 >    case getKeyVal keys idLabel of
 >        Nothing -> 
->            syncAction_ barrier (putStrLn ("ERROR: unable to find id in parameters of metadata call\n"))
+>            syncAction_ barrier (putStrLn "ERROR: unable to find id in parameters of metadata call\n")
 >        Just (clid,kvs) -> do
 >            oclname <- getDisplayName clvar clid
 >            -- TODO: handle error condition when metadata isn't a map
 >            let SAMPMap mds = fromMaybe (SAMPMap []) (lookup mdataLabel kvs)
 >            nclname <- addClient clvar clid $ getKeyStr mds sName
->            let clname = oclname ++ if oclname == nclname then "" else (" -> " ++ nclname)
+>            let clname = oclname ++ if oclname == nclname then "" else " -> " ++ nclname
 >            syncAction_ barrier $ do
 >                putStrLn $ "Metadata notification from " ++ fromRString name ++ " for " ++ clname
 >                forM_ kvs showKV
@@ -359,6 +363,6 @@ Not sure what to do about this at the moment.
 >                then putStrLn $ "Got a response to msg=" ++ fromRString msgid ++ " from=" ++ clname
 >                else do
 >                       putStrLn $ "Error in response to msg=" ++ fromRString msgid ++ " from=" ++ clname
->                       putStrLn $ show (fromJust (getSAMPResponseErrorTxt rsp))
+>                       print $ fromJust (getSAMPResponseErrorTxt rsp)
 >    syncAction_ barrier act
 

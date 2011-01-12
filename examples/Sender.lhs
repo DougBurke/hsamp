@@ -33,7 +33,6 @@ TODO:
 > import Control.Monad (msum, forM_, unless, when)
 > import Control.Monad.Trans (liftIO)
 > import Data.Maybe (fromJust)
-> import Data.List (intercalate)
 >
 > import Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
 >
@@ -132,7 +131,7 @@ Run a set of SAMP commands and exit on error.
 >         (\emsg -> hPutStrLn stderr ("ERROR: " ++ emsg) >> exitFailure)
 
 > authorMetadata :: Err IO [SAMPKeyValue]
-> authorMetadata = sequence $ map (uncurry stringToKeyValE)
+> authorMetadata = mapM (uncurry stringToKeyValE)
 >     [("author.name", "Doug Burke"),
 >      ("author.affiliation", "Smithsonian Astrophysical Observatory"),
 >      ("author.mail", "dburke@cfa.harvard.edu")]
@@ -187,7 +186,7 @@ step).
 >                           unless (null rclients) $ case rclients of
 >                               [cl] -> fail $ "The following client failed to respond: " ++ fromRString cl
 >                               _ -> fail $ "The following clients failed to respond: " ++
->                                       intercalate " " (map fromRString rclients)
+>                                       unwords (map fromRString rclients)
 >                         
 >             Notify -> do
 >                         putStrLn "Notifications sent to:" 
@@ -289,7 +288,7 @@ TODO: need to handle errors more sensibly than runE here!
 >           putStrLn $ "Ignoring unexpected response from " ++ fromRString receiverid
 >           return clients
 >    ncl <- readMVar cv
->    if null ncl then return () else waitForCalls chan cv
+>    unless (null ncl) $ waitForCalls chan cv
 
 Basic configuration for setting up the server.
 
