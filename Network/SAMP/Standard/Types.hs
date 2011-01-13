@@ -176,10 +176,10 @@ instance Random RChar where
 
     randomR (lo,hi) gen | lo > hi   = randomR (hi,lo) gen
                         | otherwise = let opts = [lo..hi]
-                                          (idx, gen') = randomR (0,length(opts)-1) gen
+                                          (idx, gen') = randomR (0,length opts - 1) gen
                                       in (opts !! idx, gen')
 
-    random g = randomR (minBound,maxBound) g
+    random = randomR (minBound,maxBound)
 
 {-|
 A restricted string class that is limited to
@@ -463,6 +463,11 @@ isMTWildCard (MT _ f) = f
 -- | This represents a key,value pair stored in a SAMP map.
 -- Note that the key is stored as a 'RString'.
 type SAMPKeyValue = (RString, SAMPValue)
+
+{-
+TODO: should there be a SAMPType instance of (MType, SAMPValue)
+for declareSubscriptionsE in Client?
+-}
 
 -- We can not add a Show instance of SAMPKeyValue without
 -- getting a lot of complaints from deriving instances
