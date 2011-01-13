@@ -38,7 +38,9 @@ module Network.SAMP.Standard.Types (
        RChar, toRChar, toRCharE, fromRChar,
        validRChars,
 
-       RString, emptyRString, toRString, toRStringE, fromRString, asIntegral, asFloating, asBool,
+       RString, emptyRString, toRString, toRStringE, fromRString,
+       asIntegral, asFloating, asBool,
+       randomRString,
 
        MType, toMType, toMTypeE, fromMType, isMTWildCard,
 
@@ -64,7 +66,7 @@ module Network.SAMP.Standard.Types (
 import Control.Monad.Error (MonadError, throwError)
 import Control.Monad (liftM, ap, when)
 
--- import System.Random
+import System.Random
 
 import Network.XmlRpc.Internals
 
@@ -107,9 +109,13 @@ isRCharAsInt = (`elem` validRCharsAsInts)
 
 {-|
 A restricted character class that is limited to
-ASCII characters with hex codes @09@, @0a@, @0d@ or 
-@20 .. 7f@
+ASCII characters with codes @0x09@, @0x0a@, @0x0d@ or 
+@0x20 .. 0x7f@,
 as these are the only characters supported by SAMP.
+
+The 'Random', 'Bounded' and 'Enum' instances of @RChar@
+use the full range of chacters (i.e. they include the four
+control characters @0x09@, @0x0a@, @0x0d@ and @0x7f@).
 -}
 
 newtype RChar = RC Char deriving (Eq, Ord)
@@ -171,25 +177,14 @@ toRCharE c | isRChar c = return (RC c)
 fromRChar :: RChar -> Char
 fromRChar (RC c) = c
 
-{-
 instance Random RChar where
-    randomR (lo,hi) gen = 
 
-    random gen = 
+    randomR (lo,hi) gen | lo > hi   = randomR (hi,lo) gen
+                        | otherwise = let opts = [lo..hi]
+                                          (idx, gen') = randomR (0,length(opts)-1) gen
+                                      in (opts !! idx, gen')
 
-randomR :: RandomGen g => (a, a) -> g -> (a, g)
-
-Takes a range (lo,hi) and a random number generator g, and returns a random value uniformly distributed in the closed interval [lo,hi], together with a new generator. It is unspecified what happens if lo>hi. For continuous types there is no requirement that the values lo and hi are ever produced, but they may be, depending on the implementation and the interval.
-
-random :: RandomGen g => g -> (a, g)
-
-The same as randomR, but using a default range determined by the type:
-
-For bounded types (instances of Bounded, such as Char), the range is normally the whole type.
-For fractional types, the range is normally the semi-closed interval [0,1).
-For Integer, the range is (arbitrarily) the range of Int.
-
--}
+    random g = randomR (minBound,maxBound) g
 
 {-|
 A restricted string class that is limited to
@@ -254,9 +249,24 @@ fromRString = map fromRChar
 {-|
 Create a random 'RString' (useful for message ids).
 
-randomRString :: (RandomGen a) => a -> IO (RString, a)
-XXX
+This is just a simple wrapper around the 'Random' instance
+of 'RChar'. The argument order is chosen to make it easy to
+use with 'System.Random.getStdRandom'.
+
+Characters are chosen from the full list of SAMP characters
+(e.g. 'validRChars') /except/ for @0x09@, @0x0a@, @0x0d@
+and @0x7f@ (i.e. the control characters).
 -}
+randomRString :: (RandomGen a) 
+              => Int -- ^ the number of characters (if <= 0 then an empty string is returned)
+              -> a -- ^ the generator to use
+              -> (RString, a)
+randomRString n gen | n <= 0     = ([], gen)
+                    | otherwise = go n gen []
+    where
+      go 0 gen' ans = (ans, gen')
+      go m gen' acc = let (nc,gen'') = randomR (RC (chr 0x20), RC (chr 0x7e)) gen'
+                      in go (m-1) gen'' (nc:acc)
 
 -- helper function
 rconv :: (Read a) => RString -> Maybe a
