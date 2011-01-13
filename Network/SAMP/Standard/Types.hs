@@ -1,4 +1,5 @@
-{-# LANGUAGE FlexibleInstances , OverlappingInstances #-}
+{-# LANGUAGE FlexibleInstances , OverlappingInstances, TypeSynonymInstances #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 {-|
 Module      :  Network.SAMP.Standard.Types
@@ -34,7 +35,11 @@ module Network.SAMP.Standard.Types (
        showSAMPValue,
        getKey, stringToKeyValE, stringFromKeyValE,
 
+       RChar, toRChar, toRCharE, fromRChar,
+       validRChars,
+
        RString, emptyRString, toRString, toRStringE, fromRString, asIntegral, asFloating, asBool,
+
        MType, toMType, toMTypeE, fromMType, isMTWildCard,
 
        SAMPResponse, 
@@ -59,8 +64,11 @@ module Network.SAMP.Standard.Types (
 import Control.Monad.Error (MonadError, throwError)
 import Control.Monad (liftM, ap, when)
 
+-- import System.Random
+
 import Network.XmlRpc.Internals
 
+import Data.String
 import Data.List (intercalate, isPrefixOf)
 import Data.List.Split (splitOn, splitOneOf)
 import Data.Char (chr, ord, isDigit, intToDigit)
@@ -78,11 +86,110 @@ runE = handleError fail
 -- any other key,value entries).
 type SAMPInfo = (RString, String, [(String, String)])
 
-rchars :: String
-rchars = map chr $ [0x9, 0xa, 0xd] ++ [0x20 .. 0x7f]
+validRCharsAsInts :: [Int]
+validRCharsAsInts = [0x09, 0x0a, 0x0d] ++ [0x20 .. 0x7f]
+
+nRChars :: Int
+nRChars = length validRCharsAsInts
+
+-- | A list of the characters that can appear in a
+-- 'RString'.
+validRChars :: String
+validRChars = map chr validRCharsAsInts
 
 isRChar :: Char -> Bool
-isRChar = (`elem` rchars)
+isRChar = (`elem` validRChars)
+
+{-
+isRCharAsInt :: Int -> Bool
+isRCharAsInt = (`elem` validRCharsAsInts)
+-}
+
+{-|
+A restricted character class that is limited to
+ASCII characters with hex codes @09@, @0a@, @0d@ or 
+@20 .. 7f@
+as these are the only characters supported by SAMP.
+-}
+
+newtype RChar = RC Char deriving (Eq, Ord)
+
+-- We want to display RChar/RStrings as if they were normal
+-- Char/String elements
+
+instance Show RChar where
+    show (RC c) = show c
+    showList = showList . map fromRChar
+
+instance Bounded RChar where
+    minBound = RC (chr 0x09)
+    maxBound = RC (chr 0x7f)
+
+-- ^ Unlike the 'Char' enumeration, we do not map from
+-- 'Int' to ASCII code (and above) but use the position within
+-- the 'validRChars' list as the enumerated value.
+instance Enum RChar where 
+    succ (RC c) | c == chr 0x7f = error "bad argument"
+                | c == chr 0x09 = RC (chr 0x0a)
+                | c == chr 0x0a = RC (chr 0x0d)
+                | c == chr 0x0d = RC (chr 0x20)
+                | otherwise     = RC (succ c)
+
+    pred (RC c) | c == chr 0x09 = error "bad argument"
+                | c == chr 0x0a = RC (chr 0x09)
+                | c == chr 0x0d = RC (chr 0x0a)
+                | c == chr 0x20 = RC (chr 0x0d)
+                | otherwise     = RC (pred c)
+
+
+    toEnum x | x < 0 || x >= nRChars = error "bad argument"
+             | otherwise             = RC (validRChars !! x)
+
+    fromEnum (RC c) = length $ takeWhile (/=c) validRChars
+
+    enumFrom x = enumFromTo x maxBound                 
+
+    enumFromThen x y = enumFromThenTo x y bound
+      where
+        bound | fromEnum y >= fromEnum x = maxBound
+              | otherwise                = minBound
+
+    enumFromTo (RC s) (RC e) = toRS $ takeWhile (<=e) $ dropWhile (<s) validRChars
+
+    -- rely on the default implementation for enumFromThenTo
+
+-- | Create a 'RChar' from a normal 'Char'.
+toRChar :: Char -> Maybe RChar
+toRChar = handleError (const Nothing) . toRCharE
+
+-- | See 'toRChar'.
+toRCharE :: (Monad m) => Char -> Err m RChar
+toRCharE c | isRChar c = return (RC c)
+           | otherwise = throwError $ "'" ++ [c] ++ "'/" ++ toHex c ++ " is not a valid SAMP character."
+
+-- | Extract the contents of the 'RChar'.
+fromRChar :: RChar -> Char
+fromRChar (RC c) = c
+
+{-
+instance Random RChar where
+    randomR (lo,hi) gen = 
+
+    random gen = 
+
+randomR :: RandomGen g => (a, a) -> g -> (a, g)
+
+Takes a range (lo,hi) and a random number generator g, and returns a random value uniformly distributed in the closed interval [lo,hi], together with a new generator. It is unspecified what happens if lo>hi. For continuous types there is no requirement that the values lo and hi are ever produced, but they may be, depending on the implementation and the interval.
+
+random :: RandomGen g => g -> (a, g)
+
+The same as randomR, but using a default range determined by the type:
+
+For bounded types (instances of Bounded, such as Char), the range is normally the whole type.
+For fractional types, the range is normally the semi-closed interval [0,1).
+For Integer, the range is (arbitrarily) the range of Int.
+
+-}
 
 {-|
 A restricted string class that is limited to
@@ -105,33 +212,57 @@ TODO:
 
 -}
 
-data RString = RS String deriving (Eq, Ord)
+type RString = [RChar]
 
-instance Show RString where
-    show (RS s) = show s
+{-|
+The conversion provided by this instance is unsafe since 
+'error' is called for those strings that contain invalid
+characters.
+-}
+instance IsString RString where
+  fromString = toRS
 
--- | The empty string.
-emptyRString :: RString
-emptyRString = RS ""
+-- unsafe constructor
+
+toRS :: String -> RString
+toRS = fromJust . handleError error . toRStringE
 
 instance XmlRpcType RString where
-    toValue (RS s) = toValue s
+    toValue = ValueString . fromRString
     fromValue (ValueString s) = toRStringE s
     fromValue x = fail $ "Unable to convert to a SAMP string from " ++ show x
 
     getType _ = TString
 
+-- | The empty string.
+emptyRString :: RString
+emptyRString = []
+
 -- | Create a 'RString' from a normal 'String'.
 toRString :: String -> Maybe RString
-toRString s = if all isRChar s then Just (RS s) else Nothing
+toRString = mapM toRChar
 
 -- | See 'toRString'.
 toRStringE :: (Monad m) => String -> Err m RString
-toRStringE s = maybeToM ("Unable to convert '" ++ s ++ "' to a SAMP string") (toRString s)
+toRStringE = mapM toRCharE
+-- toRStringE s = maybeToM ("Unable to convert '" ++ s ++ "' to a SAMP string") (toRString s)
 
 -- | Extract the contents of the 'RString'.
 fromRString :: RString -> String
-fromRString (RS s) = s
+fromRString = map fromRChar
+
+{-|
+Create a random 'RString' (useful for message ids).
+
+randomRString :: (RandomGen a) => a -> IO (RString, a)
+XXX
+-}
+
+-- helper function
+rconv :: (Read a) => RString -> Maybe a
+rconv [] = Nothing
+rconv cs = let vs = fromRString cs
+           in if all isDigit vs then Just (read vs) else Nothing
 
 {-|
  Convert an 'RString' to an 'Integral' value using the rule:
@@ -139,14 +270,10 @@ fromRString (RS s) = s
 >    <SAMP int> ::= [ <sign> ] <digits>
 -}
 asIntegral :: (Read a, Integral a) => RString -> Maybe a
-asIntegral (RS []) = Nothing
-asIntegral (RS s@(x:xs)) | x == '-'  = fmap negate (conv xs)
-                    | x == '+'  = conv xs
-                    | otherwise = conv s
-    where
-      conv :: (Read a) => String -> Maybe a
-      conv [] = Nothing
-      conv vs = if all isDigit vs then Just (read vs) else Nothing
+asIntegral [] = Nothing
+asIntegral s@(x:xs) | x == RC '-'  = fmap negate (rconv xs)
+                    | x == RC '+'  = rconv xs
+                    | otherwise    = rconv s
 
 {-|
 Convert an 'RString' to a 'Floating' value using the rule:
@@ -155,16 +282,16 @@ Convert an 'RString' to a 'Floating' value using the rule:
 -}
 
 asFloating :: (Read a, Floating a) => RString -> Maybe a
-asFloating (RS []) = Nothing
-asFloating (RS s@(x:xs)) | x == '-'  = fmap negate (conv xs)
-                    | x == '+'  = conv xs
-                    | otherwise = conv s
+asFloating [] = Nothing
+asFloating s@(x:xs) | x == RC '-'  = fmap negate (conv xs)
+                    | x == RC '+'  = conv xs
+                    | otherwise    = conv s
     where
-      iconv :: String -> Maybe Integer
-      iconv is = if all isDigit is then Just (read is) else Nothing
+      iconv :: RString -> Maybe Integer
+      iconv = rconv
 
       -- this seems as if I'm complicating it a bit
-      conv :: (Read a, Floating a) => String -> Maybe a
+      conv :: (Read a, Floating a) => RString -> Maybe a
       conv [] = Nothing
       conv vs = do
            let sv = splitOneOf "eE" vs
@@ -175,15 +302,15 @@ asFloating (RS s@(x:xs)) | x == '-'  = fmap negate (conv xs)
            let sm = splitOn "." ms
            (lm,rm) <- case sm of
                     [l1] -> return (l1, "0")
-                    [l2,r2] -> return (if l2 == "" then "0" else l2,
-                                       if r2 == "" then "0" else r2)
+                    [l2,r2] -> return (if null l2 then "0" else l2,
+                                       if null r2 then "0" else r2)
                     _ -> Nothing
            e <- case es of
-                  '+':ess -> iconv ess
-                  '-':ess -> fmap negate (iconv ess)
+                  RC '+':ess -> iconv ess
+                  RC '-':ess -> fmap negate (iconv ess)
                   _ -> iconv es
 
-           return $ read (lm ++ "." ++ rm) ** fromIntegral e
+           return $ read (fromRString (lm ++ "." ++ rm)) ** fromIntegral e
 
 {-
 We could just check whether the string is == "0" for False,
@@ -229,8 +356,8 @@ TODO:
 
 -}
 
-data MType =
-     MT String -- if a wildcard then drop the * but NOT the last . (unless "*")
+data MType = MT
+     String -- if a wildcard then drop the * but NOT the last . (unless "*")
      Bool -- is this a wildcard
 
 instance Show MType where
@@ -255,7 +382,7 @@ instance Eq MType where
     (==) = matchMTypes
 
 instance SAMPType MType where
-    toSValue = SAMPString . RS . show
+    toSValue = fromString . show
 
     fromSValue (SAMPString s) = toMTypeE $ fromRString s
     fromSValue x = throwError $ "Expected a string, sent " ++ show x
@@ -291,15 +418,22 @@ toMTypeE mt = go mt ""
        -- nb: we need to store the last '.' in a wildcard
        --     for the Eq instance
        go "" acc = return $ MT (reverse acc) False
-       go "*" "" = return $ MT "" True
-       go ".*" "" = throwError $ hdr ++ " (no characters before '.')"
-       go ".*" acc = return $ MT (reverse ('.':acc)) True
-       go "*" _ = throwError $ hdr ++ " (missing '.' before wildcard)"
-       go "." _ = throwError $ hdr ++ " (missing name or wildcard after '.')"
+       go ".*" acc | null acc  = throwError $ hdr ++ " (no characters before '.')"
+                   | otherwise = return $ MT (reverse ('.':acc)) True
+       go "*" acc | null acc  = return $ MT "" True
+                  | otherwise = throwError $ hdr ++ " (missing '.' before wildcard)"
+
        go ('*':_) _ = throwError $ hdr ++ " (wildcard can only appear at end)"
+       go "." _ = throwError $ hdr ++ " (missing name or wildcard after '.')"
        go ('.':'.':_) _ = throwError $ hdr ++ " (there must be characters between the '.')"
+
        go (x:xs) acc | isMTChar x = go xs (x:acc)
                      | otherwise  = throwError $ hdr ++ " (invalid character '" ++ [x] ++ "'/" ++ toHex x ++ ")" -- could include hex code
+
+       -- Try and shut the compiler up from thinking that the pattern matches are not exhaustive.
+       -- Since there are also complaints about overlapping pattern matches maybe I've got my
+       -- logic wrong?
+       go a b = throwError $ "Internal error: go sent a=" ++ a ++ " b=" ++ b
 
 toHex :: Char -> String
 toHex c = let x = ord c
@@ -389,6 +523,14 @@ data SAMPValue =
   | SAMPMap [SAMPKeyValue]
   deriving (Eq, Show)
 
+{-|
+The conversion provided by this instance is unsafe since 
+'error' is called for those strings that contain invalid
+characters.
+-}
+instance IsString SAMPValue where
+  fromString = SAMPString . toRS
+
 instance XmlRpcType SAMPValue where
     toValue (SAMPString s) = toValue s
     toValue (SAMPList xs) = ValueArray $ map toValue xs
@@ -427,20 +569,20 @@ instance SAMPType RString where
     fromSValue x = throwError $ "Expected a string, sent " ++ show x
 
 instance SAMPType Bool where
-    toSValue True = SAMPString $ RS "1"
-    toSValue _    = SAMPString $ RS "0"
+    toSValue True = "1"
+    toSValue _    = "0"
 
     fromSValue (SAMPString s) = maybeToM ("Unable to convert " ++ show s ++ " to a Bool.") (asBool s)
     fromSValue x = throwError $ "Expected a string but sent " ++ show x
 
 instance SAMPType Int where
-    toSValue = SAMPString . fromJust . toRString . show
+    toSValue = fromString . show
 
     fromSValue (SAMPString s) = maybeToM ("Unable to convert " ++ show s ++ " to an Int.") (asIntegral s)
     fromSValue x = throwError $ "Expected a string but sent " ++ show x
 
 instance SAMPType Integer where
-    toSValue = SAMPString . fromJust . toRString . show
+    toSValue = fromString . show
 
     fromSValue (SAMPString s) = maybeToM ("Unable to convert " ++ show s ++ " to an Integer.") (asIntegral s)
     fromSValue x = throwError $ "Expected a string but sent " ++ show x
@@ -459,7 +601,7 @@ instance (SAMPType a) => SAMPType [a] where
 TODO: need to encode a float using the correct rules.
 
 instance SAMPType Float where
-    toSValue = SAMPString . fromJust . toRString . show
+    toSValue = fromString . show
 
     fromSValue (SAMPString s) = maybeToM ("Unable to convert " ++ show s ++ " to an Integer.") (asIntegral s)
     fromSValue x = throwError $ "Expected a string but sent " ++ show x
@@ -561,27 +703,22 @@ toSAMPResponseWarning :: [SAMPKeyValue] -- ^ successful key,value pairs
 toSAMPResponseWarning svals emsg evals = SR (Just svals) (Just (emsg,evals))
 
 sStatus , sResult , sError , sErrorTxt :: RString
-sStatus = RS "samp.status"
-sResult = RS "samp.result"
-sError  = RS "samp.error"
-sErrorTxt = RS "samp.errortxt"
-
-sampOK , sampError , sampWarning :: String
-sampOK = "samp.ok"
-sampError = "samp.error"
-sampWarning = "samp.warning"
+sStatus = "samp.status"
+sResult = "samp.result"
+sError  = "samp.error"
+sErrorTxt = "samp.errortxt"
 
 sOkVal , sErrVal , sWarnVal :: SAMPValue
-sOkVal   = SAMPString (RS sampOK)
-sErrVal  = SAMPString (RS sampError)
-sWarnVal = SAMPString (RS sampWarning)
+sOkVal   = "samp.ok"
+sErrVal  = "samp.error"
+sWarnVal = "samp.warning"
 
 instance XmlRpcType SAMPResponse where
     toValue = toValue . toSValue
 
     -- TODO: can we simplify the following by using the SAMPType instance?
     fromValue (ValueStruct xs) = do
-        ss <- getField "samp.status" xs
+        ss <- getField "samp.status" xs :: (Monad m) => Err m RString
         case ss of
             "samp.ok" -> do
                 fs <- getField "samp.result" xs
@@ -679,8 +816,8 @@ getSAMPMessageParams :: SAMPMessage -> [SAMPKeyValue]
 getSAMPMessageParams (SM _ ps) = ps
 
 smtype , sparams :: RString
-smtype = RS "samp.mtype"
-sparams = RS "samp.params"
+smtype = toRS "samp.mtype"
+sparams = toRS "samp.params"
 
 -- | Get a value from the contents of a SAMP Map (given as a list
 -- of key,value pairs).
