@@ -1,5 +1,4 @@
-
-ghc -hide-package monads-fd --make -o sender -Wall Sender.lhs -i..
+ {-# LANGUAGE OverloadedStrings #-}
 
 Send a SAMP message (with potential arguments) to all interested clients.
 
@@ -25,6 +24,7 @@ TODO:
 > import System.Exit (exitSuccess, exitFailure)
 > import System.IO
 > import System.IO.Error
+> import System.Random
 >
 > import qualified Control.Exception as CE
 > import Control.Concurrent
@@ -210,6 +210,8 @@ step).
 >     | isSAMPWarning rsp   = syncAction_ barrier $ printWarning delta target rsp
 >     | otherwise           = syncAction_ barrier $ printSuccess delta target rsp
 
+TODO: convert to syncPrint from Snooper.lhs 
+
 > syncAction_ :: Barrier -> IO () -> IO ()
 > syncAction_ barrier = withMVar barrier . const 
 
@@ -258,10 +260,8 @@ step).
 >     tname <- handleError (return . const Nothing) $ getClientNameE conn tid
 >     printResponse barrier (diffUTCTime eTime sTime) (tid,tname) rsp
 
-Hardly unique!
-
-> msgId :: RString
-> msgId = fromJust (toRString "unique-identifier-string-honest!")
+> getMsgId :: IO RString
+> getMsgId = getStdRandom $ randomRString 10
 
 > kvToRSE :: (Monad m) => SAMPKeyValue -> Err m (RString, RString)
 > kvToRSE (k,SAMPString v) = return (k, v)
@@ -273,6 +273,7 @@ TODO: need to handle errors more sensibly than runE here!
 > sendASync mt conn msg = do
 >     sTime <- getCurrentTime
 >     putMVar mt sTime
+>     msgId <- getMsgId
 >     fmap (map fst) $ runE (callAllE conn msgId msg >>= mapM kvToRSE)
 
 
