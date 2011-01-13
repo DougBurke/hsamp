@@ -16,11 +16,6 @@ Logging is provided using the @SAMP.StandardProfile.Client@
 'System.Log.Logger.Logger' instance. At present this is limited
 to debugging information only.
 
-TODO:
-
-  - conversion to RString should, when run in Err monad,
-    report the problem character
-
 -}
 
 module Network.SAMP.Standard.Types (
@@ -64,7 +59,7 @@ module Network.SAMP.Standard.Types (
        ) where
 
 import Control.Monad.Error (MonadError, throwError)
-import Control.Monad (liftM, ap, when)
+import Control.Monad (liftM, ap)
 
 import System.Random
 
@@ -203,7 +198,7 @@ The type conversions below use the following BNF productions:
 
 TODO:
 
-  - add a Read instance
+  - add a Read instance (maybe?)
 
 -}
 
@@ -240,7 +235,6 @@ toRString = mapM toRChar
 -- | See 'toRString'.
 toRStringE :: (Monad m) => String -> Err m RString
 toRStringE = mapM toRCharE
--- toRStringE s = maybeToM ("Unable to convert '" ++ s ++ "' to a SAMP string") (toRString s)
 
 -- | Extract the contents of the 'RString'.
 fromRString :: RString -> String
@@ -362,7 +356,7 @@ is 'True'.
 
 TODO:
 
- - add a Read instance
+ - add a Read instance (maybe?)
 
 -}
 
@@ -470,7 +464,8 @@ isMTWildCard (MT _ f) = f
 -- Note that the key is stored as a 'RString'.
 type SAMPKeyValue = (RString, SAMPValue)
 
--- TODO: add a show instance to the above
+-- We can not add a Show instance of SAMPKeyValue without
+-- getting a lot of complaints from deriving instances
 
 {-|
 | Convert a pair of strings into a 'SAMPKeyValue'.
@@ -578,7 +573,9 @@ instance XmlRpcType SAMPValue where
     getType (SAMPList _) = TArray
     getType (SAMPMap _) = TStruct
 
--- | Convert a 'SAMPValue' to a displayable string. This is not intended for
+-- TODO: improve this
+
+-- | Convert a 'SAMPValue' to a displayable string. This is intended for
 -- debugging and simple screen output rather than serialisation.
 showSAMPValue :: SAMPValue -> String
 showSAMPValue (SAMPString s) = show s
@@ -836,9 +833,9 @@ toSAMPMessage :: (Monad m) =>
               MType -- ^ The 'MType' of the message (this is the @samp.mtype@ key). It can not contain a wild card.
               -> [SAMPKeyValue]  -- ^ The parameters for the message (this is the @samp.params@ key).
               -> Err m SAMPMessage
-toSAMPMessage mtype params = 
-    when (isMTWildCard mtype) (throwError "MType can not contain a wild card when creating a SAMP message.")
-    >> return (SM mtype params)
+toSAMPMessage mtype params
+    | isMTWildCard mtype = throwError "MType can not contain a wild card when creating a SAMP message."
+    | otherwise          = return (SM mtype params)
 
 -- | What is the 'MType' of the message (the @samp.mtype@ key)?
 getSAMPMessageType :: SAMPMessage -> MType
