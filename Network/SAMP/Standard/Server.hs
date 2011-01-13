@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE FlexibleInstances, OverloadedStrings #-}
 
 {-|
 Module      :  Network.SAMP.Standard.Server
@@ -63,8 +63,6 @@ import Network.XmlRpc.Internals
 
 import Control.Monad.Trans (liftIO)
 import qualified Control.Exception as CE
-
-import Data.Maybe (fromJust)
 
 import Network.SAMP.Standard.Types
 import Network.SAMP.Standard.Client (callHubE, replyE)
@@ -197,7 +195,7 @@ receiveNotification funcs secret senderid sm = do
     dbg "In receiveNotification"                    
     let mtype = getSAMPMessageType sm
         mparams = getSAMPMessageParams sm
-    dbg $ "Notification mtype=" ++ show mtype ++ " sender=" ++ show senderid
+    dbg $ "Notification mtype=" ++ show mtype ++ " sender=" ++ fromRString senderid
     case lookup mtype funcs of
       Just func -> func mtype secret senderid mparams
       _ -> do
@@ -210,7 +208,7 @@ receiveCall funcs ci secret senderid msgid sm = do
     dbg "In receiveCall"
     let mtype = getSAMPMessageType sm
         mparams = getSAMPMessageParams sm
-    dbg $ "Call mtype=" ++ show mtype ++ " sender=" ++ show senderid
+    dbg $ "Call mtype=" ++ show mtype ++ " sender=" ++ fromRString senderid
     case lookup mtype funcs of
       Just func -> do
                      rsp <- func mtype secret senderid msgid mparams
@@ -223,7 +221,7 @@ receiveCall funcs ci secret senderid msgid sm = do
 
 receiveResponse :: SAMPResponseFunc -> RString -> RString -> RString -> SAMPResponse -> IO ()
 receiveResponse f secret receiverid msgid rsp = do
-    dbg $ "Received a response to message=" ++ show msgid ++ " receiver=" ++ show receiverid
+    dbg $ "Received a response to message=" ++ fromRString msgid ++ " receiver=" ++ fromRString receiverid
     f secret receiverid msgid rsp
 
 {-|
@@ -248,13 +246,13 @@ logger (at present only debug-level information).
 -}
 clientMethods :: SAMPMethodMap -> SAMPMethodCall -> SAMPServerResult
 clientMethods xs c@(SAMPMethodCall name _) = do
-    let mname = show name
+    let mname = fromRString name
     dbgE $ "Executing SAMP method: " ++ mname
     method <- maybeToM ("Unknown SAMP method: " ++ mname) (find name xs)
     method c
 
-toCompare :: String -> RString -> Bool
-toCompare n = (== fromJust (toRString n))
+toCompare :: RString -> RString -> Bool
+toCompare = (==)
 
 {-| Returns a map of handlers for messages received by a
 callable SAMP client. This can be appended to to handle

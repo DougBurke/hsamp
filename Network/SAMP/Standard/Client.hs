@@ -1,3 +1,5 @@
+{-# LANGUAGE OverloadedStrings #-}
+
 {-|
 Module      :  Network.SAMP.Standard.Client
 Copyright   :  (c) Smithsonian Astrophysical Observatory 2011
@@ -54,7 +56,7 @@ import Data.List (stripPrefix)
 import Data.Maybe (fromJust, fromMaybe, catMaybes)
 
 import qualified Control.Arrow as CA
-import Control.Monad (liftM, forM, ap, guard, when)
+import Control.Monad (liftM, forM, ap, guard)
 
 import Control.Monad.Error (throwError)
 import Control.Monad.Trans (liftIO)
@@ -209,14 +211,15 @@ logger (at present only debug-level information).
 -} 
 makeCallE :: 
           String       -- ^ url of the hub
-       -> String       -- ^ message name
+       -> RString      -- ^ message name
        -> [SAMPValue]  -- ^ message arguments
        -> Err IO SAMPValue     -- ^ response
 makeCallE url msg args = do
-         dbg $ "Calling message " ++ msg ++ " at " ++ url
+         let rmsg = fromRString msg
+         dbg $ "Calling message " ++ rmsg ++ " at " ++ url
          dbg $ "  with args " ++ show args
-         rsp <- call url msg (map toValue args)
-         dbg $ "Response to " ++ msg
+         rsp <- call url rmsg (map toValue args)
+         dbg $ "Response to " ++ rmsg
          dbg (show rsp)
          fromValue rsp
 
@@ -229,7 +232,7 @@ This is a low-level routine and users are expected to
 use more appropriate routines where available.
 -} 
 callHubE :: SAMPConnection
-         -> String       -- ^ message name
+         -> RString      -- ^ message name
          -> [SAMPValue]  -- ^ message arguments
          -> Err IO SAMPValue     -- ^ response
 callHubE conn msg args = 
@@ -245,22 +248,22 @@ registerE (sKey,url,_) =
     >>= fromSValue
 
 sPrivateKey , sHubId , sSelfId :: RString
-sPrivateKey = fromJust (toRString "samp.private-key")
-sHubId      = fromJust (toRString "samp.hub-id")
-sSelfId     = fromJust (toRString "samp.self-id")
+sPrivateKey = "samp.private-key"
+sHubId      = "samp.hub-id"
+sSelfId     = "samp.self-id"
 
 -- lookup a RString value from a SAMPKeyValue list
 slookup :: (Monad m) => RString -> [SAMPKeyValue] -> Err m RString
 slookup k a = case lookup k a of
                 Just (SAMPString s) -> return s
-                Just x              -> throwError $ "Expected a string for " ++ show k ++ " but found " ++ show x
+                Just x              -> throwError $ "Expected a string for key=" ++ fromRString k ++ " but found " ++ show x
                 _                   -> throwError $ "Unable to find key " ++ show k
 
 -- | Create a 'SAMPConnection' record from the hub information and response
 -- from 'registerE'.
-getClientInfoE :: (Monad m) =>
-               SAMPInfo   -- ^ hub information
-               -> [SAMPKeyValue] -- ^ response from 'registerE'
+getClientInfoE :: (Monad m)
+               => SAMPInfo        -- ^ hub information
+               -> [SAMPKeyValue]  -- ^ response from 'registerE'
                -> Err m SAMPConnection
 getClientInfoE (sKey,url,_) ks = SAMPConnection `liftM`
                   return sKey 
@@ -285,11 +288,11 @@ unregisterE cl =
     callHubE cl "samp.hub.unregister" [] >> return ()
 
 sName , sTxt, sHtml, sIcon, sDoc :: RString
-sName = fromJust $ toRString "samp.name"
-sTxt  = fromJust $ toRString "samp.description.text"
-sHtml = fromJust $ toRString "samp.description.html"
-sIcon = fromJust $ toRString "samp.icon.url"
-sDoc  = fromJust $ toRString "samp.documentaion.url"
+sName = "samp.name"
+sTxt  = "samp.description.text"
+sHtml = "samp.description.html"
+sIcon = "samp.icon.url"
+sDoc  = "samp.documentaion.url"
 
 -- | Create the key/value pairs used by 'declareMetadataE'
 -- for the common metadata settings. Also see 'toMetadataE'.
@@ -358,7 +361,7 @@ mtToRS = fromJust . toRString . show
 -- See 'declareSubscriptionsSimpleE' for the case when the messages
 -- being subscribed to have no parameters.
 declareSubscriptionsE :: SAMPConnection
-                      -> [(MType, SAMPValue)] -- ^ the messages the client is subscribing to
+                      -> [(MType, SAMPValue)] -- ^ the messages (and associated metadata) the client is subscribing to
                       -> Err IO ()
 declareSubscriptionsE cl subs =
     let ks = map (CA.first mtToRS) subs
@@ -402,10 +405,10 @@ getRegisteredClientsE cl =
 getSubscribedClientsE :: SAMPConnection
                       -> MType -- ^ the message (it can not contain a wildcard)
                       -> Err IO [SAMPKeyValue]
-getSubscribedClientsE cl mtype =
-    when (isMTWildCard mtype) (throwError "MType can not contain a wild card when calling getSubscribedClients")
-    >> callHubE cl "samp.hub.getSubscribedClients" [toSValue mtype]
-    >>= fromSValue
+getSubscribedClientsE cl mtype 
+    | isMTWildCard mtype = throwError "MType can not contain a wild card when calling getSubscribedClients"
+    | otherwise          = callHubE cl "samp.hub.getSubscribedClients" [toSValue mtype]
+                           >>= fromSValue
 
 -- | Send a message to a given client of the hub and do not
 -- wait for a response.
@@ -482,6 +485,7 @@ getClientNameE :: SAMPConnection
                -> Err IO (Maybe RString) -- ^ the @samp.name@ value for the client, if set
 getClientNameE conn clid = do
     md <- getMetadataE conn clid
+    -- TODO: the following can be cleaned up, surely?
     case lookup sName md of
         Just name -> fmap Just $ fromSValue name
         _ -> return Nothing
