@@ -365,6 +365,14 @@ instance Show MType where
     show (MT mt True)  = mt ++ "*"
 
 {-|
+The conversion provided by this instance is unsafe since 
+'error' is called for those strings that contain invalid
+characters.
+-}
+instance IsString MType where
+    fromString = fromJust . handleError error . toMTypeE
+
+{-|
 Returns 'True' if the two mtypes are equal. If neither
 include a wild card then the check is a simple compare.
 If one has a wild card then the comparison is defined
@@ -452,9 +460,24 @@ isMTWildCard (MT _ f) = f
 -- Note that the key is stored as a 'RString'.
 type SAMPKeyValue = (RString, SAMPValue)
 
--- | Convert a pair of strings into a 'SAMPKeyValue'.
--- The routine fails if either of the input strings can not be
--- converted into 'RString' values.
+-- TODO: add a show instance to the above
+
+{-|
+| Convert a pair of strings into a 'SAMPKeyValue'.
+The routine fails if either of the input strings can not be
+converted into 'RString' values.
+
+If the @OverloadedStrings@ GHC extension is set then you can
+just use the 'Data.String.IsString' instances for 'RString'
+and 'SAMPValue' to say
+
+>    let kv = ("author.name", "foo@bar.com")
+
+rather than
+
+>    kv <- stringToKeyValE "author.name" "foo@bar.com"
+
+-}
 stringToKeyValE :: (Monad m)
                 => String -- ^ the key name
                 -> String -- ^ the value

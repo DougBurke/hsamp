@@ -1,14 +1,14 @@
-
-ghc -hide-package monads-fd --make -o basicclient -Wall BasicClient.lhs
-
+> {-# LANGUAGE OverloadedStrings #-}
+>
 > module Main where
 >
-> import Data.Maybe (fromJust)
 > import Network.SAMP.Standard
 >
-> -- unsafe conversion routine
-> tRS :: String -> RString
-> tRS = fromJust . toRString
+> -- We rely here on the OverloadedStrings extension to
+> -- convert from Strings to the required types, but explicit
+> -- conversions are also provided by routines like
+> -- @toMTypeE@ and @stringToKeyValE@.
+> -- -}
 >
 > main :: IO ()
 > main = runE $ do
@@ -17,16 +17,14 @@ ghc -hide-package monads-fd --make -o basicclient -Wall BasicClient.lhs
 >     conn <- getHubInfoE >>= registerClientE 
 >
 >     -- Store metadata in hub for use by other applications.
->     vkey <- stringToKeyValE "dummy.version" "0.1-3"
+>     let vkey = ("dummy.version", "0.1-3")
 >     md <- toMetadataE "dummy" (Just "Test Application")
 >                       Nothing Nothing Nothing
 >     declareMetadataE conn (vkey : md)
 >     
 >     -- Send a message requesting file load to all other
 >     -- registered clients, not wanting any response.
->     mt <- toMTypeE "file.load"
->     mparam <- stringToKeyValE "filename" "/tmp/foo.bar"
->     msg <- toSAMPMessage mt [mparam]
+>     msg <- toSAMPMessage "file.load" [("filename", "/tmp/foo.bar")]
 >     _ <- notifyAllE conn msg
 >
 >     -- Unregister

@@ -61,9 +61,15 @@ A number of Haskell types are provided to represent the types
 used in the SAMP Standard Profile:
 
   - strings are represented using the 'RString' type (this
-    type enforces the character constraints from the profile).
+    type enforces the character constraints from the profile),
+    which is an instance of 'Data.String.IsString' as well
+    as providing a number of conversion routines (e.g.
+    'toRStringE', 'toRString' and 'fromRString').
 
-  - message names are represented using the 'MType' type
+  - message names are represented using the 'MType' type,
+    which is also an instance of 'Data.String.IsString' and
+    has conversion routines like 'toMTypeE', 'toMType'
+    and 'fromMType'.
 
   - SAMP values (string, list and map) are represented using the
     'SAMPValue' type. As a special case, we often represent a
@@ -78,6 +84,35 @@ used in the SAMP Standard Profile:
 Conversion routines and typeclasses are provided to help convert between the types.
 There is limited support for the numeric types (integer, float and bool) defined
 in the Standard profile.
+
+Many of the routines are run in the 'Err' monad (which is just the error transformer
+with 'String' as the error type). These can be run using 'runE' (which fails on 
+error) or 'handleError' (for custom error handling). There is perhaps /too much/
+use of this monad in the API.
+
+The prototypical metadata map from the SAMP documentation:
+
+> map metadata = ("samp.name" -> "dummy",
+>                 "samp.description.text" -> "Test Application",
+>                 "dummy.version" -> "0.1-3");
+
+can be represented using several approaches. First we try the
+simplest, taking advantage of the @OverloadedStrings@ extension to write
+
+> let metadata = [("samp.name", "dummy"),
+>                 ("samp.description.text", "Test Application"),
+>                 ("dummy.version", "0.1-3")]
+
+Whilst the above is simple, it will result in run-time errors if the input
+text is invalid (i.e. includes invalid characters). To explicitly handle conversion
+errors we could say
+
+> let mdkeys = [("samp.name", "dummy"),
+>               ("samp.description.text", "Test Application"),
+>               ("dummy.version", "0.1-3")]
+> case handleError Left (mapM (uncurry stringToKeyValE) mdkeys) of
+>     Left emsg -> hPutStrLn stderr emsg >> exitFailure
+>     Right metadata -> ...
 
 -}
 
@@ -115,14 +150,16 @@ From the SAMP documentation:
 
 which could be written as
 
+> {-# LANGUAGE OverloadedStrings #-}
+>
 > module Main where
 >
 > import Network.SAMP.Standard
-> import Data.Maybe (fromJust)
 >
-> -- unsafe conversion routine
-> tRS :: String -> RString
-> tRS = fromJust . toRString
+> -- We rely here on the OverloadedStrings extension to
+> -- convert from Strings to the required types, but explicit
+> -- conversions are also provided by routines like
+> -- @toMTypeE@ and @stringToKeyValE@.
 >
 > main :: IO ()
 > main = runE $ do
@@ -131,16 +168,14 @@ which could be written as
 >     conn <- getHubInfoE >>= registerClientE 
 >
 >     -- Store metadata in hub for use by other applications.
->     vkey <- stringToKeyValE "dummy.version" "0.1-3"
+>     let vkey = ("dummy.version", "0.1-3")
 >     md <- toMetadataE "dummy" (Just "Test Application")
 >                       Nothing Nothing Nothing
 >     declareMetadataE conn (vkey : md)
 >     
 >     -- Send a message requesting file load to all other
 >     -- registered clients, not wanting any response.
->     mt <- toMTypeE "file.load"
->     mparam <- stringToKeyValE "filename" "/tmp/foo.bar"
->     msg <- toSAMPMessage mt [mparam]
+>     msg <- toSAMPMessage "file.load" [("filename", "/tmp/foo.bar")]
 >     _ <- notifyAllE conn msg
 >
 >     -- Unregister
@@ -183,7 +218,11 @@ unregistered from the hub even if the
 > sName :: RString
 > sName = fromJust $ toRString "samp.name"
 >
-> -- report on clients that are subscribed to the table.load.votable message
+> -- Report on clients that are subscribed to table.load.votable message.
+> --
+> -- Note that here we explicitly convert to a @MType@ using @toMTypeE@
+> -- rather than relying on the OverloadedStrings extension.
+>
 > act :: SAMPConnection -> Err IO ()
 > act conn = do
 >     msg <- toMTypeE "table.load.votable"

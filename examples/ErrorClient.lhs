@@ -30,7 +30,11 @@ ghc -hide-package monads-fd --make -o errorclient -Wall ErrorClient.lhs
 > sName :: RString
 > sName = fromJust $ toRString "samp.name"
 >
-> -- report on clients that are subscribed to table.load.votable message
+> -- Report on clients that are subscribed to table.load.votable message.
+> --
+> -- Note that here we explicitly convert to a @MType@ using @toMTypeE@
+> -- rather than relying on the OverloadedStrings extension.
+>
 > act :: SAMPConnection -> Err IO ()
 > act conn = do
 >     msg <- toMTypeE "table.load.votable"

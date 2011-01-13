@@ -465,17 +465,17 @@ pingE :: SAMPConnection
 pingE cl = callHubE cl "samp.hub.ping" [] >> return ()
 
 {-|
-Get the names (@samp.name) of all the registered clients (excluding
+Get the names (@samp.name@) of all the registered clients (excluding
 this one).
 -}
 getClientNamesE :: SAMPConnection
                 -> Err IO [(RString, Maybe RString)] -- ^ key is the client id and the value is the @samp.name@ value (if set)
 getClientNamesE conn = do
     clients <- getRegisteredClientsE conn
-    forM clients $ \clid -> getClientNameE conn clid >>= return . ((,) clid)
+    forM clients $ \clid -> fmap ((,) clid) $ getClientNameE conn clid
 
 {-|
-Get the name (@samp.name) of the client, if set.
+Get the name (@samp.name@) of the client, if set.
 -}
 getClientNameE :: SAMPConnection
                -> RString -- ^ the client id
