@@ -16,8 +16,9 @@ ds9 (<http://hea-www.harvard.edu/RD/ds9/>),
 Aladin (<http://aladin.u-strasbg.fr/>)
 and the WorldWide Telescope (WWT, <http://www.worldwidetelescope.org/Home.aspx>.
 
-This module almost supports the 1.2 version of the document. Incomplete
-features include:
+This module aims to support SAMP version 1.2.
+
+Issues include:
 
  * limited testing, in particular http/https functionality for accessing
    the hub lock file,
