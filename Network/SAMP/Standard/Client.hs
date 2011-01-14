@@ -54,6 +54,7 @@ import qualified System.IO.Strict as S
 
 import Data.List (stripPrefix)
 import Data.Maybe (fromJust, fromMaybe, catMaybes)
+import qualified Data.Traversable as T
 
 import qualified Control.Arrow as CA
 import Control.Monad (liftM, forM, ap, guard)
@@ -171,7 +172,6 @@ processLockFile :: String -> [(String,String)]
 processLockFile = foldr step [] . stripLines
     where
         step = (:) . CA.second tail . break (== '=')
-        -- step l a = CA.second tail (break (== '=') l) : a
 
 extractHubInfo :: [(String,String)] -> Maybe SAMPInfo
 extractHubInfo alist = do
@@ -485,8 +485,5 @@ getClientNameE :: SAMPConnection
                -> Err IO (Maybe RString) -- ^ the @samp.name@ value for the client, if set
 getClientNameE conn clid = do
     md <- getMetadataE conn clid
-    -- TODO: the following can be cleaned up, surely?
-    case lookup sName md of
-        Just name -> fmap Just $ fromSValue name
-        _ -> return Nothing
+    T.sequence $ fmap fromSValue $ lookup sName md
 
