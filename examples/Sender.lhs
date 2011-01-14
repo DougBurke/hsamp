@@ -1,4 +1,4 @@
- {-# LANGUAGE OverloadedStrings #-}
+> {-# LANGUAGE OverloadedStrings #-}
 
 Send a SAMP message (with potential arguments) to all interested clients.
 
@@ -118,7 +118,8 @@ TODO:
 >                   otherHdlr :: CE.SomeException -> IO ()
 >                   otherHdlr e = putStrLn ("ERROR: " ++ show e) >> exitFailure
 >
->               processMessage conn x `CE.catches` [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
+>               processMessage conn x `CE.catches`
+>                   [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
 >               doE (unregisterE conn)
 >               exitSuccess
 
@@ -128,8 +129,8 @@ Run a set of SAMP commands and exit on error.
 > doE = handleError
 >         (\emsg -> hPutStrLn stderr ("ERROR: " ++ emsg) >> exitFailure)
 
-> authorMetadata :: Err IO [SAMPKeyValue]
-> authorMetadata = mapM (uncurry stringToKeyValE)
+> authorMetadata :: [SAMPKeyValue]
+> authorMetadata = 
 >     [("author.name", "Doug Burke"),
 >      ("author.affiliation", "Smithsonian Astrophysical Observatory"),
 >      ("author.mail", "dburke@cfa.harvard.edu")]
@@ -138,12 +139,11 @@ Set up a simple client (i.e. with limited metadata)
 
 > createClient :: Err IO SAMPConnection
 > createClient =
->      authorMetadata >>= \amd ->
 >      getHubInfoE >>=
 >      registerClientE >>= \conn ->
 >      toMetadataE "hsamp-sender" (Just "Send a message to interested clients.")
 >          Nothing Nothing Nothing >>= \md ->
->      declareMetadataE conn (md++amd) >>
+>      declareMetadataE conn (md ++ authorMetadata) >>
 >      return conn
 
 There is a chance that targets may be added or removed in between the
@@ -216,7 +216,7 @@ TODO: convert to syncPrint from Snooper.lhs
 > syncAction_ barrier = withMVar barrier . const 
 
 > showKV :: SAMPKeyValue -> IO ()
-> showKV (k,v) = putStrLn $ "    " ++ fromRString k ++ " ->  " ++ show v
+> showKV (k,v) = putStrLn $ "    " ++ fromRString k ++ " -> " ++ show v
 
 > showTarget :: (RString, Maybe RString) -> String
 > showTarget (tid, Nothing) = fromRString tid
@@ -276,7 +276,6 @@ TODO: need to handle errors more sensibly than runE here!
 >     msgId <- getMsgId
 >     fmap (map fst) $ runE (callAllE conn msgId msg >>= mapM kvToRSE)
 
-
 > waitForCalls :: Channel -> MVar [RString] -> IO ()
 > waitForCalls chan cv = do
 >    receiverid <- readChan chan
@@ -328,7 +327,9 @@ Creates the server, listening to the assigned socket/port.
 >          (handlers barrier mt chan conn tid)
 
 > handlers :: Barrier -> TimeVar -> Channel -> SAMPConnection -> ThreadId -> ServerPart Response
-> handlers barrier mt chan conn tid = msum [handleXmlRpc barrier mt chan conn tid, anyRequest (notFound (toResponse "unknown request"))]
+> handlers barrier mt chan conn tid =
+>     msum [handleXmlRpc barrier mt chan conn tid,
+>           anyRequest (notFound (toResponse ("unknown request" :: String)))]
 
 XML-RPC is done via a HTML POST of an XML document.
 At present I enforce the content-type restriction but
@@ -349,12 +350,12 @@ this may be a bit OTT.
 > getResponse barrier mt chan conn tid (Body bdy) = do
 >     let call = L.unpack bdy
 >     liftIO $ simpleClientServer conn (notifications tid) calls (rfunc conn barrier mt chan) call
->     ok (toResponse "")
+>     ok (toResponse ("" :: String))
 
 TODO: support hub shutdown
 
 > allMT :: MType
-> allMT = fromJust (toMType "*")
+> allMT = "*"
 
 > notifications :: ThreadId -> [SAMPNotificationFunc]
 > notifications _ =
