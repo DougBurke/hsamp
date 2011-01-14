@@ -19,12 +19,14 @@ and the WorldWide Telescope (WWT, <http://www.worldwidetelescope.org/Home.aspx>.
 This module almost supports the 1.2 version of the document. Incomplete
 features include:
 
-* limited testing.
+ * limited testing, in particular http/https functionality for accessing
+   the hub lock file,
 
-* Windows support is not tested (and at present does not support using
-  the @USERPROFILE@ environment variable for locating the lock file).
+ * no testing of https support for the hub,
 
-* no hub functionality.
+ * Windows support is not tested,
+
+ * no hub functionality.
 
 -}
 

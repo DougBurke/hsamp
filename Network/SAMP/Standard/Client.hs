@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE CPP, OverloadedStrings #-}
 
 {-|
 Module      :  Network.SAMP.Standard.Client
@@ -15,10 +15,6 @@ Note that this is for clients that do not need
 to use the asynchronous call backs to receive
 information from a hub. These routines are provided
 by the "Network.SAMP.Standard.Server" module.
-
-TODO:
-
-  - use USERPROFILE env variable on windows rather than HOME
 
 -}
 
@@ -91,10 +87,12 @@ getEnvM key = CE.tryJust
         (\e -> if isDoesNotExistErrorType (ioeGetErrorType e) then Just () else Nothing)
         (getEnv key)
 
--- TODO: use cpp to select the right name
 homeEnvVar :: String
+#if defined(mingw32_HOST_OS) || defined(__MINGW32__)
+homeEnvVar = "USERPROFILE"
+#else
 homeEnvVar = "HOME"
--- homeEnvVar = "USERPROFILE"
+#endif
 
 stdPrefix :: String
 stdPrefix = "std-lockurl:"
