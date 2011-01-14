@@ -96,8 +96,7 @@ type SAMPMethod = (SAMPMethodCall -> SAMPServerResult)
 --
 
 -- | Turns any function 
---   @(SAMPType t1, ..., SAMPType tn) => 
---   t1 -> ... -> tn -> IO ()@
+--   @(SAMPType t1, ..., SAMPType tn) => t1 -> ... -> tn -> IO ()@
 --   into a 'SAMPMethod'
 fun :: SAMPFun a => a -> SAMPMethod
 fun = toSAMPFun
@@ -213,7 +212,7 @@ receiveCall funcs ci secret senderid msgid sm = do
       Just func -> do
                      rsp <- func mtype secret senderid msgid mparams
                      dbg $ "Responding with " ++ show rsp
-                     handleError (const (return ())) $ replyE ci msgid rsp
+                     rE $ replyE ci msgid rsp
       _ -> do
              let emsg = "Unrecognized mtype for call: " ++ show mtype
              dbg emsg
@@ -251,9 +250,6 @@ clientMethods xs c@(SAMPMethodCall name _) = do
     method <- maybeToM ("Unknown SAMP method: " ++ mname) (find name xs)
     method c
 
-toCompare :: RString -> RString -> Bool
-toCompare = (==)
-
 {-| Returns a map of handlers for messages received by a
 callable SAMP client. This can be appended to to handle
 extra messages beyond the SAMP Standard Profile.
@@ -264,10 +260,14 @@ clientMethodMap :: SAMPConnection -- ^ the connection to use when replying to a 
                  -> SAMPResponseFunc -- ^ routinr for handling responses (@samp.client.receiveResponse@)
                  -> SAMPMethodMap -- ^ input for the 'clientMethods' routine
 clientMethodMap ci ns cs r =
-           [(toCompare "samp.client.receiveNotification", fun (receiveNotification ns)),
-           (toCompare "samp.client.receiveCall", fun (receiveCall cs ci)),
-           (toCompare "samp.client.receiveResponse", fun (receiveResponse r))
+           [((== "samp.client.receiveNotification"), fun (receiveNotification ns)),
+            ((== "samp.client.receiveCall"), fun (receiveCall cs ci)),
+            ((== "samp.client.receiveResponse"), fun (receiveResponse r))
            ]
+
+-- run an action that returns nothing
+rE :: (Monad m) => Err m () -> m ()
+rE = handleError (const (return ())) 
 
 {-|
 Reads a SAMP method call from a string and uses the supplied method
@@ -281,7 +281,7 @@ handleSAMPCall :: (SAMPMethodCall -> SAMPServerResult) -- ^ method to call
            -> IO ()
 handleSAMPCall f str = do
     dbg $ "SAMP body of call is:\n" ++ str
-    handleError (const (return ())) (parseSAMPCall str >>= f)
+    rE $ parseSAMPCall str >>= f
 
 -- | Handle the SAMP messages sent to a callable client. This processes a
 -- single call using the supplied handlers.
