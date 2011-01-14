@@ -8,10 +8,10 @@
 > -- convert from Strings to the required types, but explicit
 > -- conversions are also provided by routines like
 > -- @toMTypeE@ and @stringToKeyValE@.
-> -- -}
+> --
 >
 > main :: IO ()
-> main = runE $ do
+> main = withSAMP $ runE $ do
 >
 >     -- Read information from lockfile to locate and register with hub.
 >     conn <- getHubInfoE >>= registerClientE 

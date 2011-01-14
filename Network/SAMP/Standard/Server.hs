@@ -16,10 +16,16 @@ are callable. Work on supporting a SAMP hub is planned.
 Logging is provided using the @SAMP.StandardProfile.Server@
 'System.Log.Logger.Logger' instance. At present this is limited
 to debugging information only.
+
+TODO:
+
+  - look at adding a type synonym for message id\/tag\/secret
+    arguments to make it clearer what is expected
 -}
 
 {-
-TODO: look at the hbeanstalk code on hackage as may be relevant
+TODO: look at the hbeanstalk code on hackage as may be relevant;
+also other systems like ZeroMQ/RabbitMQ.
 -}
 
 module Network.SAMP.Standard.Server (

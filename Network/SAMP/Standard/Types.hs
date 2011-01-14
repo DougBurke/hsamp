@@ -1,4 +1,4 @@
-{-# LANGUAGE FlexibleInstances , OverlappingInstances, TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances, OverlappingInstances, TypeSynonymInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {-|
@@ -19,6 +19,13 @@ to debugging information only.
 -}
 
 module Network.SAMP.Standard.Types (
+
+       -- * Setup
+
+       -- | Ensure the necessary packages/systems used by the SAMP module
+       -- are initialized.
+
+       withSAMP,
 
        -- * Connection
 
@@ -63,7 +70,9 @@ import Control.Monad (liftM, ap)
 
 import System.Random
 
+import qualified Network.Socket as NS
 import Network.XmlRpc.Internals
+import qualified Network.HTTP.Enumerator as NE
 
 import Data.String
 import Data.List (intercalate, isPrefixOf)
@@ -72,6 +81,18 @@ import Data.Char (chr, ord, isDigit, intToDigit)
 import Data.Maybe (fromJust)
 
 import qualified Data.ByteString.Lazy.Char8 as L
+
+{-|
+Several of the networking libraries used by the SAMP
+routines require initialization, which is provided by this
+routine. This should be performed before any SAMP routine
+is used (e.g. including 'Network.SAMP.Standard.Client.getHubInfoE').
+
+At present this includes 'Network.Socket.withSocketsDo' and
+'Network.HTTP.Enumerator.withHttpEnumerator'.
+-}
+withSAMP :: IO a -> IO a
+withSAMP = NS.withSocketsDo . NE.withHttpEnumerator
 
 -- | Runs the SAMP computation and returns the result.
 -- Any error is converted to a user exception. This is
@@ -182,14 +203,15 @@ instance Random RChar where
     random = randomR (minBound,maxBound)
 
 {-|
-A restricted string class that is limited to
-ASCII characters with hex codes @09@, @0a@, @0d@ or 
-@20 .. 7f@
-as these are the only characters supported by SAMP.
+A string that is restricted to valid SAMP characters (see 'RChar').
+Note that RStrings can be empty and that there is a 'Data.String.IsString'
+instance which means that the @OverloadedString@ extension can be used
+when specifying @RString@ values (although note that the conversion is
+unsafe since any invalid characters will result in a run-time
+exception).
 
-RStrings can be empty.
-
-The type conversions below use the following BNF productions:
+The type conversions between types and @RString@ values use the following BNF productions,
+taken from the SAMP documentation:
 
 >  <digit>         ::= "0" | "1" | "2" | "3" | "4" | "5" | "6" | "7" | "8" | "9"
 >  <digits>        ::= <digit> | <digits> <digit>
@@ -198,7 +220,7 @@ The type conversions below use the following BNF productions:
 
 TODO:
 
-  - add a Read instance (maybe?)
+  - should we add a Read instance?
 
 -}
 
@@ -219,6 +241,7 @@ toRS = fromJust . handleError error . toRStringE
 
 instance XmlRpcType RString where
     toValue = ValueString . fromRString
+
     fromValue (ValueString s) = toRStringE s
     fromValue x = fail $ "Unable to convert to a SAMP string from " ++ show x
 
@@ -334,10 +357,11 @@ although any integer value other than 0 can be used for 'True'.
 asBool :: RString -> Maybe Bool
 asBool rs = fmap (/=0) (asIntegral rs :: Maybe Integer)
 
-{-| A SAMP MType. This is used to define the message
+{-|
+A SAMP MType. This is used to define the message
 names that SAMP passes around.
 
-They follow the following NBF productions:
+They follow the following BNF productions:
 
 >   <mchar> ::= [0-9a-z] | "-" | "_"
 >   <atom>  ::= <mchar> | <atom> <mchar>
@@ -356,7 +380,7 @@ is 'True'.
 
 TODO:
 
- - add a Read instance (maybe?)
+ - do we want a Read instance?
 
 -}
 
@@ -408,7 +432,7 @@ instance XmlRpcType MType where
     getType _ = TString
 
 mtchars :: String
-mtchars = ['a' .. 'z'] ++ "-_." ++ map chr [0..9]
+mtchars = ['0' .. '9'] ++ ['a' .. 'z'] ++ "-_."
 
 isMTChar :: Char -> Bool
 isMTChar = (`elem` mtchars)
@@ -473,7 +497,7 @@ for declareSubscriptionsE in Client?
 -- getting a lot of complaints from deriving instances
 
 {-|
-| Convert a pair of strings into a 'SAMPKeyValue'.
+Convert a pair of strings into a 'SAMPKeyValue'.
 The routine fails if either of the input strings can not be
 converted into 'RString' values.
 
@@ -488,7 +512,7 @@ rather than
 >    kv <- stringToKeyValE "author.name" "foo@bar.com"
 
 -}
-stringToKeyValE :: (Monad m)
+stringToKeyValE :: (Monad m, Functor m) -- added Functor instance as inferred by ghc
                 => String -- ^ the key name
                 -> String -- ^ the value
                 -> Err m SAMPKeyValue
@@ -569,7 +593,7 @@ instance XmlRpcType SAMPValue where
     toValue (SAMPList xs) = ValueArray $ map toValue xs
     toValue (SAMPMap xs) = ValueStruct [(fromRString n, toValue v) | (n,v) <- xs]
 
-    fromValue (ValueString s) = fmap SAMPString $ toRStringE s
+    fromValue (ValueString s) = liftM SAMPString $ toRStringE s
     fromValue (ValueArray xs) = liftM SAMPList $ mapM fromValue xs
     fromValue (ValueStruct xs) = liftM SAMPMap $ mapM toSAMPKeyValue xs
     fromValue x = fail $ "Unable to convert to SAMP Value from " ++ show x
@@ -696,7 +720,7 @@ instance SAMPType SAMPResponse where
     toSValue x = error $ "Invalid SAMPResponse: " ++ show x
 
     fromSValue (SAMPMap xs) = do
-        ss <- fmap fromRString $ getKey sStatus xs
+        ss <- liftM fromRString $ getKey sStatus xs
         case ss of
             "samp.ok" -> do
                 fs <- getKey sResult xs

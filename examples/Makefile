@@ -1,5 +1,5 @@
 
-GHC = ghc -Wall -threaded -hide-package monads-fd -i..
+GHC = ghc -Wall -threaded -hide-package monads-fd -hide-package monads-tf -i..
 
 help:
 	@echo "Targets are:"

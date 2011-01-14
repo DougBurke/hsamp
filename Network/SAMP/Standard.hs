@@ -14,19 +14,17 @@ applications, such as
 TopCat (<http://www.star.bris.ac.uk/~mbt/topcat/>),
 ds9 (<http://hea-www.harvard.edu/RD/ds9/>),
 Aladin (<http://aladin.u-strasbg.fr/>)
-and the WorldWide Telescope (WWT, <http://www.worldwidetelescope.org/Home.aspx>, although
-this only provides SAMP access in the Windows client which we currently do not
-support).
+and the WorldWide Telescope (WWT, <http://www.worldwidetelescope.org/Home.aspx>.
 
 This module almost supports the 1.2 version of the document. Incomplete
 features include:
 
-* no Windows support
+* limited testing.
 
-* does not support the @SAMP_HUB@ environment variable for locating
-a SAMP hub
+* Windows support is not tested (and at present does not support using
+  the @USERPROFILE@ environment variable for locating the lock file).
 
-* no hub functionality
+* no hub functionality.
 
 -}
 
@@ -162,7 +160,7 @@ which could be written as
 > -- @toMTypeE@ and @stringToKeyValE@.
 >
 > main :: IO ()
-> main = runE $ do
+> main = withSAMP $ runE $ do
 >
 >     -- Read information from lockfile to locate and register with hub.
 >     conn <- getHubInfoE >>= registerClientE 
@@ -189,49 +187,101 @@ In this example we add a simple handler that will ensure the client is
 unregistered from the hub even if the
 @'Control.Exception.UserInterrupt'@ exception is thrown.
 
+The program accepts a list of mtypes on the command line and lists all
+the clients that are subscribed to each mtype.
+
 > module Main where
+>
+> import System.Environment (getArgs, getProgName)
+> import System.Exit (exitFailure)
+> import System.IO
 >
 > import qualified Control.Exception as CE
 > import Control.Monad (forM_)
 > import Control.Monad.Trans (liftIO)
-> import Data.Maybe (fromJust)
 >
 > import Network.SAMP.Standard 
 >
+> usage :: IO ()
+> usage = getProgName >>= \n -> hPutStrLn stderr ("Usage: " ++ n ++ " mtype1 .. mtypeN")
+
 > main :: IO ()
 > main = do
+>     args <- getArgs
+>     if null args 
+>       then usage >> exitFailure
+>       else do
+>         -- the conversion routines like @toMTypeE@ are safe to run
+>         -- outside of @withSAMP@.
+>         mtypes <- runE (mapM toMTypeE args)
+>         withSAMP $ doSAMP mtypes
+
+> doSAMP :: [MType] -> IO ()
+> doSAMP mtypes = do
 >     -- register the client
 >     conn <- runE $ getHubInfoE >>= registerClientE
->     putStrLn "Registered with the SAMP hub"
+>     putStrLn "Registered with the SAMP hub."
 >
 >     -- catch a user interrupt so that we can unregister the client
 >     let hdlr :: CE.AsyncException -> IO a
 >         hdlr CE.UserInterrupt = runE (unregisterE conn) >> CE.throwIO CE.UserInterrupt
 >         hdlr e = CE.throwIO e
 >
->     -- Awkward error handling to make sure we unregister on an error.
->     -- It is also not quite correct.
->     handleError (\m -> runE (unregisterE conn) >> fail m) (act conn) `CE.catch` hdlr
+>     -- Awkward error handling to make sure we unregister on an error. It is
+>     -- not quite correct.
+>     handleError (\m -> runE (unregisterE conn) >> fail m)
+>                 (act conn mtypes) `CE.catch` hdlr
 >     runE $ unregisterE conn
->     putStrLn "Unregistered client"
+>     putStrLn "Unregistered client."
 >
-> sName :: RString
-> sName = fromJust $ toRString "samp.name"
+> -- Report on clients that are subscribed to the given message.
 >
-> -- Report on clients that are subscribed to table.load.votable message.
-> --
-> -- Note that here we explicitly convert to a @MType@ using @toMTypeE@
-> -- rather than relying on the OverloadedStrings extension.
->
-> act :: SAMPConnection -> Err IO ()
-> act conn = do
->     msg <- toMTypeE "table.load.votable"
+> report :: SAMPConnection -> MType -> Err IO ()
+> report conn msg = do
+>     liftIO $ putStrLn $ "Clients subscribed to " ++ show msg
 >     clients <- getSubscribedClientsE conn msg
->     forM_ clients $ \cl -> do
->         liftIO $ putStrLn $ "Client: " ++ fromRString cl
+>     forM_ clients $ \(cl,_) -> do
+>         liftIO $ putStr $ "  " ++ fromRString cl
 >         name <- getClientNameE conn cl
 >         case name of
->             Just n -> liftIO $ putStrLn $ "   aka: " ++ fromRString n
+>             Just n -> liftIO $ putStr $ " -> " ++ fromRString n
 >             _ -> return ()
+>         liftIO $ putStr "\n"
+>
+> act :: SAMPConnection -> [MType] -> Err IO ()
+> act conn = mapM_ (report conn)
+
+Here is an example of a successful run:
+
+> unix% ./hsamp-errorclient table.load.votable samp.app.ping
+> Registered with the SAMP hub
+> What clients are subscribed to: table.load.votable
+>   c9 -> topcat
+>   c12 -> SAOImage DS9
+> What clients are subscribed to: samp.app.ping
+>   c9 -> topcat
+>   c12 -> SAOImage DS9
+>   hub -> Hub
+> Unregistered client
+
+and several unsuccesful ones:
+
+  1) An invalid MType (only lower-case characters are allowed).
+
+> unix% ./hsamp-errorclient SAMP.app.ping
+> hsamp-errorclient: user error (Invalid MType 'SAMP.app.ping' (invalid character 'S'/0x53))
+
+  2) Using a wild-card in an MType is not supported by the
+     @getSubscribedClients@ method.
+
+> unix% ./hsamp-errorclient samp.\*
+> Registered with the SAMP hub
+> What clients are subscribed to: samp.*
+> hsamp-errorclient: user error (MType can not contain a wild card when calling getSubscribedClients)
+
+  3) No SAMP Hub is running.
+
+> unix% ./hsamp-errorclient samp.app.ping
+> hsamp-errorclient: user error (The SAMP Hub lock file does not exist: /Users/dburke/.samp)
 
 -}

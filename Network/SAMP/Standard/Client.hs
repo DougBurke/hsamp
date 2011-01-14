@@ -15,6 +15,11 @@ Note that this is for clients that do not need
 to use the asynchronous call backs to receive
 information from a hub. These routines are provided
 by the "Network.SAMP.Standard.Server" module.
+
+TODO:
+
+  - use USERPROFILE env variable on windows rather than HOME
+
 -}
 
 module Network.SAMP.Standard.Client (
@@ -47,6 +52,10 @@ module Network.SAMP.Standard.Client (
 
 import Network.XmlRpc.Client
 import Network.XmlRpc.Internals
+import Network.URI
+
+import qualified Network.HTTP.Enumerator as NE
+import qualified Data.ByteString.Lazy.Char8 as L
 
 import System.Log.Logger
 
@@ -57,7 +66,7 @@ import Data.Maybe (fromJust, fromMaybe, catMaybes)
 import qualified Data.Traversable as T
 
 import qualified Control.Arrow as CA
-import Control.Monad (liftM, forM, ap, guard)
+import Control.Monad (liftM, forM, ap)
 
 import Control.Monad.Error (throwError)
 import Control.Monad.Trans (liftIO)
@@ -65,7 +74,6 @@ import Control.Monad.Trans (liftIO)
 import qualified Control.Exception as CE
 
 import System.Environment (getEnv)
-
 import System.IO.Error (isDoesNotExistError, isDoesNotExistErrorType, ioeGetErrorType)
 
 import Network.SAMP.Standard.Types
@@ -78,65 +86,82 @@ cLogger = "SAMP.StandardProfile.Client"
 dbg :: String -> Err IO ()
 dbg = liftIO . debugM cLogger
 
-{-
-XXX todo: need to update to SAMP 1.2
-    (look for SAMP_HUB env file first)
-    and Windows (USERPROFILE env var)
-
--}
-
 getEnvM :: String -> IO (Either () String)
 getEnvM key = CE.tryJust
         (\e -> if isDoesNotExistErrorType (ioeGetErrorType e) then Just () else Nothing)
         (getEnv key)
 
-{-
-TODO: improve error messages
-
-It's also not 100% clear if falling through to the HOME/USERPROFILE
-variable when the SAMP_HUB profile does not start with the std-lockurl
-prefix is valid.
--}
+-- TODO: use cpp to select the right name
+homeEnvVar :: String
+homeEnvVar = "HOME"
+-- homeEnvVar = "USERPROFILE"
 
 stdPrefix :: String
 stdPrefix = "std-lockurl:"
 
-sampLockFile :: IO FilePath
-sampLockFile = do
-    e1 <- getEnvM "SAMP_HUB"
-    case e1 of
-         Right fname -> doHub fname
+{-| 
+Returns the location of the SAMP lock file, as a URI (so @/home/sampuser/.samp@
+is returned as @file:///home/sampuser/.samp@). This supports the SAMP 1.2 standard,
+so look for
+
+  1) The SAMP_HUB environment variable, as long as it starts with the prefix
+     @std-lockurl:@.
+
+  2) @$HOME/.samp@ (for UNIX-like systems) and @$USERPROFILE/.samp@ for Windows
+
+Note that this routine does /not/ check that the lock file exists.
+
+The behavior of the routine when the SAMP_HUB environment is set but does not
+start with @std-lockurl:@ may change.
+-}
+sampLockFileE :: Err IO URI
+sampLockFileE = do
+    eHub <- liftIO $ getEnvM "SAMP_HUB"
+    case eHub of
+         Right hub -> doHub hub
          Left _ -> doHome
 
   where
-    doHome = do
-        home <- getEnv "HOME" -- to do: use USERPROFILE on Windows
-        return $ home ++ "/.samp"
+    -- assumes file name is fully qualified
+    fileURL = parseAbsoluteURI . ("file://" ++)
 
+    doHome = do
+        eHome <- liftIO $ getEnvM homeEnvVar
+        case eHome of
+            Right home ->
+                let fname = home ++ "/.samp"
+                in case fileURL fname of
+                       Just x -> return x
+                       Nothing -> throwError $ "Unable to convert " ++ fname ++ " to a URL"
+
+            Left _ -> throwError $ "Unable to find " ++ homeEnvVar ++ " environment variable"
+
+    -- we assume that the contents are a URL
     doHub fname = 
           case stripPrefix stdPrefix fname of
             Nothing -> doHome
-            Just f -> do
-                 putStrLn $ "I am supposed to do something with " ++ f
-                 fail "lazy-programmer-error"
+            Just f -> case parseAbsoluteURI f of
+                          Just x -> return x
+                          Nothing -> throwError $ "SAMP_HUB does not contain a valid URI: " ++ f
 
-checkExists :: String -> IO a -> Err IO a
-checkExists emsg act = do
-   e <- liftIO $ CE.tryJust (guard . isDoesNotExistError) act
-   case e of
-     Right a -> return a
-     Left _ -> throwError emsg
+-- read in the lock file from disk
+readLockFileE :: URI -> Err IO String
+readLockFileE uri = do
+    let fname = uriPath uri
+    dbg $ "About to read in contents of lock file: " ++ fname
+    r <- liftIO $ CE.try $ S.readFile fname
+    case r of
+        Right txt -> return txt
+        Left e -> if isDoesNotExistError e
+                    then throwError $ "The SAMP Hub lock file does not exist: " ++ fname
+                    else throwError $ show e
 
-{-|
-Returns the location of the lock file (assumed to be a file).
-
-At the moment this does not support the SAMP 1.2 @SAMP_HUB@
-environment variable and assumes a UNIC environment.
--}
-sampLockFileE :: Err IO FilePath
-sampLockFileE = do
-    home <- checkExists "The HOME environment variable is not defined." (getEnv "HOME")
-    return $ home ++ "/.samp"
+-- download the lock file
+getLockFileE :: URI -> Err IO String
+getLockFileE uri = do
+    let loc = show uri
+    dbg $ "About to download contents of lock file via " ++ show loc
+    fmap L.unpack $ liftIO $ NE.simpleHttp loc
 
 -- As the SAMP control file may well be written using Windows
 -- control characters we need to ensure these are handled,
@@ -173,6 +198,8 @@ processLockFile = foldr step [] . stripLines
     where
         step = (:) . CA.second tail . break (== '=')
 
+-- TODO: should this provide information on what is missing
+--       if there is an error
 extractHubInfo :: [(String,String)] -> Maybe SAMPInfo
 extractHubInfo alist = do
     secret <- lookup "samp.secret" alist >>= toRString
@@ -185,19 +212,23 @@ Return information about the SAMP hub needed by 'registerE' and
 'registerClientE'. It also includes any extra key,value pairs
 included in the SAMP lock file.
 
-At the moment this does not support the SAMP 1.2 @SAMP_HUB@
-environment variable and assumes a UNIC environment.
-
 This routine includes logging to the @SAMP.StandardProfile.Client@
 logger (at present only debug-level information).
+
+It should only be used after 'Network.SAMP.Standard.Types.withSAMP'
+has been called.
 -}
 getHubInfoE :: Err IO SAMPInfo
 getHubInfoE = do
-    fname <- sampLockFileE
-    dbg $ "Looking for a SAMP lock file called: " ++ fname
-    let emsg = "Unable to find Hub info (" ++ fname ++ ")"
-    cts <- checkExists emsg $ S.readFile fname
-    dbg "Lock file exists."
+    uri <- sampLockFileE
+    dbg $ "Looking for a SAMP lock file using the URI: " ++ show uri
+    cts <- case uriScheme uri of
+               "file:" -> readLockFileE uri
+               "http:" -> getLockFileE uri
+               "https:" -> getLockFileE uri -- untested
+               _ -> throwError $ "Unsupported URI for the lockfile: " ++ show uri
+
+    dbg "Read contents of lock file."
     let alist = processLockFile cts
     maybeToM "Unable to read hub info" (extractHubInfo alist)
 
@@ -320,7 +351,7 @@ toMetadataE m txt html icon doc =
     let f k (Just v) = toRStringE v >>= \vs -> return $ Just (k, SAMPString vs)
         f _ _ = return Nothing
         ms = [f sName (Just m), f sTxt txt, f sHtml html, f sIcon icon, f sDoc doc]
-    in fmap catMaybes $ sequence ms
+    in liftM catMaybes $ sequence ms
 
 {-|
 Declare the metadata for the client. The metadata is provided as a
