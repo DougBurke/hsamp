@@ -32,7 +32,6 @@ TODO:
 >
 > import Control.Monad (msum, forM_, unless, when)
 > import Control.Monad.Trans (liftIO)
-> import Data.Maybe (fromJust)
 >
 > import Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
 >
@@ -51,12 +50,8 @@ TODO:
 > timeout = 10
 
 > sleep :: Int -> IO ()
-> sleep = threadDelay . (1000000 *)
+> sleep = threadDelay . (1000000 *)                                                            
 
-> -- unsafe conversion routine
-> tRS :: String -> RString
-> tRS = fromJust . toRString
->
 > usage :: IO ()
 > usage = getProgName >>= \n ->
 >     hPutStrLn stderr $ "Usage: " ++ n ++ " [sync|async|notify] mtype [param1=value1] .. [paranN=valueN]"
@@ -116,7 +111,7 @@ TODO:
 >                            | otherwise     = hPutStrLn stderr ("ERROR: " ++ show e) >> exitFailure
 >
 >                   otherHdlr :: CE.SomeException -> IO ()
->                   otherHdlr e = putStrLn ("ERROR: " ++ show e) >> exitFailure
+>                   otherHdlr e = hPutStrLn stderr ("ERROR: " ++ show e) >> exitFailure
 >
 >               processMessage conn x `CE.catches`
 >                   [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
@@ -156,7 +151,7 @@ step).
 > processMessage conn (cmode, mtype, params) = do
 >     targets <- runE (getSubscribedClientsE conn mtype)
 >     if null targets
->       then putStrLn ("No clients are subscribed to the message " ++ show mtype)
+>       then putStrLn $ "No clients are subscribed to the message " ++ show mtype
 >       else do
 >           msg <- runE (toSAMPMessage mtype params)
 >           barrier <- newBarrier -- not needed for notification case but do anyway
@@ -170,7 +165,7 @@ step).
 >
 >                         bv <- newEmptyMVar
 >                         cv <- newMVar clients
->                         _ <- forkIO (waitForCalls chan cv >> putMVar bv True)
+>                         _ <- forkIO (waitForCalls barrier chan cv >> putMVar bv True)
 >                         _ <- forkIO (sleep timeout >> putMVar bv False)
 >                         flag <- takeMVar bv
 >                         unless flag $ do
@@ -204,53 +199,47 @@ step).
 > newChannel :: IO Channel
 > newChannel = newChan
 
+NOTE: this uses putStr rather than putStrLn, so assumes the string
+ends in "\n"
+
+> syncPrint :: Barrier -> String -> IO ()
+> syncPrint barrier msg = forkIO (withMVar barrier $ \_ -> putStr msg) >> return ()
+
 > printResponse :: Barrier -> NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> IO ()
 > printResponse barrier delta target rsp
->     | isSAMPErrorOnly rsp = syncAction_ barrier $ printError delta target rsp
->     | isSAMPWarning rsp   = syncAction_ barrier $ printWarning delta target rsp
->     | otherwise           = syncAction_ barrier $ printSuccess delta target rsp
+>     | isSAMPErrorOnly rsp = syncPrint barrier $ showError delta target rsp
+>     | isSAMPWarning rsp   = syncPrint barrier $ showWarning delta target rsp
+>     | otherwise           = syncPrint barrier $ showSuccess delta target rsp
 
-TODO: convert to syncPrint from Snooper.lhs 
-
-> syncAction_ :: Barrier -> IO () -> IO ()
-> syncAction_ barrier = withMVar barrier . const 
-
-> showKV :: SAMPKeyValue -> IO ()
-> showKV (k,v) = putStrLn $ "    " ++ fromRString k ++ " -> " ++ show v
+> showKV :: SAMPKeyValue -> String
+> showKV (k,v) = "    " ++ fromRString k ++ " -> " ++ show v
 
 > showTarget :: (RString, Maybe RString) -> String
 > showTarget (tid, Nothing) = fromRString tid
 > showTarget (tid, Just tname) = fromRString tid ++ " (" ++ fromRString tname ++ ")"
 
-> printHeader :: String -> NominalDiffTime -> (RString, Maybe RString) -> IO ()
-> printHeader lbl delta target = 
->     putStrLn $ lbl ++ " response from " ++ showTarget target ++ " in " ++ show delta ++ " seconds"
+> showHeader :: String -> NominalDiffTime -> (RString, Maybe RString) -> String
+> showHeader lbl delta target = 
+>     lbl ++ " response from " ++ showTarget target ++ " in " ++ show delta ++ " seconds"
 
-> printSuccess :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> IO ()
-> printSuccess delta target rsp = do
->     printHeader "Successful" delta target
->     let Just svals = getSAMPResponseResult rsp
->     forM_ svals showKV
+> showSuccess :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> String
+> showSuccess delta target rsp = 
+>     let Just svals = getSAMPResponseResult rsp  
+>     in unlines $ showHeader "Successful" delta target : map showKV svals
 
-> printError :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> IO ()
-> printError delta target rsp = do
->     printHeader "Error" delta target
+> showError :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> String
+> showError delta target rsp = 
 >     let Just (emsg, evals) = getSAMPResponseError rsp
->     putStrLn $ "    " ++ fromRString emsg
->     forM_ evals showKV
+>     in unlines $ [showHeader "Error" delta target, "    " ++ fromRString emsg]
+>                  ++ map showKV evals
 
-> printWarning :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> IO ()
-> printWarning delta target rsp = do
->     printHeader "Warning" delta target
+> showWarning :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> String
+> showWarning delta target rsp = 
 >     let Just svals = getSAMPResponseResult rsp
 >         Just (emsg, evals) = getSAMPResponseError rsp
->     putStrLn $ "    " ++ fromRString emsg
->     unless (null svals) $ do
->         putStrLn "  Response"
->         forM_ svals showKV
->     unless (null evals) $ do
->         putStrLn "  Error"
->         forM_ evals showKV
+>     in unlines $ [showHeader "Warning" delta target, "    " ++ fromRString emsg]
+>                  ++ if null svals then [] else "  Response" : map showKV svals
+>                  ++ if null evals then [] else "  Error" : map showKV evals
 
 > sendSync :: Barrier -> SAMPConnection -> SAMPMessage -> RString -> IO ()
 > sendSync barrier conn msg tid = do
@@ -276,17 +265,17 @@ TODO: need to handle errors more sensibly than runE here!
 >     msgId <- getMsgId
 >     fmap (map fst) $ runE (callAllE conn msgId msg >>= mapM kvToRSE)
 
-> waitForCalls :: Channel -> MVar [RString] -> IO ()
-> waitForCalls chan cv = do
+> waitForCalls :: Barrier -> Channel -> MVar [RString] -> IO ()
+> waitForCalls barrier chan cv = do
 >    receiverid <- readChan chan
 >    modifyMVar_ cv $ \clients -> 
 >      if receiverid `elem` clients
 >        then return $ filter (/= receiverid) clients
 >        else do
->           putStrLn $ "Ignoring unexpected response from " ++ fromRString receiverid
+>           syncPrint barrier $ "Ignoring unexpected response from " ++ fromRString receiverid ++ "\n"
 >           return clients
 >    ncl <- readMVar cv
->    unless (null ncl) $ waitForCalls chan cv
+>    unless (null ncl) $ waitForCalls barrier chan cv
 
 Basic configuration for setting up the server.
 
@@ -349,7 +338,7 @@ this may be a bit OTT.
 > getResponse :: Barrier -> TimeVar -> Channel -> SAMPConnection -> ThreadId -> RqBody -> ServerPart Response
 > getResponse barrier mt chan conn tid (Body bdy) = do
 >     let call = L.unpack bdy
->     liftIO $ simpleClientServer conn (notifications tid) calls (rfunc conn barrier mt chan) call
+>     liftIO $ simpleClientServer conn (notifications barrier tid) calls (rfunc conn barrier mt chan) call
 >     ok (toResponse ("" :: String))
 
 TODO: support hub shutdown
@@ -357,18 +346,17 @@ TODO: support hub shutdown
 > allMT :: MType
 > allMT = "*"
 
-> notifications :: ThreadId -> [SAMPNotificationFunc]
-> notifications _ =
->      [(allMT, handleOther)]
+> notifications :: Barrier -> ThreadId -> [SAMPNotificationFunc]
+> notifications barrier _ =
+>      [(allMT, handleOther barrier)]
 
 > calls :: [SAMPCallFunc]
 > calls = []
 
-> handleOther :: MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
-> handleOther mtype _ name keys = do
->     putStrLn $ "Notification of " ++ show mtype ++ " from " ++ fromRString name
->     forM_ keys showKV
->     putStrLn ""
+> handleOther :: Barrier -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
+> handleOther barrier mtype _ name keys = syncPrint barrier $ unlines $
+>     ("Notification of " ++ show mtype ++ " from " ++ fromRString name) :
+>     map showKV keys ++ [""]
 
 TODO: check that msgid is correct, which means it has to be sent in!
 
