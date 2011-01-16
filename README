@@ -7,3 +7,17 @@ http://software.astrogrid.org/doc/p/jsamp/1.0/
 
 http://hackage.haskell.org/packages/archive/haxr/3000.2.1/doc/html/Network-XmlRpc-Client.html
 
+NOTE:
+
+*Network.XmlRpc.Client> let url = "http://127.0.0.1:55071/xmlrpc"
+*Network.XmlRpc.Client> let secret = "8fe977378fa002e6"
+*Network.XmlRpc.Client> let regClient :: String -> IO [(String, String)] ; regClient = remote url "samp.hub.register"
+*Network.XmlRpc.Client> :t regClient
+regClient :: String -> IO [(String, String)]
+*Network.XmlRpc.Client> ans <- regClient secret
+*Network.XmlRpc.Client> ans
+[("samp.hub-id","hub"),("samp.self-id","c1"),("samp.private-key","k:2_pplstclcoslgqbiu")]
+
+
+so is the work we do in Network.SAMP.Standard.Client really necessary?
+
