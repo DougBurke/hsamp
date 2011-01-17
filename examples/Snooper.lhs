@@ -34,25 +34,18 @@ TODO:
 > import Control.Concurrent (ThreadId, killThread, myThreadId, forkIO)
 > import Control.Concurrent.MVar
 >
-> import Control.Monad (msum, unless, when)
-> import Control.Monad.Trans (liftIO)
+> import Control.Monad (when)
 >
 > import Data.Maybe (fromJust, fromMaybe)
 > import qualified Data.Map as M
->
-> import qualified Data.ByteString.Char8 as B
-> import qualified Data.ByteString.Lazy.Char8 as L
 >
 > import System.Log.Logger
 >
 > import Network.SAMP.Standard
 >
-> import Network.Socket (Socket, PortNumber, socketPort)
-> import Happstack.Server.SimpleHTTP
->
-> -- unsafe conversion routine
-> tRS :: String -> RString
-> tRS = fromJust . toRString
+> import qualified Network as N
+> import Network.Socket (Socket)
+> import Server
 >
 > usage :: IO ()
 > usage = getProgName >>= \n -> hPutStrLn stderr $ "Usage: " ++ n ++ " [1]\n\nSupplying a 1 means to display debugging messages.\n\n"
@@ -65,20 +58,26 @@ TODO:
 >         [] -> return ()
 >         _ -> usage >> exitFailure
 >
+>     withSAMP $ do
+>     sock <- getSocket
+>
 >     -- is this excessive?
->     let ioHdlr :: CE.IOException -> IO ()
+>     let closeSock = N.sClose sock
+>          
+>         ioHdlr :: CE.IOException -> IO ()
 >         ioHdlr e = let emsg = if isUserError e then ioeGetErrorString e else show e
->                    in putStrLn ("ERROR: " ++ emsg) >> exitFailure
+>                    in closeSock >> putStrLn ("ERROR: " ++ emsg) >> exitFailure
 >
 >         -- this assumes the only way to get a ThreadKilled is via a shutdown message
 >         asyncHdlr :: CE.AsyncException -> IO ()
 >         asyncHdlr e = let emsg = if e == CE.ThreadKilled then "SAMP Hub has shut down." else show e
->                       in putStrLn ("ERROR: " ++ emsg) >> exitFailure
+>                       in closeSock >> putStrLn ("ERROR: " ++ emsg) >> exitFailure
 >
 >         otherHdlr :: CE.SomeException -> IO ()
->         otherHdlr e = putStrLn ("ERROR: " ++ show e) >> exitFailure
+>         otherHdlr e = closeSock >> putStrLn ("ERROR: " ++ show e) >> exitFailure
 >
->     snoop `CE.catches` [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
+>     snoop sock `CE.catches` [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
+>     closeSock
 >     exitSuccess
 >
 > sName :: RString
@@ -102,26 +101,14 @@ Set up a simple client (i.e. with limited metadata)
 >      declareMetadataE conn (md ++ amd) >>
 >      return conn
 
-Basic configuration for setting up the server.
-
-> eConf :: Conf
-> eConf = nullConf { port = 0 }
-
-The location of the server we create to handle incoming messages from
-the SAMP hub. Note that this includes the XML-RPC route since in this
-case we do not support any other access.
-
-> hostName :: PortNumber -> String
-> hostName portNum = "http://127.0.0.1:" ++ show portNum ++ "/xmlrpc"
-
 We need to create a server to service messages from the Hub
 as well as the SAMP client. We don't actually start the server
 up until after registering for the calls, which means there
 is a small window when we won't receive messages, but I am
 willing to live with this for now.
 
-> snoop :: IO ()
-> snoop = do
+> snoop :: Socket -> IO ()
+> snoop sock = do
 >     -- create the client
 >     conn <- runE createClient
 >
@@ -130,23 +117,26 @@ willing to live with this for now.
 >     let cleanUp :: CE.AsyncException -> IO ()
 >         cleanUp e = when (e == CE.UserInterrupt) (runE (unregisterE conn)) >> CE.throwIO e
 >     
->     runSnooper conn `CE.catch` cleanUp
+>     runSnooper sock conn `CE.catch` cleanUp
 
 Set up the subscriptions and run the server to process the requests.
 
-> runSnooper :: SAMPConnection -> IO ()
-> runSnooper conn = do
+> runSnooper :: Socket -> SAMPConnection -> IO ()
+> runSnooper sock conn = do
 >     -- what is the address of the server?
->     sock <- bindPort eConf
->     pNum <- socketPort sock
->     url <- runE $ toRStringE (hostName pNum)
+>     url <- getAddress sock
+>     urlR <- runE $ toRStringE url
+>     putStrLn $ "Snooping using " ++ url ++ "\n"
 >
 >     -- register the messages that we are interested in
->     runE $ setXmlrpcCallbackE conn url >>
+>     runE $ setXmlrpcCallbackE conn urlR >>
 >            declareSubscriptionsSimpleE conn ["*"]
 >
 >     -- now run the server
->     runServer sock pNum conn
+>     tid <- myThreadId
+>     barrier <- newBarrier
+>     clvar <- newClientMap conn
+>     runServer sock $ processCall conn tid barrier clvar
 
 Try and ensure sequential output to the screen. Given that we want to respond
 to the hub and display a message it may be better to use a Channel to send
@@ -216,41 +206,9 @@ existing values.
 >     modifyMVar clvar $ \clmap ->
 >         return (M.insert clid name clmap, name)
 
-Creates the server, listening to the assigned socket/port.
-
-> runServer :: Socket -> PortNumber -> SAMPConnection -> IO ()
-> runServer sock portNum conn = do
->      tid <- myThreadId
->      barrier <- newBarrier
->      clvar <- newClientMap conn
->      simpleHTTPWithSocket sock (nullConf { port = fromEnum portNum }) 
->          (handlers conn tid barrier clvar)
-
-> handlers :: SAMPConnection -> ThreadId -> Barrier -> ClientMapVar -> ServerPart Response
-> handlers conn tid barrier clvar =
->     msum [handleXmlRpc conn tid barrier clvar,
->           anyRequest (notFound (toResponse ("unknown request" :: String)))]
-
-XML-RPC is done via a HTML POST of an XML document.
-At present I enforce the content-type restriction but
-this may be a bit OTT.
-
-> xmlct :: B.ByteString
-> xmlct = B.pack "text/xml"
-
-> handleXmlRpc :: SAMPConnection -> ThreadId -> Barrier -> ClientMapVar -> ServerPart Response
-> handleXmlRpc conn tid barrier clvar = dir "xmlrpc" $ do
->     methodM POST
->     cType <- getHeaderM "content-type"
->     unless (cType == Just xmlct) $ escape (badRequest (toResponse ("Invalid content type: " ++ show cType)))
->     r <- askRq
->     getResponse conn tid barrier clvar (rqBody r)
-
-> getResponse :: SAMPConnection -> ThreadId -> Barrier -> ClientMapVar -> RqBody -> ServerPart Response
-> getResponse conn tid barrier clvar (Body bdy) = do
->     let call = L.unpack bdy
->     liftIO $ simpleClientServer conn (notifications tid barrier clvar) (calls barrier clvar) (rfunc barrier clvar) call
->     ok (toResponse ("" :: String))
+> processCall :: SAMPConnection -> ThreadId -> Barrier -> ClientMapVar -> String -> IO ()
+> processCall conn tid barrier clvar = 
+>     simpleClientServer conn (notifications tid barrier clvar) (calls barrier clvar) (rfunc barrier clvar)
 
 TODO: should we have a handler for samp.hub.event.* which then 
 

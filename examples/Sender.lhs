@@ -30,21 +30,17 @@ TODO:
 > import Control.Concurrent
 > import Control.Concurrent.ParallelIO.Global
 >
-> import Control.Monad (msum, forM_, unless, when)
-> import Control.Monad.Trans (liftIO)
+> import Control.Monad (forM_, unless, when)
 >
 > import Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
->
-> import qualified Data.ByteString.Char8 as B
-> import qualified Data.ByteString.Lazy.Char8 as L
 >
 > -- import System.Log.Logger
 >
 > import Network.SAMP.Standard
 >
-> import Network.Socket (Socket, PortNumber, socketPort)
-> import Happstack.Server.SimpleHTTP
->
+> import qualified Network as N
+> import Network.Socket (Socket)
+> import Server
 
 > timeout :: Int
 > timeout = 10
@@ -93,7 +89,7 @@ TODO:
 >     case processArgs args of
 >         Left emsg -> hPutStrLn stderr ("ERROR: " ++ emsg ++ "\n") >> usage >> exitFailure
 >         Right x -> 
->             do
+>             withSAMP $ do
 >               conn <- doE createClient
 >
 >               -- The assumption is that we only need to unregister if we get
@@ -160,7 +156,9 @@ step).
 >             ASync  -> do
 >                         chan <- newChannel
 >                         tvar <- emptyTimeVar
->                         _ <- makeServer barrier tvar chan conn
+>                         
+>                         sock <- getSocket
+>                         _ <- makeServer barrier tvar chan conn sock
 >                         clients <- sendASync tvar conn msg
 >
 >                         bv <- newEmptyMVar
@@ -168,6 +166,11 @@ step).
 >                         _ <- forkIO (waitForCalls barrier chan cv >> putMVar bv True)
 >                         _ <- forkIO (sleep timeout >> putMVar bv False)
 >                         flag <- takeMVar bv
+>
+>                         -- do we need to do this? should this be done within a resource
+>                         -- "handler" (to make sure the socket is closed on error)?
+>                         N.sClose sock
+>                         
 >                         unless flag $ do
 >                           rclients <- takeMVar cv 
 >                           -- even if flag is True there is the possibility that all
@@ -180,7 +183,7 @@ step).
 >                               [cl] -> fail $ "The following client failed to respond: " ++ fromRString cl
 >                               _ -> fail $ "The following clients failed to respond: " ++
 >                                       unwords (map fromRString rclients)
->                         
+>
 >             Notify -> do
 >                         putStrLn "Notifications sent to:" 
 >                         tgts <- runE (notifyAllE conn msg >>= mapM (\n -> fmap ((,) n) (getClientNameE conn n)))
@@ -277,69 +280,26 @@ TODO: need to handle errors more sensibly than runE here!
 >    ncl <- readMVar cv
 >    unless (null ncl) $ waitForCalls barrier chan cv
 
-Basic configuration for setting up the server.
-
-> eConf :: Conf
-> eConf = nullConf { port = 0 }
-
-The location of the server we create to handle incoming messages from
-the SAMP hub. Note that this includes the XML-RPC route since in this
-case we do not support any other access.
-
-> hostName :: PortNumber -> String
-> hostName portNum = "http://127.0.0.1:" ++ show portNum ++ "/xmlrpc"
-
 TODO: should we respond to the hub shutting down? Almost certainly
 (especially for the synchronous case where we currently aren't planning
 on setting up the server).
 
-> makeServer :: Barrier -> TimeVar -> Channel -> SAMPConnection -> IO ThreadId
-> makeServer barrier mt chan conn = do
->     -- what is the address of the server?
->     sock <- bindPort eConf
->     pNum <- socketPort sock
->     url <- runE $ toRStringE (hostName pNum)
+> makeServer :: Barrier -> TimeVar -> Channel -> SAMPConnection -> Socket -> IO ThreadId
+> makeServer barrier mt chan conn sock = do
+>     tid <- myThreadId
+>     url <- getAddress sock
+>     urlR <- runE (toRStringE url)
 >
 >     -- register the messages that we are interested in
->     runE $ setXmlrpcCallbackE conn url >>
+>     runE $ setXmlrpcCallbackE conn urlR >>
 >            declareSubscriptionsSimpleE conn []
 >
 >     -- now run the server
->     forkIO (runServer barrier mt chan sock pNum conn)
+>     forkIO $ runServer sock $ processCall barrier mt chan conn tid
 
-Creates the server, listening to the assigned socket/port.
-
-> runServer :: Barrier -> TimeVar -> Channel -> Socket -> PortNumber -> SAMPConnection -> IO ()
-> runServer barrier mt chan sock portNum conn = do
->      tid <- myThreadId
->      simpleHTTPWithSocket sock (nullConf { port = fromEnum portNum }) 
->          (handlers barrier mt chan conn tid)
-
-> handlers :: Barrier -> TimeVar -> Channel -> SAMPConnection -> ThreadId -> ServerPart Response
-> handlers barrier mt chan conn tid =
->     msum [handleXmlRpc barrier mt chan conn tid,
->           anyRequest (notFound (toResponse ("unknown request" :: String)))]
-
-XML-RPC is done via a HTML POST of an XML document.
-At present I enforce the content-type restriction but
-this may be a bit OTT.
-
-> xmlct :: B.ByteString
-> xmlct = B.pack "text/xml"
-
-> handleXmlRpc :: Barrier -> TimeVar -> Channel -> SAMPConnection -> ThreadId -> ServerPart Response
-> handleXmlRpc barrier mt chan conn tid = dir "xmlrpc" $ do
->     methodM POST
->     cType <- getHeaderM "content-type"
->     unless (cType == Just xmlct) $ escape (badRequest (toResponse ("Invalid content type: " ++ show cType)))
->     r <- askRq
->     getResponse barrier mt chan conn tid (rqBody r)
-
-> getResponse :: Barrier -> TimeVar -> Channel -> SAMPConnection -> ThreadId -> RqBody -> ServerPart Response
-> getResponse barrier mt chan conn tid (Body bdy) = do
->     let call = L.unpack bdy
->     liftIO $ simpleClientServer conn (notifications barrier tid) calls (rfunc conn barrier mt chan) call
->     ok (toResponse ("" :: String))
+> processCall :: Barrier -> TimeVar -> Channel -> SAMPConnection -> ThreadId -> String -> IO ()
+> processCall barrier mt chan conn tid =
+>     simpleClientServer conn (notifications barrier tid) calls (rfunc conn barrier mt chan) 
 
 TODO: support hub shutdown
 
