@@ -18,6 +18,22 @@ regClient :: String -> IO [(String, String)]
 *Network.XmlRpc.Client> ans
 [("samp.hub-id","hub"),("samp.self-id","c1"),("samp.private-key","k:2_pplstclcoslgqbiu")]
 
+so is the work we do in Network.SAMP.Standard.Client really necessary? Well, yes, since all
+it really does is wrap this up.
 
-so is the work we do in Network.SAMP.Standard.Client really necessary?
+TODO/THINK ABOUT:
+
+  - move server code from examples (snooper/sender) to Network.SAMP.Standard.Server.Snap
+    and add in *.HappStack/*.WAI versions. Hmm, maybe not WAI since the interface
+    can abstract around the HTTP server, so perhaps *.WARP.
+
+  - is it worth making a monad based on StateT to carry around connection info; this
+    can then periodically ping the hub/check for the hub disappearing/re-appearing
+    to allow it to handle hub replacements?
+
+  - is it worth keeping the *E versions, or just work in the IO monad?
+
+  - can we encode a type to ensure that the Server routines for a client (ASync
+    Call) are only used when a server is actually set up? I don't think this is
+    actually useful, just conceptually interesting for me
 
