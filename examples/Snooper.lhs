@@ -31,7 +31,7 @@ TODO:
 > import System.IO.Error
 >
 > import qualified Control.Exception as CE
-> import Control.Concurrent (ThreadId, killThread, myThreadId, forkIO)
+> import Control.Concurrent (ThreadId, killThread, myThreadId)
 > import Control.Concurrent.MVar
 >
 > import Control.Monad (when)
@@ -45,6 +45,8 @@ TODO:
 >
 > import qualified Network as N
 > import Network.Socket (Socket)
+>
+> import Utils
 > import Server
 >
 > usage :: IO ()
@@ -83,24 +85,6 @@ TODO:
 > sName :: RString
 > sName = "samp.name"
 
-Set up a simple client (i.e. with limited metadata)
-
-> authorMetadata :: Err IO [SAMPKeyValue]
-> authorMetadata = mapM (uncurry stringToKeyValE)
->     [("author.name", "Doug Burke"),
->      ("author.affiliation", "Smithsonian Astrophysical Observatory"),
->      ("author.mail", "dburke@cfa.harvard.edu")]
-
-> createClient :: Err IO SAMPConnection
-> createClient =
->      authorMetadata >>= \amd ->
->      getHubInfoE >>=
->      registerClientE >>= \conn ->
->      toMetadataE "hsamp-snooper" (Just "Report on messages sent by the hub.")
->          Nothing Nothing Nothing >>= \md ->
->      declareMetadataE conn (md ++ amd) >>
->      return conn
-
 We need to create a server to service messages from the Hub
 as well as the SAMP client. We don't actually start the server
 up until after registering for the calls, which means there
@@ -110,7 +94,8 @@ willing to live with this for now.
 > snoop :: Socket -> IO ()
 > snoop sock = do
 >     -- create the client
->     conn <- runE createClient
+>     conn <- runE $ createClient "hsamp-snooper"
+>                       "Report on messages sent by the hub."
 >
 >     -- the assumption is that we only need to unregister if we get
 >     -- a user interrupt but not for other errors.
@@ -137,25 +122,6 @@ Set up the subscriptions and run the server to process the requests.
 >     barrier <- newBarrier
 >     clvar <- newClientMap conn
 >     runServer sock $ processCall conn tid barrier clvar
-
-Try and ensure sequential output to the screen. Given that we want to respond
-to the hub and display a message it may be better to use a Channel to send
-the screen output to a separate display thread (to try and avoid any waiting for the
-barrier)?
-
-> type Barrier = MVar ()
-
-> newBarrier :: IO Barrier
-> newBarrier = newMVar ()
-
-Displays the given string to stdout, ensuring that it is done as an
-atomic operation (as long as other displays are also done with
-syncPrint using the same barrier). The print occurs in a separate
-thread so that if there is a delay due to the barrier being used
-elsewhere it won't affect the calling routine.
-
-> syncPrint :: Barrier -> String -> IO ()
-> syncPrint barrier msg = forkIO (withMVar barrier $ \_ -> putStrLn msg) >> return ()
 
 The client map is a mapping from the client Id (identifies the
 SAMP client and is created by the hub) with a user friendly
@@ -235,18 +201,6 @@ or at least abstract out this for the messages we do support.
 > handleShutdown :: ThreadId -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
 > handleShutdown tid _ _ _ _ = killThread tid
 
-> displayKV :: SAMPKeyValue -> String
-> displayKV (k,v) = "  " ++ fromRString k ++ " -> " ++ showSAMPValue v
-
-> showKV :: SAMPKeyValue -> IO ()
-> showKV = putStrLn . displayKV
-
-> getKeyStr :: [SAMPKeyValue] -> RString -> Maybe RString
-> getKeyStr kvs key =
->     case lookup key kvs of
->         Just (SAMPString s) -> Just s
->         _ -> Nothing
-
 Return the value of the key from the input list, along with the
 remaining key,value pairs.
 
@@ -270,8 +224,10 @@ Can the above be done something like fmap (uncurry hasLbl) ...
 > maybeWithId :: [SAMPKeyValue] -> (RString -> [SAMPKeyValue] -> IO ()) -> IO () -> IO ()
 > maybeWithId = maybeWithLabel getKeyStr "id"
 
-> displayWithKeys :: [String] -> [SAMPKeyValue] -> [String] -> String
-> displayWithKeys hdr keys footer = unlines (hdr ++ map displayKV keys ++ footer)
+Ensure we end with a blank line
+
+> displayWithKeys :: [String] -> [SAMPKeyValue] -> [String] -> [String]
+> displayWithKeys hdr keys footer = hdr ++ map displayKV keys ++ footer ++ [""]
 
 > withId :: String -> Barrier -> [SAMPKeyValue] -> (RString -> [SAMPKeyValue] -> IO ()) -> IO ()
 > withId lbl barrier keys hasId = 
@@ -380,9 +336,9 @@ TODO: handle warning case, although when is this ever called?
 > rfunc barrier clvar secret clid msgid rsp = do
 >    clname <- getDisplayName clvar clid
 >    let msg = if isSAMPSuccess rsp
->                then unlines ["Got a response to msg=" ++ fromRString msgid ++ " from=" ++ clname,
->                              displaySecret secret]
->                else unlines ["Error in response to msg=" ++ fromRString msgid ++ " from=" ++ clname,
->                              show (fromJust (getSAMPResponseErrorTxt rsp))]
+>                then ["Got a response to msg=" ++ fromRString msgid ++ " from=" ++ clname,
+>                      displaySecret secret]
+>                else ["Error in response to msg=" ++ fromRString msgid ++ " from=" ++ clname,
+>                      show (fromJust (getSAMPResponseErrorTxt rsp))]
 >    syncPrint barrier msg
 

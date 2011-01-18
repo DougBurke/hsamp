@@ -40,7 +40,9 @@ TODO:
 >
 > import qualified Network as N
 > import Network.Socket (Socket)
+
 > import Server
+> import Utils
 
 > timeout :: Int
 > timeout = 10
@@ -90,7 +92,8 @@ TODO:
 >         Left emsg -> hPutStrLn stderr ("ERROR: " ++ emsg ++ "\n") >> usage >> exitFailure
 >         Right x -> 
 >             withSAMP $ do
->               conn <- doE createClient
+>               conn <- doE $ createClient "hsamp-sender"
+>                               "Send a message to interested clients."
 >
 >               -- The assumption is that we only need to unregister if we get
 >               -- a user interrupt but not for other errors. This is actually not
@@ -113,29 +116,6 @@ TODO:
 >                   [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
 >               doE (unregisterE conn)
 >               exitSuccess
-
-Run a set of SAMP commands and exit on error.
-
-> doE :: Err IO a -> IO a
-> doE = handleError
->         (\emsg -> hPutStrLn stderr ("ERROR: " ++ emsg) >> exitFailure)
-
-> authorMetadata :: [SAMPKeyValue]
-> authorMetadata = 
->     [("author.name", "Doug Burke"),
->      ("author.affiliation", "Smithsonian Astrophysical Observatory"),
->      ("author.mail", "dburke@cfa.harvard.edu")]
-
-Set up a simple client (i.e. with limited metadata)
-
-> createClient :: Err IO SAMPConnection
-> createClient =
->      getHubInfoE >>=
->      registerClientE >>= \conn ->
->      toMetadataE "hsamp-sender" (Just "Send a message to interested clients.")
->          Nothing Nothing Nothing >>= \md ->
->      declareMetadataE conn (md ++ authorMetadata) >>
->      return conn
 
 There is a chance that targets may be added or removed in between the
 getSubscribedClientsE call and the later processing, but we except this
@@ -189,12 +169,8 @@ step).
 >                         tgts <- runE (notifyAllE conn msg >>= mapM (\n -> fmap ((,) n) (getClientNameE conn n)))
 >                         forM_ tgts $ \t -> putStrLn ("    " ++ showTarget t)
 
-> type Barrier = MVar ()
 > type TimeVar = MVar UTCTime
 > type Channel = Chan RString
-
-> newBarrier :: IO Barrier
-> newBarrier = newMVar ()
 
 > emptyTimeVar :: IO TimeVar
 > emptyTimeVar = newEmptyMVar
@@ -202,20 +178,11 @@ step).
 > newChannel :: IO Channel
 > newChannel = newChan
 
-NOTE: this uses putStr rather than putStrLn, so assumes the string
-ends in "\n"
-
-> syncPrint :: Barrier -> String -> IO ()
-> syncPrint barrier msg = forkIO (withMVar barrier $ \_ -> putStr msg) >> return ()
-
 > printResponse :: Barrier -> NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> IO ()
 > printResponse barrier delta target rsp
 >     | isSAMPErrorOnly rsp = syncPrint barrier $ showError delta target rsp
 >     | isSAMPWarning rsp   = syncPrint barrier $ showWarning delta target rsp
 >     | otherwise           = syncPrint barrier $ showSuccess delta target rsp
-
-> showKV :: SAMPKeyValue -> String
-> showKV (k,v) = "    " ++ fromRString k ++ " -> " ++ show v
 
 > showTarget :: (RString, Maybe RString) -> String
 > showTarget (tid, Nothing) = fromRString tid
@@ -225,24 +192,24 @@ ends in "\n"
 > showHeader lbl delta target = 
 >     lbl ++ " response from " ++ showTarget target ++ " in " ++ show delta ++ " seconds"
 
-> showSuccess :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> String
+> showSuccess :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> [String]
 > showSuccess delta target rsp = 
 >     let Just svals = getSAMPResponseResult rsp  
->     in unlines $ showHeader "Successful" delta target : map showKV svals
+>     in showHeader "Successful" delta target : map displayKV svals
 
-> showError :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> String
+> showError :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> [String]
 > showError delta target rsp = 
 >     let Just (emsg, evals) = getSAMPResponseError rsp
->     in unlines $ [showHeader "Error" delta target, "    " ++ fromRString emsg]
->                  ++ map showKV evals
+>     in [showHeader "Error" delta target, "    " ++ fromRString emsg]
+>        ++ map displayKV evals
 
-> showWarning :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> String
+> showWarning :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> [String]
 > showWarning delta target rsp = 
 >     let Just svals = getSAMPResponseResult rsp
 >         Just (emsg, evals) = getSAMPResponseError rsp
->     in unlines $ [showHeader "Warning" delta target, "    " ++ fromRString emsg]
->                  ++ if null svals then [] else "  Response" : map showKV svals
->                  ++ if null evals then [] else "  Error" : map showKV evals
+>     in [showHeader "Warning" delta target, "    " ++ fromRString emsg]
+>        ++ if null svals then [] else "  Response" : map displayKV svals
+>        ++ if null evals then [] else "  Error" : map displayKV evals
 
 > sendSync :: Barrier -> SAMPConnection -> SAMPMessage -> RString -> IO ()
 > sendSync barrier conn msg tid = do
@@ -275,7 +242,7 @@ TODO: need to handle errors more sensibly than runE here!
 >      if receiverid `elem` clients
 >        then return $ filter (/= receiverid) clients
 >        else do
->           syncPrint barrier $ "Ignoring unexpected response from " ++ fromRString receiverid ++ "\n"
+>           syncPrint barrier ["Ignoring unexpected response from " ++ fromRString receiverid]
 >           return clients
 >    ncl <- readMVar cv
 >    unless (null ncl) $ waitForCalls barrier chan cv
@@ -314,9 +281,9 @@ TODO: support hub shutdown
 > calls = []
 
 > handleOther :: Barrier -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
-> handleOther barrier mtype _ name keys = syncPrint barrier $ unlines $
+> handleOther barrier mtype _ name keys = syncPrint barrier $ 
 >     ("Notification of " ++ show mtype ++ " from " ++ fromRString name) :
->     map showKV keys ++ [""]
+>     map displayKV keys ++ [""]
 
 TODO: check that msgid is correct, which means it has to be sent in!
 
