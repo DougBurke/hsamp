@@ -6,7 +6,7 @@ Utility routines
 >        (
 >         doE,
 >         createClient, authorMetadata,
->         Barrier, newBarrier, syncPrint,
+>         PrintChannel, newPrintChannel, runPrintChannel, startPrintChannel, syncPrint,
 >         displayKV, showKV,
 >         getKeyStr,
 >        ) where
@@ -14,8 +14,8 @@ Utility routines
 > import System.Exit (exitFailure)
 > import System.IO
 
-> import Control.Concurrent.MVar
-> import Control.Concurrent (forkIO)
+> import Control.Concurrent.Chan
+> import Control.Concurrent (ThreadId, forkIO)
 
 > import Network.SAMP.Standard.Types
 > import Network.SAMP.Standard.Client
@@ -43,27 +43,35 @@ Set up a simple client (i.e. with limited metadata)
 >      ("author.affiliation", "Smithsonian Astrophysical Observatory"),
 >      ("author.email", "dburke@cfa.harvard.edu")]
 
-> type Barrier = MVar ()
+> type PrintChannel = Chan [String]
 
-> newBarrier :: IO Barrier
-> newBarrier = newMVar ()
+Returns the print channel and starts the print thread
+
+> startPrintChannel :: IO (PrintChannel, ThreadId)
+> startPrintChannel = do
+>     pchan <- newPrintChannel
+>     pid <- runPrintChannel pchan
+>     return (pchan, pid)
+
+> newPrintChannel :: IO PrintChannel
+> newPrintChannel = newChan
+
+Starts a new thread which prints all the text sent to
+the print channel. The return value is the id of this
+thread.
+
+> runPrintChannel :: PrintChannel -> IO ThreadId
+> runPrintChannel pchan = 
+>     let doit = readChan pchan >>= putStr . unlines >> doit
+>     in forkIO doit
 
 Displays the given string to stdout, ensuring that it is done as an
 atomic operation (as long as other displays are also done with
-syncPrint using the same barrier). The print occurs in a separate
-thread so that if there is a delay due to the barrier being used
-elsewhere it won't affect the calling routine.
+syncPrint using the same print channel). The print occurs in a separate
+thread.
 
-TODO: change to send to a channel, with a forked process printing
-   the arrays sent to the channel
-
-> syncPrint :: Barrier -> [String] -> IO ()
-> syncPrint barrier msg = forkIO (withMVar barrier $ \_ -> putStr (unlines msg)) >> return ()
-
-Try and ensure sequential output to the screen. Given that we want to respond
-to the hub and display a message it may be better to use a Channel to send
-the screen output to a separate display thread (to try and avoid any waiting for the
-barrier)?
+> syncPrint :: PrintChannel -> [String] -> IO ()
+> syncPrint = writeChan
 
 > displayKV :: SAMPKeyValue -> String
 > displayKV (k,v) = "  " ++ fromRString k ++ " -> " ++ showSAMPValue v

@@ -130,20 +130,20 @@ step).
 >       then putStrLn $ "No clients are subscribed to the message " ++ show mtype
 >       else do
 >           msg <- runE (toSAMPMessage mtype params)
->           barrier <- newBarrier -- not needed for notification case but do anyway
+>           (pchan, _) <- startPrintChannel -- not needed for notification case but do anyway
 >           case cmode of
->             Sync   -> parallel_ (map (sendSync barrier conn msg . fst) targets) >> stopGlobalPool
+>             Sync   -> parallel_ (map (sendSync pchan conn msg . fst) targets) >> stopGlobalPool
 >             ASync  -> do
 >                         chan <- newChannel
 >                         tvar <- emptyTimeVar
 >                         
 >                         sock <- getSocket
->                         _ <- makeServer barrier tvar chan conn sock
+>                         _ <- makeServer pchan tvar chan conn sock
 >                         clients <- sendASync tvar conn msg
 >
 >                         bv <- newEmptyMVar
 >                         cv <- newMVar clients
->                         _ <- forkIO (waitForCalls barrier chan cv >> putMVar bv True)
+>                         _ <- forkIO (waitForCalls pchan chan cv >> putMVar bv True)
 >                         _ <- forkIO (sleep timeout >> putMVar bv False)
 >                         flag <- takeMVar bv
 >
@@ -178,11 +178,11 @@ step).
 > newChannel :: IO Channel
 > newChannel = newChan
 
-> printResponse :: Barrier -> NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> IO ()
-> printResponse barrier delta target rsp
->     | isSAMPErrorOnly rsp = syncPrint barrier $ showError delta target rsp
->     | isSAMPWarning rsp   = syncPrint barrier $ showWarning delta target rsp
->     | otherwise           = syncPrint barrier $ showSuccess delta target rsp
+> printResponse :: PrintChannel -> NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> IO ()
+> printResponse pchan delta target rsp
+>     | isSAMPErrorOnly rsp = syncPrint pchan $ showError delta target rsp
+>     | isSAMPWarning rsp   = syncPrint pchan $ showWarning delta target rsp
+>     | otherwise           = syncPrint pchan $ showSuccess delta target rsp
 
 > showTarget :: (RString, Maybe RString) -> String
 > showTarget (tid, Nothing) = fromRString tid
@@ -211,13 +211,13 @@ step).
 >        ++ if null svals then [] else "  Response" : map displayKV svals
 >        ++ if null evals then [] else "  Error" : map displayKV evals
 
-> sendSync :: Barrier -> SAMPConnection -> SAMPMessage -> RString -> IO ()
-> sendSync barrier conn msg tid = do
+> sendSync :: PrintChannel -> SAMPConnection -> SAMPMessage -> RString -> IO ()
+> sendSync pchan conn msg tid = do
 >     sTime <- getCurrentTime
 >     rsp <- runE (callAndWaitE conn tid msg (Just timeout))
 >     eTime <- getCurrentTime
 >     tname <- handleError (return . const Nothing) $ getClientNameE conn tid
->     printResponse barrier (diffUTCTime eTime sTime) (tid,tname) rsp
+>     printResponse pchan (diffUTCTime eTime sTime) (tid,tname) rsp
 
 > getMsgId :: IO RString
 > getMsgId = getStdRandom $ randomRString 10
@@ -235,24 +235,24 @@ TODO: need to handle errors more sensibly than runE here!
 >     msgId <- getMsgId
 >     fmap (map fst) $ runE (callAllE conn msgId msg >>= mapM kvToRSE)
 
-> waitForCalls :: Barrier -> Channel -> MVar [RString] -> IO ()
-> waitForCalls barrier chan cv = do
+> waitForCalls :: PrintChannel -> Channel -> MVar [RString] -> IO ()
+> waitForCalls pchan chan cv = do
 >    receiverid <- readChan chan
 >    modifyMVar_ cv $ \clients -> 
 >      if receiverid `elem` clients
 >        then return $ filter (/= receiverid) clients
 >        else do
->           syncPrint barrier ["Ignoring unexpected response from " ++ fromRString receiverid]
+>           syncPrint pchan ["Ignoring unexpected response from " ++ fromRString receiverid]
 >           return clients
 >    ncl <- readMVar cv
->    unless (null ncl) $ waitForCalls barrier chan cv
+>    unless (null ncl) $ waitForCalls pchan chan cv
 
 TODO: should we respond to the hub shutting down? Almost certainly
 (especially for the synchronous case where we currently aren't planning
 on setting up the server).
 
-> makeServer :: Barrier -> TimeVar -> Channel -> SAMPConnection -> Socket -> IO ThreadId
-> makeServer barrier mt chan conn sock = do
+> makeServer :: PrintChannel -> TimeVar -> Channel -> SAMPConnection -> Socket -> IO ThreadId
+> makeServer pchan mt chan conn sock = do
 >     tid <- myThreadId
 >     url <- getAddress sock
 >     urlR <- runE (toRStringE url)
@@ -262,37 +262,37 @@ on setting up the server).
 >            declareSubscriptionsSimpleE conn []
 >
 >     -- now run the server
->     forkIO $ runServer sock $ processCall barrier mt chan conn tid
+>     forkIO $ runServer sock $ processCall pchan mt chan conn tid
 
-> processCall :: Barrier -> TimeVar -> Channel -> SAMPConnection -> ThreadId -> String -> IO ()
-> processCall barrier mt chan conn tid =
->     simpleClientServer conn (notifications barrier tid) calls (rfunc conn barrier mt chan) 
+> processCall :: PrintChannel -> TimeVar -> Channel -> SAMPConnection -> ThreadId -> String -> IO ()
+> processCall pchan mt chan conn tid =
+>     simpleClientServer conn (notifications pchan tid) calls (rfunc conn pchan mt chan) 
 
 TODO: support hub shutdown
 
 > allMT :: MType
 > allMT = "*"
 
-> notifications :: Barrier -> ThreadId -> [SAMPNotificationFunc]
-> notifications barrier _ =
->      [(allMT, handleOther barrier)]
+> notifications :: PrintChannel -> ThreadId -> [SAMPNotificationFunc]
+> notifications pchan _ =
+>      [(allMT, handleOther pchan)]
 
 > calls :: [SAMPCallFunc]
 > calls = []
 
-> handleOther :: Barrier -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
-> handleOther barrier mtype _ name keys = syncPrint barrier $ 
+> handleOther :: PrintChannel -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
+> handleOther pchan mtype _ name keys = syncPrint pchan $ 
 >     ("Notification of " ++ show mtype ++ " from " ++ fromRString name) :
 >     map displayKV keys ++ [""]
 
 TODO: check that msgid is correct, which means it has to be sent in!
 
-> rfunc :: SAMPConnection -> Barrier -> TimeVar -> Channel -> SAMPResponseFunc
-> rfunc conn barrier mt chan _ tid _ rsp = do
+> rfunc :: SAMPConnection -> PrintChannel -> TimeVar -> Channel -> SAMPResponseFunc
+> rfunc conn pchan mt chan _ tid _ rsp = do
 >    eTime <- getCurrentTime
 >    sTime <- readMVar mt
 >    tname <- handleError (return . const Nothing) $ getClientNameE conn tid
->    printResponse barrier (diffUTCTime eTime sTime) (tid,tname) rsp
+>    printResponse pchan (diffUTCTime eTime sTime) (tid,tname) rsp
 >    writeChan chan tid
 
 
