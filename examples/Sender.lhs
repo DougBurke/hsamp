@@ -37,11 +37,11 @@ TODO:
 > -- import System.Log.Logger
 >
 > import Network.SAMP.Standard
+> import Network.SAMP.Standard.Server.Snap
 >
 > import qualified Network as N
 > import Network.Socket (Socket)
 
-> import Server
 > import Utils
 
 > timeout :: Int
@@ -262,7 +262,7 @@ on setting up the server).
 >            declareSubscriptionsSimpleE conn []
 >
 >     -- now run the server
->     forkIO $ runServer sock $ processCall pchan mt chan conn tid
+>     forkIO $ runServer sock url $ processCall pchan mt chan conn tid
 
 > processCall :: PrintChannel -> TimeVar -> Channel -> SAMPConnection -> ThreadId -> String -> IO ()
 > processCall pchan mt chan conn tid =

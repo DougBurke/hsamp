@@ -9,6 +9,7 @@ Utility routines
 >         PrintChannel, newPrintChannel, runPrintChannel, startPrintChannel, syncPrint,
 >         displayKV, showKV,
 >         getKeyStr,
+>         getSocket, getAddress, hostName, hostNameBS,
 >        ) where
 
 > import System.Exit (exitFailure)
@@ -16,6 +17,11 @@ Utility routines
 
 > import Control.Concurrent.Chan
 > import Control.Concurrent (ThreadId, forkIO)
+
+> import qualified Data.ByteString.Char8 as B
+>
+> import qualified Network as N
+> import Network.Socket (Socket, PortNumber, socketPort)
 
 > import Network.SAMP.Standard.Types
 > import Network.SAMP.Standard.Client
@@ -84,4 +90,22 @@ thread.
 >     case lookup key kvs of
 >         Just (SAMPString s) -> Just s
 >         _ -> Nothing
+
+Return a socket with a randomly-chosen port for use by the server.
+
+> getSocket :: IO Socket
+> getSocket = N.listenOn (N.PortNumber (fromIntegral (0::Int)))
+
+> getAddress :: Socket -> IO String
+> getAddress = fmap hostName . socketPort
+
+The location of the server we create to handle incoming messages from
+the SAMP hub. Note that this includes the XML-RPC route since in this
+case we do not support any other access.
+
+> hostName :: PortNumber -> String
+> hostName portNum = "http://127.0.0.1:" ++ show portNum ++ "/xmlrpc"
+
+> hostNameBS :: PortNumber -> B.ByteString
+> hostNameBS = B.pack . hostName
 

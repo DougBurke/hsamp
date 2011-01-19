@@ -42,12 +42,12 @@ TODO:
 > import System.Log.Logger
 >
 > import Network.SAMP.Standard
+> import Network.SAMP.Standard.Server.Snap
 >
 > import qualified Network as N
 > import Network.Socket (Socket)
 >
 > import Utils
-> import Server
 >
 > usage :: IO ()
 > usage = getProgName >>= \n -> hPutStrLn stderr $ "Usage: " ++ n ++ " [1]\n\nSupplying a 1 means to display debugging messages.\n\n"
@@ -121,7 +121,7 @@ Set up the subscriptions and run the server to process the requests.
 >     tid <- myThreadId
 >     (pchan, _) <- startPrintChannel
 >     clvar <- newClientMap conn
->     runServer sock $ processCall conn tid pchan clvar
+>     runServer sock url $ processCall conn tid pchan clvar
 
 The client map is a mapping from the client Id (identifies the
 SAMP client and is created by the hub) with a user friendly
