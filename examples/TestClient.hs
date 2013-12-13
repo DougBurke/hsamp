@@ -1,5 +1,16 @@
 {-# LANGUAGE OverloadedStrings #-}
 
+{-|
+------------------------------------------------------------------------
+Copyright   :  (c) Douglas Burke 2011, 2013
+License     :  BSD3
+
+Maintainer  :  dburke.gw@gmail.com
+Stability   :  unstable
+Portability :  requires haxr
+------------------------------------------------------------------------
+-}
+
 {-
 Test out the SAMP client code.
 
@@ -27,7 +38,7 @@ import Network.SAMP.Standard
 
 import Network.Socket (Socket, PortNumber, socketPort)
 import Happstack.Server.SimpleHTTP
-import Happstack.Server.HTTP.FileServe
+-- import Happstack.Server.HTTP.FileServe
 -- import Happstack.Server.MessageWrap
 
 import qualified Data.ByteString.Char8 as B

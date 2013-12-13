@@ -1,6 +1,13 @@
 > {-# LANGUAGE OverloadedStrings #-}
 
-ghc -hide-package monads-fd --make -o snooper -Wall Snooper.lhs -i..
+------------------------------------------------------------------------
+Copyright   :  (c) Douglas Burke 2011, 2013
+License     :  BSD3
+
+Maintainer  :  dburke.gw@gmail.com
+Stability   :  unstable
+Portability :  requires haxr
+------------------------------------------------------------------------
 
 Try and log messages sent from the SAMP hub.
 

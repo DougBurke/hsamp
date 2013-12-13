@@ -6,5 +6,9 @@ syntax: glob
 
 testclient
 
+.cabal-sandbox/
+cabal.sandbox.config
+dist/
+
 syntax: regexp
 (.*/)?\#[^/]*\#$

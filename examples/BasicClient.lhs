@@ -1,5 +1,14 @@
 > {-# LANGUAGE OverloadedStrings #-}
->
+
+------------------------------------------------------------------------
+Copyright   :  (c) Douglas Burke 2011, 2013
+License     :  BSD3
+
+Maintainer  :  dburke.gw@gmail.com
+Stability   :  unstable
+Portability :  requires haxr
+------------------------------------------------------------------------
+
 > module Main where
 >
 > import Network.SAMP.Standard

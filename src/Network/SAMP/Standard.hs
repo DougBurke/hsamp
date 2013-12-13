@@ -1,9 +1,9 @@
 {-|
 Module      :  Network.SAMP.Standard
-Copyright   :  (c) Smithsonian Astrophysical Observatory 2011
-License     :  BSD-like
+Copyright   :  (c) Douglas Burke 2011, 2013
+License     :  BSD3
 
-Maintainer  :  dburke@cfa.harvard.edu
+Maintainer  :  dburke.gw@gmail.com
 Stability   :  unstable
 Portability :  requires haxr
 
@@ -14,7 +14,8 @@ applications, such as
 TopCat (<http://www.star.bris.ac.uk/~mbt/topcat/>),
 ds9 (<http://hea-www.harvard.edu/RD/ds9/>),
 Aladin (<http://aladin.u-strasbg.fr/>)
-and the WorldWide Telescope (WWT, <http://www.worldwidetelescope.org/Home.aspx>.
+and the WorldWide Telescope 
+(WWT, <http://www.worldwidetelescope.org/Home.aspx>.
 
 This module aims to support SAMP version 1.2.
 

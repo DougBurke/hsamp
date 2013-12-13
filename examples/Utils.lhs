@@ -47,7 +47,7 @@ Set up a simple client (i.e. with limited metadata)
 > authorMetadata = 
 >     [("author.name", "Doug Burke"),
 >      ("author.affiliation", "Smithsonian Astrophysical Observatory"),
->      ("author.email", "dburke@cfa.harvard.edu")]
+>      ("author.email", "dburke.gw@gmail.com")]
 
 > type PrintChannel = Chan [String]
 

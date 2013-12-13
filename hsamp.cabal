@@ -1,0 +1,176 @@
+name:         hsamp
+version:      0.1
+stability:    experimental
+synopsis:     Send and receive messages using the Simple Application Message Protocol (SAMP).
+category:     Astronomy
+description:
+  The Simple Application Message Protocol (SAMP,
+  <http://www.ivoa.net/documents/SAMP/>), is a message passing
+  scheme developed by the International Virtual Observatory
+  Alliance (IVOA, <http://www.ivoa.net/>), used to connect tools
+  used by Astronomers, and to break the tyranny of the
+  Three Letter Acronym (TLA) restriction that has plagued the
+  Astronomical community for too long.
+  .
+  More information on SAMP - including applications that implement
+  it and message types - can be found on the SAMPInfo page 
+  <http://wiki.ivoa.net/twiki/bin/view/IVOA/SampInfo>.
+  .
+  The hsamp library currently provides routines useful for clients,
+  but not hubs. It was written to support version 1.2 and has not
+  yet been reviewed for the latest version (1.3). The library
+  was primarily written as a learning experience, so expect rough
+  edges.
+
+license:      BSD3
+license-file: LICENSE
+author:       Douglas Burke
+maintainer:   dburke.gw@gmail.com
+
+-- homepage:       https://bitbucket.org/doug_burke/hsamp/wiki/Home
+homepage:       https://bitbucket.org/doug_burke/hsamp/
+bug-reports:    https://bitbucket.org/doug_burke/hsamp/issues
+
+tested-with:    GHC==7.6.3
+build-type:     Simple
+cabal-version:  >= 1.8
+
+source-repository head
+  type:     mercurial
+  location: https://bitbucket.org/doug_burke/hsamp/
+
+flag  testclient
+  description: Build the test client (probably deprecated)
+  default: False
+
+flag  examples
+  description: Build the example programs
+  default: True
+
+-- Just trying to get to build on ghc 7.6.3, so no constraints
+library
+ build-depends:
+   base,
+   bytestring,
+   haxr,
+   hslogger,
+   http-conduit,
+   mtl,
+   network,
+   random,
+   snap-core,
+   snap-server,
+   split,
+   strict
+
+ ghc-options:
+   -Wall
+
+ hs-source-dirs:   src/
+ exposed-modules:
+    Network.SAMP.Standard
+    Network.SAMP.Standard.Client
+    Network.SAMP.Standard.Server
+    Network.SAMP.Standard.Server.Snap
+    Network.SAMP.Standard.Types
+
+-- Requires an old version of happstack-server and it is unclear whether
+-- it was still in use, so I have not tried to fix this up yet.
+executable testclient
+  hs-source-dirs:  examples
+  main-is:         TestClient.hs
+  other-modules:   Paths_hsamp
+
+  ghc-options:
+     -Wall
+
+  if flag(testclient)
+    build-depends:
+      base,
+      bytestring,
+      happstack-server,
+      hsamp,
+      hslogger,
+      mtl,
+      network,
+      parallel-io
+
+  else
+    buildable:  False
+
+executable hsamp-basicclient
+  hs-source-dirs:  examples
+  main-is:         BasicClient.lhs
+  other-modules:   Paths_hsamp
+
+  ghc-options:
+     -Wall
+
+  if flag(examples)
+    build-depends:
+      base,
+      hsamp
+
+  else
+    buildable:  False
+
+executable hsamp-errorclient
+  hs-source-dirs:  examples
+  main-is:         ErrorClient.lhs
+  other-modules:   Paths_hsamp
+
+  ghc-options:
+     -Wall
+
+  if flag(examples)
+    build-depends:
+      base,
+      mtl,
+      hsamp
+
+  else
+    buildable:  False
+
+executable hsamp-sender
+  hs-source-dirs:  examples
+  main-is:         Sender.lhs
+  other-modules:   Paths_hsamp
+                   Utils
+
+  ghc-options:
+     -Wall
+
+  if flag(examples)
+    build-depends:
+      base,
+      bytestring,
+      hsamp,
+      network,
+      parallel-io,
+      random,
+      time
+
+  else
+    buildable:  False
+
+executable hsamp-snooper
+  hs-source-dirs:  examples
+  main-is:         Snooper.lhs
+  other-modules:   Paths_hsamp
+                   Utils
+
+  ghc-options:
+     -Wall
+
+  if flag(examples)
+    build-depends:
+      base,
+      bytestring,
+      containers,
+      hsamp,
+      hslogger,
+      network
+
+  else
+    buildable:  False
+

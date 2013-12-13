@@ -1,12 +1,15 @@
-{-# LANGUAGE FlexibleInstances, OverlappingInstances, TypeSynonymInstances #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE OverlappingInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TypeSynonymInstances #-}
 
 {-|
 Module      :  Network.SAMP.Standard.Types
-Copyright   :  (c) Smithsonian Astrophysical Observatory 2011
-License     :  BSD-like
+Copyright   :  (c) Douglas Burke 2011, 2013
+License     :  BSD3
 
-Maintainer  :  dburke@cfa.harvard.edu
+Maintainer  :  dburke.gw@gmail.com
 Stability   :  unstable
 Portability :  requires haxr
 
@@ -72,7 +75,6 @@ import System.Random
 
 import qualified Network.Socket as NS
 import Network.XmlRpc.Internals
-import qualified Network.HTTP.Enumerator as NE
 
 import Data.String
 import Data.List (intercalate, isPrefixOf)
@@ -88,11 +90,11 @@ routines require initialization, which is provided by this
 routine. This should be performed before any SAMP routine
 is used (e.g. including 'Network.SAMP.Standard.Client.getHubInfoE').
 
-At present this includes 'Network.Socket.withSocketsDo' and
-'Network.HTTP.Enumerator.withHttpEnumerator'.
+At present this includes 'Network.Socket.withSocketsDo'. 
 -}
 withSAMP :: IO a -> IO a
-withSAMP = NS.withSocketsDo . NE.withHttpEnumerator
+withSAMP = NS.withSocketsDo
+-- withSAMP = NS.withSocketsDo . NE.withHttpEnumerator
 
 -- | Runs the SAMP computation and returns the result.
 -- Any error is converted to a user exception. This is
@@ -466,11 +468,6 @@ toMTypeE mt = go mt ""
        go (x:xs) acc | isMTChar x = go xs (x:acc)
                      | otherwise  = throwError $ hdr ++ " (invalid character '" ++ [x] ++ "'/" ++ toHex x ++ ")" -- could include hex code
 
-       -- Try and shut the compiler up from thinking that the pattern matches are not exhaustive.
-       -- Since there are also complaints about overlapping pattern matches maybe I've got my
-       -- logic wrong?
-       go a b = throwError $ "Internal error: go sent a=" ++ a ++ " b=" ++ b
-
 toHex :: Char -> String
 toHex c = let x = ord c
               y = [x `div` 16, x `mod` 16]
@@ -596,6 +593,12 @@ instance XmlRpcType SAMPValue where
     fromValue (ValueString s) = liftM SAMPString $ toRStringE s
     fromValue (ValueArray xs) = liftM SAMPList $ mapM fromValue xs
     fromValue (ValueStruct xs) = liftM SAMPMap $ mapM toSAMPKeyValue xs
+    
+#if MIN_VERSION_haxr(3000,10,0)    
+    -- convert as strings
+    fromValue (ValueUnwrapped s) = liftM SAMPString $ toRStringE s
+#endif
+    
     fromValue x = fail $ "Unable to convert to SAMP Value from " ++ show x
 
     getType (SAMPString _) = TString

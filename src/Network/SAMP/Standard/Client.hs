@@ -1,11 +1,12 @@
-{-# LANGUAGE CPP, OverloadedStrings #-}
+{-# LANGUAGE CPP #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 {-|
 Module      :  Network.SAMP.Standard.Client
-Copyright   :  (c) Smithsonian Astrophysical Observatory 2011
-License     :  BSD-like
+Copyright   :  (c) Douglas Burke 2011, 2013
+License     :  BSD3
 
-Maintainer  :  dburke@cfa.harvard.edu
+Maintainer  :  dburke.gw@gmail.com
 Stability   :  unstable
 Portability :  requires haxr
 
@@ -50,7 +51,7 @@ import Network.XmlRpc.Client
 import Network.XmlRpc.Internals
 import Network.URI
 
-import qualified Network.HTTP.Enumerator as NE
+import qualified Network.HTTP.Conduit as NC
 import qualified Data.ByteString.Lazy.Char8 as L
 
 import System.Log.Logger
@@ -159,7 +160,7 @@ getLockFileE :: URI -> Err IO String
 getLockFileE uri = do
     let loc = show uri
     dbg $ "About to download contents of lock file via " ++ show loc
-    fmap L.unpack $ liftIO $ NE.simpleHttp loc
+    fmap L.unpack $ liftIO $ NC.simpleHttp loc
 
 -- As the SAMP control file may well be written using Windows
 -- control characters we need to ensure these are handled,

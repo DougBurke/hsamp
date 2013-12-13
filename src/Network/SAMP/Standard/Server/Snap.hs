@@ -2,17 +2,15 @@
 
 {-|
 Module      :  Network.SAMP.Standard.Server.Snap
-Copyright   :  (c) Smithsonian Astrophysical Observatory 2011
-License     :  BSD-like
+Copyright   :  (c) Douglas Burke 2011, 2013
+License     :  BSD3
 
-Maintainer  :  dburke@cfa.harvard.edu
+Maintainer  :  dburke.gw@gmail.com
 Stability   :  unstable
 Portability :  requires haxr
 
 Set up a simple SAMP access point using the 
 SNAP server <http://snapframework.com/>.
-
-At present it is limited to version 0.2.16.2 of @snap-server@.
 
 Calls to the server that have a missing or invalid @content-type@
 setting currently error out. This behaviour /may/ be changed.
@@ -32,7 +30,7 @@ import qualified Data.ByteString.Lazy.Char8 as L
 
 import Network.Socket (Socket, socketPort)
 
-import Snap.Types
+import Snap.Core
 import Snap.Http.Server
 
 {-|
@@ -48,13 +46,9 @@ runServer :: Socket -- ^ the socket for the server (only used to get the port nu
              -> IO ()
 runServer socket url processCall = do
      portNum <- socketPort socket
-     httpServe
-       "*" -- is this correct?
-       (fromEnum portNum)
-       (B.pack url)
-       Nothing -- access log
-       Nothing -- error log
-       $ handleXmlRpc processCall <|> noRequest
+     let cfg = setHostname (B.pack url) $ 
+               setPort (fromEnum portNum) emptyConfig
+     httpServe cfg $ handleXmlRpc processCall <|> noRequest
 
 noRequest :: Snap ()
 noRequest = do

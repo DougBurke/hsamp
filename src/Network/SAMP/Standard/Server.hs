@@ -1,11 +1,12 @@
-{-# LANGUAGE FlexibleInstances, OverloadedStrings #-}
+{-# LANGUAGE FlexibleInstances #-}
+{-# LANGUAGE OverloadedStrings #-}
 
 {-|
 Module      :  Network.SAMP.Standard.Server
-Copyright   :  (c) Smithsonian Astrophysical Observatory 2011
-License     :  BSD-like
+Copyright   :  (c) Douglas Burke 2011, 2013
+License     :  BSD3
 
-Maintainer  :  dburke@cfa.harvard.edu
+Maintainer  :  dburke.gw@gmail.com
 Stability   :  unstable
 Portability :  requires haxr
 
