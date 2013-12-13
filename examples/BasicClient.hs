@@ -28,12 +28,15 @@ main = withSAMP $ runE $ do
 
     -- Read information from lockfile to locate and register with hub.
     conn <- getHubInfoE >>= registerClientE 
-
+    liftIO $ putStrLn $ "Hub id:    " ++ fromRString (scHubId conn)
+    liftIO $ putStrLn $ "Client id: " ++ fromRString (scId conn)
+    
     -- Store metadata in hub for use by other applications.
     let vkey = ("dummy.version", "0.1-3")
     md <- toMetadataE "dummy" (Just "Test Application")
                       Nothing Nothing Nothing
     declareMetadataE conn (vkey : md)
+    liftIO $ putStrLn "Registered with the hub"
     
     -- Send a message requesting file load to all other
     -- registered clients, not wanting any response.
@@ -45,4 +48,5 @@ main = withSAMP $ runE $ do
     notifyAllE_ conn msg
 
     -- Unregister
+    liftIO $ putStrLn "Unregistering from the hub"
     unregisterE conn

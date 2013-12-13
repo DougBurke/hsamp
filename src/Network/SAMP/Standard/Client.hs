@@ -530,8 +530,9 @@ pingE cl = callHubE_ cl "samp.hub.ping" []
 Get the names (@samp.name@) of all the registered clients (excluding
 this one).
 -}
-getClientNamesE :: SAMPConnection
-                -> Err IO [(RString, Maybe RString)] -- ^ key is the client id and the value is the @samp.name@ value (if set)
+getClientNamesE :: 
+  SAMPConnection
+  -> Err IO [(RString, Maybe RString)] -- ^ key is the client id and the value is the @samp.name@ value (if set)
 getClientNamesE conn = do
     clients <- getRegisteredClientsE conn
     forM clients $ \clid -> fmap ((,) clid) $ getClientNameE conn clid
@@ -539,10 +540,11 @@ getClientNamesE conn = do
 {-|
 Get the name (@samp.name@) of the client, if set.
 -}
-getClientNameE :: SAMPConnection
-               -> RString -- ^ the client id
-               -> Err IO (Maybe RString) -- ^ the @samp.name@ value for the client, if set
+getClientNameE :: 
+  SAMPConnection
+  -> RString -- ^ the client id
+  -> Err IO (Maybe RString) -- ^ the @samp.name@ value for the client, if set
 getClientNameE conn clid = do
-    md <- getMetadataE conn clid
-    T.sequence $ fmap fromSValue $ lookup sName md
+  md <- getMetadataE conn clid
+  T.sequence $ fmap fromSValue $ lookup sName md
 
