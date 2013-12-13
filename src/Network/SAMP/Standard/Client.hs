@@ -34,7 +34,7 @@ module Network.SAMP.Standard.Client (
        getRegisteredClientsE,
        getSubscribedClientsE,
        notifyE,
-       notifyAllE,
+       notifyAllE, notifyAllE_,
        callAndWaitE,
        replyE,
        pingE,
@@ -42,7 +42,9 @@ module Network.SAMP.Standard.Client (
        -- * Low-level interface
 
        makeCallE,
+       makeCallE_,
        callHubE,
+       callHubE_,
        registerE, getClientInfoE
 
        ) where
@@ -74,6 +76,13 @@ import System.Environment (getEnv)
 import System.IO.Error (isDoesNotExistError, isDoesNotExistErrorType, ioeGetErrorType)
 
 import Network.SAMP.Standard.Types
+
+#if MIN_VERSION_base(4,3,0)
+import Control.Monad (void)
+#else
+void :: Functor f => f a -> f ()
+void = fmap (const ())
+#endif
 
 -- the name of the SAMP client logging instance
 cLogger :: String
@@ -240,10 +249,10 @@ This routine includes logging to the @SAMP.StandardProfile.Client@
 logger (at present only debug-level information).
 -} 
 makeCallE :: 
-          String       -- ^ url of the hub
-       -> RString      -- ^ message name
-       -> [SAMPValue]  -- ^ message arguments
-       -> Err IO SAMPValue     -- ^ response
+  String              -- ^ url of the hub
+  -> RString          -- ^ message name
+  -> [SAMPValue]      -- ^ message arguments
+  -> Err IO SAMPValue -- ^ response
 makeCallE url msg args = do
          let rmsg = fromRString msg
          dbg $ "Calling message " ++ rmsg ++ " at " ++ url
@@ -252,6 +261,14 @@ makeCallE url msg args = do
          dbg $ "Response to " ++ rmsg
          dbg (show rsp)
          fromValue rsp
+
+-- | Like 'makeCallE' but ignores the return value.
+makeCallE_ :: 
+  String          -- ^ url of the hub
+  -> RString      -- ^ message name
+  -> [SAMPValue]  -- ^ message arguments
+  -> Err IO ()    -- ^ response
+makeCallE_ url msg args = void $ makeCallE url msg args
 
 {-|
 Similar to 'makeCallE' but takes a 'SAMPConnection' 
@@ -268,6 +285,14 @@ callHubE :: SAMPConnection
 callHubE conn msg args = 
          makeCallE (scHubURL conn) msg
                    $ SAMPString (scPrivateKey conn) : args
+
+-- | As `callHubE` but ignores the return value.
+callHubE_ :: 
+  SAMPConnection
+  -> RString      -- ^ message name
+  -> [SAMPValue]  -- ^ message arguments
+  -> Err IO ()    -- ^ response
+callHubE_ conn msg args = void $ callHubE conn msg args
 
 -- | Register a client with a hub. See 'registerClientE' for a simple
 -- way to register the client and process the return vaues.
@@ -315,7 +340,7 @@ registerClientE si = registerE si >>= getClientInfoE si
 unregisterE :: SAMPConnection
             -> Err IO ()
 unregisterE cl =
-    callHubE cl "samp.hub.unregister" [] >> return ()
+    callHubE_ cl "samp.hub.unregister" []
 
 sName , sTxt, sHtml, sIcon, sDoc :: RString
 sName = "samp.name"
@@ -366,8 +391,7 @@ declareMetadataE :: SAMPConnection
                  -> [SAMPKeyValue] -- ^ the key/value pairs to declare 
                  -> Err IO ()
 declareMetadataE cl ks = 
-    callHubE cl "samp.hub.declareMetadata" [SAMPMap ks]
-    >> return ()
+    callHubE_ cl "samp.hub.declareMetadata" [SAMPMap ks]
 
 -- | Return the metadata for another client of the SAMP hub as a
 -- list of (key,value) pairs.
@@ -395,8 +419,7 @@ declareSubscriptionsE :: SAMPConnection
                       -> Err IO ()
 declareSubscriptionsE cl subs =
     let ks = map (CA.first mtToRS) subs
-    in callHubE cl "samp.hub.declareSubscriptions" [SAMPMap ks]
-       >> return ()
+    in callHubE_ cl "samp.hub.declareSubscriptions" [SAMPMap ks]
 
 -- | Declare the subscriptions for this client. This can be used
 -- if all the messages require no parameters; use 
@@ -406,8 +429,7 @@ declareSubscriptionsSimpleE :: SAMPConnection
                             -> Err IO ()
 declareSubscriptionsSimpleE cl mtypes =
     let ks = map (\n -> (mtToRS n, SAMPMap [])) mtypes
-    in callHubE cl "samp.hub.declareSubscriptions" [SAMPMap ks]
-       >> return ()
+    in callHubE_ cl "samp.hub.declareSubscriptions" [SAMPMap ks]
 
 -- | Get the message subscriptions of a client. The subscriptions are
 -- returned as a list of (key,value) pairs.
@@ -447,18 +469,25 @@ notifyE :: SAMPConnection
         -> SAMPMessage -- ^ the message
         -> Err IO ()
 notifyE cl clid msg =
-    callHubE cl "samp.hub.notify" [SAMPString clid, toSValue msg]
-    >> return ()
+    callHubE_ cl "samp.hub.notify" [SAMPString clid, toSValue msg]
 
 -- | Send a message to all clients and get back a list of those
 -- that were sent the message (i.e. are subscribed to it). Note that
 -- just because a client was sent a message does not mean it was successful.
-notifyAllE :: SAMPConnection
-           -> SAMPMessage -- ^ the message
-           -> Err IO [RString] -- ^ the list of clients that were sent the message
+notifyAllE :: 
+  SAMPConnection
+  -> SAMPMessage      -- ^ the message
+  -> Err IO [RString] -- ^ the list of clients that were sent the message
 notifyAllE cl msg =
     callHubE cl "samp.hub.notifyAll" [toSValue msg]
     >>= fromSValue
+
+-- | 'notifyAllE' ignoring the return value.
+notifyAllE_ :: 
+  SAMPConnection
+  -> SAMPMessage  -- ^ the message
+  -> Err IO ()    
+notifyAllE_ cl msg = void $ notifyAllE cl msg
 
 -- | Send a message to a client and wait for a response. The timeout parameter
 -- controls how long the wait will be before error-ing out (if given).
@@ -480,8 +509,7 @@ replyE :: SAMPConnection
        -> SAMPResponse -- ^ the response
        -> Err IO ()
 replyE cl msgid rsp =
-    callHubE cl "samp.hub.reply" [SAMPString msgid, toSValue rsp]
-    >> return ()
+    callHubE_ cl "samp.hub.reply" [SAMPString msgid, toSValue rsp]
 
 {-|
 Ping the hub to see if it is running.
@@ -489,13 +517,14 @@ Ping the hub to see if it is running.
 Note that we do not support calling this method without
 the private key (taken from the 'SAMPConnection' record).
 Users who wish to see if a hub is alive and just have a URL
-can try using 'makeCallE' directly - e.g.
+can try using 'makeCallE_' directly - e.g.
 
->    makeCallE url "samp.hub.ping" [] >> return ()
+>    makeCallE_ url "samp.hub.ping" []
 -}
-pingE :: SAMPConnection
-      -> Err IO ()
-pingE cl = callHubE cl "samp.hub.ping" [] >> return ()
+pingE :: 
+  SAMPConnection
+  -> Err IO ()
+pingE cl = callHubE_ cl "samp.hub.ping" []
 
 {-|
 Get the names (@samp.name@) of all the registered clients (excluding

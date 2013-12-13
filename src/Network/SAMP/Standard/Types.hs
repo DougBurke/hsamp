@@ -724,25 +724,27 @@ instance SAMPType SAMPResponse where
 
     fromSValue (SAMPMap xs) = do
         ss <- liftM fromRString $ getKey sStatus xs
+        let getError = do
+              evals <- getKey sError xs
+              emsg <- getKey sErrorTxt evals
+              let nes = cleanKeys [sErrorTxt] evals
+              return (Just (emsg,nes))
+              
         case ss of
-            "samp.ok" -> do
-                fs <- getKey sResult xs
-                return $ SR (Just fs) Nothing
+          "samp.ok" -> do
+            fs <- getKey sResult xs
+            return $ SR (Just fs) Nothing
 
-            "samp.error" -> do
-                evals <- getKey sError xs
-                emsg <- getKey sErrorTxt evals
-                let nes = cleanKeys [sErrorTxt] evals
-                return $ SR Nothing (Just (emsg,nes))
+          "samp.error" -> do
+            err <- getError  
+            return $ SR Nothing err
 
-            "samp.warning" -> do
-                fs <- getKey sResult xs
-                evals <- getKey sError xs
-                emsg <- getKey sErrorTxt evals
-                let nes = cleanKeys [sErrorTxt] evals
-                return $ SR (Just fs) (Just (emsg,nes))
+          "samp.warning" -> do
+            fs <- getKey sResult xs
+            err <- getError
+            return $ SR (Just fs) err
 
-            _ -> throwError $ "Unexpected samp.status of " ++ show ss
+          _ -> throwError $ "Unexpected samp.status of " ++ show ss
 
     fromSValue x = throwError $ "Expected a SAMP map but sent " ++ show x
 
@@ -781,22 +783,24 @@ instance XmlRpcType SAMPResponse where
     -- TODO: can we simplify the following by using the SAMPType instance?
     fromValue (ValueStruct xs) = do
         ss <- getField "samp.status" xs :: (Monad m) => Err m RString
+        let getError = do
+              evals <- getField "samp.error" xs
+              emsg <- getField "samp.errortxt" evals
+              nes <- mapM toSAMPKeyValue $ cleanXKeys ["samp.errortxt"] evals
+              return $ Just (emsg, nes)
+              
         case ss of
-            "samp.ok" -> do
-                fs <- getField "samp.result" xs
-                return $ SR (Just fs) Nothing
-            "samp.error" -> do
-                evals <- getField "samp.error" xs
-                emsg <- getField "samp.errortxt" evals
-                nes <- mapM toSAMPKeyValue $ cleanXKeys ["samp.errortxt"] evals
-                return $ SR Nothing (Just (emsg,nes))
-            "samp.warning" -> do
-                fs <- getField "samp.result" xs
-                evals <- getField "samp.error" xs
-                emsg <- getField "samp.errortxt" evals
-                nes <- mapM toSAMPKeyValue $ cleanXKeys ["samp.errortxt"] evals
-                return $ SR (Just fs) (Just (emsg,nes)) 
-            _ -> fail $ "Unexpected samp.status of " ++ show ss
+          "samp.ok" -> do
+            fs <- getField "samp.result" xs
+            return $ SR (Just fs) Nothing
+          "samp.error" -> do
+            err <- getError
+            return $ SR Nothing err
+          "samp.warning" -> do
+            fs <- getField "samp.result" xs
+            err <- getError
+            return $ SR (Just fs) err
+          _ -> fail $ "Unexpected samp.status of " ++ show ss
 
     fromValue x = fail $ "Unable to convert to SAMP Response from " ++ show x
 

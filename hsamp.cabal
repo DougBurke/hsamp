@@ -100,7 +100,7 @@ executable testclient
 
 executable hsamp-basicclient
   hs-source-dirs:  examples
-  main-is:         BasicClient.lhs
+  main-is:         BasicClient.hs
   other-modules:   Paths_hsamp
 
   ghc-options:
@@ -109,14 +109,15 @@ executable hsamp-basicclient
   if flag(examples)
     build-depends:
       base,
-      hsamp
+      hsamp,
+      mtl
 
   else
     buildable:  False
 
 executable hsamp-errorclient
   hs-source-dirs:  examples
-  main-is:         ErrorClient.lhs
+  main-is:         ErrorClient.hs
   other-modules:   Paths_hsamp
 
   ghc-options:
@@ -133,7 +134,7 @@ executable hsamp-errorclient
 
 executable hsamp-sender
   hs-source-dirs:  examples
-  main-is:         Sender.lhs
+  main-is:         Sender.hs
   other-modules:   Paths_hsamp
                    Utils
 
@@ -155,7 +156,7 @@ executable hsamp-sender
 
 executable hsamp-snooper
   hs-source-dirs:  examples
-  main-is:         Snooper.lhs
+  main-is:         Snooper.hs
   other-modules:   Paths_hsamp
                    Utils
 

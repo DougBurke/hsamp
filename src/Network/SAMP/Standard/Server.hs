@@ -1,3 +1,4 @@
+{-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 
@@ -72,7 +73,14 @@ import Control.Monad.Trans (liftIO)
 import qualified Control.Exception as CE
 
 import Network.SAMP.Standard.Types
-import Network.SAMP.Standard.Client (callHubE, replyE)
+import Network.SAMP.Standard.Client (callHubE, callHubE_, replyE)
+
+#if MIN_VERSION_base(4,3,0)
+import Control.Monad (void)
+#else
+void :: Functor f => f a -> f ()
+void = fmap (const ())
+#endif
 
 -- the name of the SAMP client logging instance
 sLogger :: String
@@ -112,7 +120,7 @@ class SAMPFun a where
     toSAMPFun :: a -> SAMPMethod
 
 instance SAMPFun (IO ()) where
-    toSAMPFun x (SAMPMethodCall _ []) = handleIO x >> return ()
+    toSAMPFun x (SAMPMethodCall _ []) = void $ handleIO x
     toSAMPFun _ _ = fail "Too many arguments"
 
 instance (SAMPType a, SAMPFun b) => SAMPFun (a -> b) where
@@ -128,8 +136,7 @@ setXmlrpcCallbackE :: SAMPConnection
                    -> RString -- ^ the URL of the end point
                    -> Err IO ()
 setXmlrpcCallbackE conn url =
-    callHubE conn "samp.hub.setXmlrpcCallback" [SAMPString url]
-    >> return ()
+    callHubE_ conn "samp.hub.setXmlrpcCallback" [SAMPString url]
 
 -- | Send a message asynchronously to the recipient. The return value is
 -- the message id given to this communication by the hub.
