@@ -18,6 +18,8 @@ Usage:
 
    ./sender [sync|async|notify] mtype [param1=value1] [param2=value2] ... [paramN=valueN]
 
+            --debug
+
 TODO:
 
   - target name(s) as well as ids
@@ -34,27 +36,25 @@ TODO:
 
 module Main where
 
-import System.Environment (getArgs, getProgName)
-import System.Exit (exitSuccess, exitFailure)
-import System.IO
-import System.IO.Error
-import System.Random
-
 import qualified Control.Exception as CE
+import qualified Network as N
+
 import Control.Concurrent
 import Control.Concurrent.ParallelIO.Global
-
 import Control.Monad (forM_, unless, when)
 
 import Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
 
--- import System.Log.Logger
-
 import Network.SAMP.Standard
 import Network.SAMP.Standard.Server.Snap
-
-import qualified Network as N
 import Network.Socket (Socket)
+
+import System.Environment (getArgs, getProgName)
+import System.Exit (exitSuccess, exitFailure)
+import System.IO
+import System.IO.Error
+import System.Log.Logger
+import System.Random
 
 import Utils
 
@@ -65,8 +65,17 @@ sleep :: Int -> IO ()
 sleep = threadDelay . (1000000 *)                                                            
 
 usage :: IO ()
-usage = getProgName >>= \n ->
-    hPutStrLn stderr $ "Usage: " ++ n ++ " [sync|async|notify] mtype [param1=value1] .. [paranN=valueN]"
+usage = do
+  name <- getProgName
+  hPutStrLn stderr $ "Usage: " ++ name ++ " --debug [sync|async|notify] mtype [param1=value1] .. [paranN=valueN]"
+  exitFailure
+
+cLogger :: String
+cLogger = "SAMP.Application"
+
+-- Start messages with %%% to distinguish them from library messages
+dbg :: String -> IO ()
+dbg = debugM cLogger . ("%%% " ++)
 
 data ConnMode = Sync | ASync | Notify deriving (Eq, Show)
 
@@ -92,19 +101,32 @@ getKV arg = do
               else Right $ tail r
     handleError Left $ stringToKeyValE lval rval
 
-processArgs :: [String] -> Either String (ConnMode, MType, [SAMPKeyValue])
+-- | Strip out the --debug flag if it exists. There is no validation of
+--   the arguments.
+procArgs :: 
+  [String]  -- ^ command-line arguments
+  -> (Bool, [String]) -- ^ flag is @True@ if --debug is given
+procArgs = foldr go (False, [])
+  where
+    go x (f, xs) | x == "--debug" = (True, xs)
+                 | otherwise      = (f, x:xs)
+
+processArgs :: [String] -> Either String ((ConnMode, MType, [SAMPKeyValue]), Bool)
 processArgs args = do
-    let (conmode, args1) = getConnection args
-    (mtype, args2) <- getMType args1
-    kvals <- mapM getKV args2
-    return (conmode, mtype, kvals)
+  let (dbgFlag, args1) = procArgs args
+      (conmode, args2) = getConnection args1
+      
+  (mtype, args3) <- getMType args2
+  kvals <- mapM getKV args3
+  return ((conmode, mtype, kvals), dbgFlag)
 
 main :: IO ()
 main = do
     args <- getArgs
     case processArgs args of
-        Left emsg -> hPutStrLn stderr ("ERROR: " ++ emsg ++ "\n") >> usage >> exitFailure
-        Right x -> 
+        Left emsg -> hPutStrLn stderr ("ERROR: " ++ emsg ++ "\n") >> usage
+        Right (x, dbgFlag) -> do
+            when dbgFlag $ updateGlobalLogger "SAMP" (setLevel DEBUG)
             withSAMP $ do
               conn <- doE $ createClient "hsamp-sender"
                               "Send a message to interested clients."
@@ -143,49 +165,54 @@ could skip this step).
 
 processMessage :: SAMPConnection -> (ConnMode, MType, [SAMPKeyValue]) -> IO ()
 processMessage conn (cmode, mtype, params) = do
-    targets <- runE (getSubscribedClientsE conn mtype)
-    if null targets
-      then putStrLn $ "No clients are subscribed to the message " ++ show mtype
-      else do
-          msg <- runE (toSAMPMessage mtype params)
-          (pchan, _) <- startPrintChannel -- not needed for notification case but do anyway
-          case cmode of
-            Sync   -> parallel_ (map (sendSync pchan conn msg . fst) targets) >> stopGlobalPool
-            ASync  -> do
-                        chan <- newChannel
-                        tvar <- emptyTimeVar
-                        
-                        sock <- getSocket
-                        _ <- makeServer pchan tvar chan conn sock
-                        clients <- sendASync tvar conn msg
+  targets <- runE (getSubscribedClientsE conn mtype)
+  if null targets
+    then putStrLn $ "No clients are subscribed to the message " ++ show mtype
+    else do
+      msg <- runE (toSAMPMessage mtype params)
+      (pchan, _) <- startPrintChannel -- not needed for notification case but do anyway
+      case cmode of
+        Sync   -> parallel_ (map (sendSync pchan conn msg . fst) targets) >> stopGlobalPool
 
-                        bv <- newEmptyMVar
-                        cv <- newMVar clients
-                        _ <- forkIO (waitForCalls pchan chan cv >> putMVar bv True)
-                        _ <- forkIO (sleep timeout >> putMVar bv False)
-                        flag <- takeMVar bv
+        Notify -> do
+          putStrLn "Notifications sent to:" 
+          tgts <- runE (notifyAllE conn msg >>= mapM (\n -> fmap ((,) n) (getClientNameE conn n)))
+          forM_ tgts $ \t -> putStrLn ("    " ++ showTarget t)
 
-                        -- do we need to do this? should this be done within a resource
-                        -- "handler" (to make sure the socket is closed on error)?
-                        N.sClose sock
-                        
-                        unless flag $ do
-                          rclients <- takeMVar cv 
-                          -- even if flag is True there is the possibility that all
-                          -- the clients responded (as we haven't explicitly halted the
-                          -- waitForCalls thread here) 
-                          --
-                          -- since we got no response we won't bother asking for their samp.name
-                          -- settings either
-                          unless (null rclients) $ case rclients of
-                              [cl] -> fail $ "The following client failed to respond: " ++ fromRString cl
-                              _ -> fail $ "The following clients failed to respond: " ++
-                                      unwords (map fromRString rclients)
+        ASync  -> do
+          chan <- newChannel
+          tvar <- emptyTimeVar
+          
+          sock <- getSocket
+          _ <- makeServer pchan tvar chan conn sock
+          dbg "Created server for async"
+          
+          clients <- sendASync tvar conn msg
 
-            Notify -> do
-                        putStrLn "Notifications sent to:" 
-                        tgts <- runE (notifyAllE conn msg >>= mapM (\n -> fmap ((,) n) (getClientNameE conn n)))
-                        forM_ tgts $ \t -> putStrLn ("    " ++ showTarget t)
+          bv <- newEmptyMVar
+          cv <- newMVar clients
+          _ <- forkIO (waitForCalls pchan chan cv >> putMVar bv True)
+          _ <- forkIO (sleep timeout >> putMVar bv False)
+          flag <- takeMVar bv
+          dbg $ "clients (True) or timeout (False): " ++ show flag
+
+          -- do we need to do this? should this be done within a resource
+          -- "handler" (to make sure the socket is closed on error)?
+          dbg "Closing socket"
+          N.sClose sock
+          
+          unless flag $ do
+            rclients <- takeMVar cv 
+            -- even if flag is True there is the possibility that all
+            -- the clients responded (as we haven't explicitly halted the
+            -- waitForCalls thread here) 
+            --
+            -- since we got no response we won't bother asking for their samp.name
+            -- settings either
+            unless (null rclients) $ case rclients of
+                [cl] -> fail $ "The following client failed to respond: " ++ fromRString cl
+                _ -> fail $ "The following clients failed to respond: " ++
+                        unwords (map fromRString rclients)
 
 type TimeVar = MVar UTCTime
 type Channel = Chan RString
@@ -248,10 +275,11 @@ kvToRSE (k,v) = fail $ "Key " ++ fromRString k ++ " should be a SAMP string but 
 
 sendASync :: TimeVar -> SAMPConnection -> SAMPMessage -> IO [RString]
 sendASync mt conn msg = do
-    sTime <- getCurrentTime
-    putMVar mt sTime
-    msgId <- getMsgId
-    fmap (map fst) $ runE (callAllE conn msgId msg >>= mapM kvToRSE)
+  dbg $ "Sending asynchronous message: " ++ show msg
+  sTime <- getCurrentTime
+  putMVar mt sTime
+  msgId <- getMsgId
+  fmap (map fst) $ runE (callAllE conn msgId msg >>= mapM kvToRSE)
 
 waitForCalls :: PrintChannel -> Channel -> MVar [RString] -> IO ()
 waitForCalls pchan chan cv = do

@@ -147,6 +147,7 @@ executable hsamp-sender
       base,
       bytestring,
       hsamp,
+      hslogger,
       network,
       parallel-io,
       random,
