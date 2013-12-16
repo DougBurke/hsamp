@@ -67,7 +67,7 @@ import qualified Data.Traversable as T
 import qualified Control.Arrow as CA
 import Control.Monad (liftM, forM, ap)
 
-import Control.Monad.Error (throwError)
+import Control.Monad.Error (throwError, runErrorT)
 import Control.Monad.Trans (liftIO)
 
 import qualified Control.Exception as CE
@@ -160,9 +160,9 @@ readLockFileE uri = do
     r <- liftIO $ CE.try $ S.readFile fname
     case r of
         Right txt -> return txt
-        Left e -> if isDoesNotExistError e
-                    then throwError $ "The SAMP Hub lock file does not exist: " ++ fname
-                    else throwError $ show e
+        Left e -> throwError $ if isDoesNotExistError e
+                               then "Is a SAMP hub running? Unable to read: " ++ fname
+                               else show e
 
 -- download the lock file
 getLockFileE :: URI -> Err IO String
@@ -249,23 +249,41 @@ This routine includes logging to the @SAMP.StandardProfile.Client@
 logger (at present only debug-level information).
 -} 
 
--- TODO: catch 
--- connect: does not exist (Connection refused)
--- error and convert to something a bit more readable?
-
 makeCallE :: 
   String              -- ^ url of the hub
   -> RString          -- ^ message name
   -> [SAMPValue]      -- ^ message arguments
   -> Err IO SAMPValue -- ^ response
 makeCallE url msg args = do
-         let rmsg = fromRString msg
-         dbg $ "Calling message " ++ rmsg ++ " at " ++ url
-         dbg $ "  with args " ++ show args
-         rsp <- call url rmsg (map toValue args)
-         dbg $ "Response to " ++ rmsg
-         dbg (show rsp)
-         fromValue rsp
+  let rmsg = fromRString msg
+      
+      -- try and produce a somewhat useful error message for when
+      -- the hub can't be contacted.
+      --
+      hdlr :: CE.IOException -> Err IO a
+      hdlr e =
+        let s = show e
+        in throwError $ if s == "connect: does not exist (Connection refused)"
+                        then "Is a SAMP hub running? Unable to connect to " ++ url
+                        else s
+
+  dbg $ "Calling message " ++ rmsg ++ " at " ++ url
+  dbg $ "  with args " ++ show args
+  rsp <- call url rmsg (map toValue args) `catchErrT` hdlr
+  dbg $ "Response to " ++ rmsg
+  dbg (show rsp)
+  fromValue rsp
+
+-- | This is the catchErrorT routine from https://www.fpcomplete.com/user/snoyberg/general-haskell/exceptions/exceptions-and-monad-transformers
+--   specialized to the Err IO monad (which is ErrorT String IO).
+catchErrT ::
+  (CE.Exception e)
+  => Err IO a
+  -> (e -> Err IO a)
+  -> Err IO a
+catchErrT a onE = do
+  eresult <- liftIO $ runErrorT a `CE.catch` (runErrorT . onE)
+  either throwError return eresult
 
 -- | Like 'makeCallE' but ignores the return value.
 makeCallE_ :: 
