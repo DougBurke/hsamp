@@ -248,6 +248,11 @@ use more appropriate routines where available.
 This routine includes logging to the @SAMP.StandardProfile.Client@
 logger (at present only debug-level information).
 -} 
+
+-- TODO: catch 
+-- connect: does not exist (Connection refused)
+-- error and convert to something a bit more readable?
+
 makeCallE :: 
   String              -- ^ url of the hub
   -> RString          -- ^ message name
@@ -295,13 +300,13 @@ callHubE_ ::
 callHubE_ conn msg args = void $ callHubE conn msg args
 
 -- | Register a client with a hub. See 'registerClientE' for a simple
--- way to register the client and process the return vaues.
+--   way to register the client and process the return vaues.
 registerE :: SAMPInfo     -- ^ hub information
           -> Err IO [SAMPKeyValue] -- ^ Key/value pairs from the registration call.
 registerE (sKey,url,_) =
-    makeCallE url "samp.hub.register" [SAMPString sKey]
-    >>= fromSValue
-
+  makeCallE url "samp.hub.register" [SAMPString sKey]
+  >>= fromSValue
+    
 sPrivateKey , sHubId , sSelfId :: RString
 sPrivateKey = "samp.private-key"
 sHubId      = "samp.hub-id"

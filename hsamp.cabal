@@ -126,6 +126,7 @@ executable hsamp-errorclient
   if flag(examples)
     build-depends:
       base,
+      hslogger,
       mtl,
       hsamp
 

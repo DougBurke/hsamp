@@ -11,22 +11,37 @@ Portability :  requires haxr
 
 module Main where
 
-import System.Environment (getArgs, getProgName)
-import System.Exit (exitFailure)
-import System.IO
-
 import qualified Control.Exception as CE
-import Control.Monad (forM_)
+
+import Control.Monad (forM_, when)
 import Control.Monad.Trans (liftIO)
 
 import Network.SAMP.Standard 
 
+import System.Environment (getArgs, getProgName)
+import System.Exit (exitFailure)
+import System.IO
+import System.Log.Logger
+
 usage :: IO ()
-usage = getProgName >>= \n -> hPutStrLn stderr ("Usage: " ++ n ++ " mtype1 .. mtypeN")
+usage = do
+  name <- getProgName
+  hPutStrLn stderr ("Usage: " ++ name ++ " [--debug] mtype1 .. mtypeN")
+
+-- | Strip out the --debug flag if it exists. There is no validation of
+--   the arguments.
+procArgs :: 
+  [String]  -- ^ command-line arguments
+  -> (Bool, [String]) -- ^ flag is @True@ if --debug is given
+procArgs = foldr go (False, [])
+  where
+    go x (f, xs) | x == "--debug" = (True, xs)
+                 | otherwise      = (f, x:xs)
 
 main :: IO ()
 main = do
-    args <- getArgs
+    (debug, args) <- procArgs `fmap` getArgs
+    when debug $ updateGlobalLogger "SAMP" (setLevel DEBUG)
     if null args 
       then usage >> exitFailure
       else do
