@@ -55,13 +55,14 @@ library
    haxr,
    hslogger,
    http-conduit,
+   http-types,
    mtl,
    network,
    random,
-   snap-core,
-   snap-server,
+   scotty >= 0.6,
    split,
-   strict
+   strict,
+   wai-extra
 
  ghc-options:
    -Wall
@@ -71,7 +72,7 @@ library
     Network.SAMP.Standard
     Network.SAMP.Standard.Client
     Network.SAMP.Standard.Server
-    Network.SAMP.Standard.Server.Snap
+    Network.SAMP.Standard.Server.Scotty
     Network.SAMP.Standard.Types
 
 -- Requires an old version of happstack-server and it is unclear whether

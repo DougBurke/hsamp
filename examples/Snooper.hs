@@ -55,7 +55,7 @@ import qualified Data.Map as M
 import System.Log.Logger
 
 import Network.SAMP.Standard
-import Network.SAMP.Standard.Server.Snap
+import Network.SAMP.Standard.Server.Scotty
 
 import qualified Network as N
 import Network.Socket (Socket)

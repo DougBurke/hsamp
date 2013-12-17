@@ -46,7 +46,7 @@ import Control.Monad (forM_, unless, when)
 import Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
 
 import Network.SAMP.Standard
-import Network.SAMP.Standard.Server.Snap
+import Network.SAMP.Standard.Server.Scotty
 import Network.Socket (Socket)
 
 import System.Environment (getArgs, getProgName)
