@@ -40,30 +40,49 @@ module Main where
 
 import System.Environment (getArgs, getProgName)
 import System.Exit (exitSuccess, exitFailure)
-import System.IO
-import System.IO.Error
+import System.IO (hPutStrLn, stderr)
+import System.IO.Error (isUserError, ioeGetErrorString)
 
 import qualified Control.Exception as CE
 import Control.Concurrent (ThreadId, killThread, myThreadId)
-import Control.Concurrent.MVar
+import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
 
-import Control.Monad (when)
+-- import Control.Monad (when)
 
 import Data.Maybe (fromJust)
-import qualified Data.Map as M
+import qualified Data.Map.Strict as M
 
-import System.Log.Logger
+import System.Log.Logger (Priority(DEBUG), setLevel, updateGlobalLogger)
 
-import Network.SAMP.Standard
-import Network.SAMP.Standard.Server.Scotty
+import Network.SAMP.Standard (RString, SAMPKeyValue, SAMPValue(..)
+                             , MType, SAMPResponse, SAMPResponseFunc
+                             , SAMPCallFunc, SAMPConnection
+                             , SAMPNotificationFunc
+                             , withSAMP
+                             , unregisterE
+                             , isSAMPSuccess
+                             , setXmlrpcCallbackE
+                             , getSAMPResponseErrorTxt
+                             , declareSubscriptionsSimpleE
+                             , runE, getClientNamesE
+                             , toSAMPResponse, toSAMPResponseWarning
+                             , fromRString, toRString, toRStringE
+                             , simpleClientServer)
+import Network.SAMP.Standard.Server.Scotty (runServer)
 
 import qualified Network as N
 import Network.Socket (Socket)
 
-import Utils
+import Utils (PrintChannel, createClient, displayKV
+              , getAddress, getKeyStr, getSocket
+              , startPrintChannel, syncPrint)
 
 usage :: IO ()
-usage = getProgName >>= \n -> hPutStrLn stderr $ "Usage: " ++ n ++ " [1]\n\nSupplying a 1 means to display debugging messages.\n\n"
+usage = do
+    n <- getProgName
+    let estr = "Usage: " ++ n ++ " [1]\n\nSupplying a 1 means to " ++
+               "display debugging messages.\n\n"
+    hPutStrLn stderr estr
 
 main :: IO ()
 main = do
@@ -73,25 +92,42 @@ main = do
         [] -> return ()
         _ -> usage >> exitFailure
 
-    withSAMP $ do
+    withSAMP setupSnoop
+
+setupSnoop :: IO ()
+setupSnoop = do
     sock <- getSocket
 
     -- is this excessive?
     let closeSock = N.sClose sock
+
+        hdlr :: String -> IO ()
+        hdlr emsg = closeSock
+                    >> hPutStrLn stderr ("ERROR: " ++ emsg)
+                    >> exitFailure
          
         ioHdlr :: CE.IOException -> IO ()
-        ioHdlr e = let emsg = if isUserError e then ioeGetErrorString e else show e
-                   in closeSock >> putStrLn ("ERROR: " ++ emsg) >> exitFailure
+        ioHdlr e = let emsg = if isUserError e
+                              then ioeGetErrorString e
+                              else show e
+                   in hdlr emsg
 
         -- this assumes the only way to get a ThreadKilled is via a shutdown message
         asyncHdlr :: CE.AsyncException -> IO ()
-        asyncHdlr e = let emsg = if e == CE.ThreadKilled then "SAMP Hub has shut down." else show e
-                      in closeSock >> putStrLn ("ERROR: " ++ emsg) >> exitFailure
+        asyncHdlr e = let emsg = if e == CE.ThreadKilled
+                                 then "SAMP Hub has shut down."
+                                 else show e
+                      in hdlr emsg
 
         otherHdlr :: CE.SomeException -> IO ()
-        otherHdlr e = closeSock >> putStrLn ("ERROR: " ++ show e) >> exitFailure
+        otherHdlr e = hdlr (show e)
 
-    snoop sock `CE.catches` [CE.Handler ioHdlr, CE.Handler asyncHdlr, CE.Handler otherHdlr]
+        handlers = [ CE.Handler ioHdlr
+                   , CE.Handler asyncHdlr
+                   , CE.Handler otherHdlr ]
+
+    snoop sock `CE.catches` handlers
+    putStrLn "Closing the socket..."
     closeSock
     exitSuccess
 
@@ -110,14 +146,21 @@ won't receive messages, but I am willing to live with this for now.
 snoop :: Socket -> IO ()
 snoop sock = do
     -- create the client
-    conn <- runE $ createClient "hsamp-snooper"
-                      "Report on messages sent by the hub."
+    conn <- runE (createClient "hsamp-snooper"
+                      "Report on messages sent by the hub.")
 
     -- the assumption is that we only need to unregister if we get
-    -- a user interrupt but not for other errors.
+    -- a user interrupt but not for other errors; this doesn't seem
+    -- that sensible an assumption, so remove for now
+    {-
     let cleanUp :: CE.AsyncException -> IO ()
-        cleanUp e = when (e == CE.UserInterrupt) (runE (unregisterE conn)) >> CE.throwIO e
-    
+        cleanUp e = when (e == CE.UserInterrupt) (runE (unregisterE conn))
+                    >> CE.throwIO e
+    -}
+    let cleanUp :: CE.SomeException -> IO ()
+        cleanUp e = runE (unregisterE conn)
+                    >> CE.throwIO e
+
     runSnooper sock conn `CE.catch` cleanUp
 
 -- Set up the subscriptions and run the server to process the requests.
@@ -126,18 +169,23 @@ runSnooper :: Socket -> SAMPConnection -> IO ()
 runSnooper sock conn = do
     -- what is the address of the server?
     url <- getAddress sock
-    urlR <- runE $ toRStringE url
-    putStrLn $ "Snooping using " ++ url ++ "\n"
+    urlR <- runE (toRStringE url)
+    putStrLn ("Snooping using " ++ url ++ "\n")
 
     -- register the messages that we are interested in
-    runE $ setXmlrpcCallbackE conn urlR >>
-           declareSubscriptionsSimpleE conn ["*"]
+    runE (setXmlrpcCallbackE conn urlR >>
+          declareSubscriptionsSimpleE conn ["*"])
 
-    -- now run the server
+    putStrLn "Registered messages..."
+
+    -- now run the server; note that newClientMap queries the
+    -- hub for the metadata of each client
     tid <- myThreadId
     (pchan, _) <- startPrintChannel
     clvar <- newClientMap conn
-    runServer sock url $ processCall conn tid pchan clvar
+
+    putStrLn "Running the server..."
+    runServer sock url (processCall conn tid pchan clvar)
 
 {-
 
@@ -163,7 +211,7 @@ newClientMap :: SAMPConnection -> IO ClientMapVar
 newClientMap conn = do
     clients <- runE (getClientNamesE conn)
     let conv (k,v) = (k, toClientName k v)
-    newMVar $ M.fromList $ map conv clients
+    newMVar (M.fromList (map conv clients))
 
 getFromMap :: ClientMap -> RString -> String
 getFromMap clmap clid = M.findWithDefault (fromRString clid) clid clmap
@@ -173,7 +221,7 @@ getFromMap clmap clid = M.findWithDefault (fromRString clid) clid clmap
 getDisplayName :: ClientMapVar -> RString -> IO String
 getDisplayName clvar clid = do
     clmap <- readMVar clvar
-    return $ getFromMap clmap clid
+    return (getFromMap clmap clid)
 
 -- Remove the client from the map, returning its display name
 
@@ -192,9 +240,18 @@ addClient clvar clid clname = do
     modifyMVar clvar $ \clmap ->
         return (M.insert clid name clmap, name)
 
-processCall :: SAMPConnection -> ThreadId -> PrintChannel -> ClientMapVar -> String -> IO ()
+processCall ::
+    SAMPConnection
+    -> ThreadId
+    -> PrintChannel
+    -> ClientMapVar
+    -> String
+    -> IO ()
 processCall conn tid pchan clvar = 
-    simpleClientServer conn (notifications tid pchan clvar) (calls pchan clvar) (rfunc pchan clvar)
+    simpleClientServer conn
+       (notifications tid pchan clvar)
+       (calls pchan clvar)
+       (rfunc pchan clvar)
 
 {-
 
@@ -289,7 +346,7 @@ handleMetadata pchan clvar _ _ name keys =
         let doIt mdata k2 = 
               case mdata of
                   SAMPMap mds -> do
-                                   nclname <- addClient clvar clid $ getKeyStr mds sName
+                                   nclname <- addClient clvar clid (getKeyStr mds sName)
                                    let clname = oclname ++ if oclname == nclname then "" else " -> " ++ nclname
                                    syncPrint pchan $ displayWithKeys
                                        ["Metadata notification from " ++ fromRString name ++ " for " ++ clname]
@@ -346,7 +403,7 @@ handlePingCall pchan clvar _ secret name msgid keys = do
     clname <- getDisplayName clvar name
     syncPrint pchan $ displayWithKeys
       ["hsamp-snooper was pinged by " ++ clname, displayMsgId msgid, displaySecret secret] keys []
-    return $ toSAMPResponse []
+    return (toSAMPResponse [])
 
 -- Return a warning to point out that we are just logging this message
 -- (basically copying the behavior of Mark's snooper here).
@@ -357,7 +414,7 @@ handleOtherCall pchan clvar mtype secret name msgid keys = do
     syncPrint pchan $ displayWithKeys
       ["Call of " ++ show mtype ++ " by " ++ clname, displayMsgId msgid, displaySecret secret] keys []
     let emsg = fromJust $ toRString $ "The message " ++ show mtype ++ " has only been logged, not acted on."
-    return $ toSAMPResponseWarning [] emsg []
+    return (toSAMPResponseWarning [] emsg [])
 
 -- TODO: handle warning case, although when is this ever called?
 

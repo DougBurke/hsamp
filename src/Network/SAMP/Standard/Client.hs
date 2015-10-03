@@ -3,7 +3,7 @@
 
 {-|
 Module      :  Network.SAMP.Standard.Client
-Copyright   :  (c) Douglas Burke 2011, 2013
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -65,9 +65,9 @@ import Data.Maybe (fromJust, fromMaybe, catMaybes)
 import qualified Data.Traversable as T
 
 import qualified Control.Arrow as CA
-import Control.Monad (liftM, forM, ap)
+import Control.Monad (ap, forM, liftM, forM, void)
 
-import Control.Monad.Error (throwError, runErrorT)
+import Control.Monad.Except (throwError, runExceptT)
 import Control.Monad.Trans (liftIO)
 
 import qualified Control.Exception as CE
@@ -76,13 +76,6 @@ import System.Environment (getEnv)
 import System.IO.Error (isDoesNotExistError, isDoesNotExistErrorType, ioeGetErrorType)
 
 import Network.SAMP.Standard.Types
-
-#if MIN_VERSION_base(4,3,0)
-import Control.Monad (void)
-#else
-void :: Functor f => f a -> f ()
-void = fmap (const ())
-#endif
 
 -- the name of the SAMP client logging instance
 cLogger :: String
@@ -187,7 +180,7 @@ splitLines cs =
            _           -> []
 
 isLineTerminator :: Char -> Bool
-isLineTerminator c = c `elem` "\r\n"
+isLineTerminator c = c `elem` ("\r\n"::String)
 
 -- Remove un-needed lines from the SAMP lock file
 -- and return a list of interesting lines
@@ -282,7 +275,7 @@ catchErrT ::
   -> (e -> Err IO a)
   -> Err IO a
 catchErrT a onE = do
-  eresult <- liftIO $ runErrorT a `CE.catch` (runErrorT . onE)
+  eresult <- liftIO $ runExceptT a `CE.catch` (runExceptT . onE)
   either throwError return eresult
 
 -- | Like 'makeCallE' but ignores the return value.
@@ -456,17 +449,19 @@ declareSubscriptionsSimpleE cl mtypes =
 
 -- | Get the message subscriptions of a client. The subscriptions are
 -- returned as a list of (key,value) pairs.
-getSubscriptionsE :: SAMPConnection
-                  -> RString -- ^ the name of the client to query
-                  -> Err IO [SAMPKeyValue] -- ^ the (key,value) subscriptions of the queried client
+getSubscriptionsE ::
+    SAMPConnection
+    -> RString -- ^ the name of the client to query
+    -> Err IO [SAMPKeyValue] -- ^ the (key,value) subscriptions of the queried client
 getSubscriptionsE cl clid = 
     callHubE cl "samp.hub.getSubscriptions" [SAMPString clid]
     >>= fromSValue
 
 -- | Return a list of all the registered clients of the hub - including
 -- itself - but excluding this client.
-getRegisteredClientsE :: SAMPConnection
-                      -> Err IO [RString] -- ^ the names of the registered clients
+getRegisteredClientsE ::
+    SAMPConnection
+    -> Err IO [RString] -- ^ the names of the registered clients
 getRegisteredClientsE cl =
     callHubE cl "samp.hub.getRegisteredClients" []
     >>= fromSValue
@@ -558,7 +553,7 @@ getClientNamesE ::
   -> Err IO [(RString, Maybe RString)] -- ^ key is the client id and the value is the @samp.name@ value (if set)
 getClientNamesE conn = do
     clients <- getRegisteredClientsE conn
-    forM clients $ \clid -> fmap ((,) clid) $ getClientNameE conn clid
+    forM clients $ \clid -> (,) clid <$> getClientNameE conn clid
 
 {-|
 Get the name (@samp.name@) of the client, if set.
@@ -569,5 +564,5 @@ getClientNameE ::
   -> Err IO (Maybe RString) -- ^ the @samp.name@ value for the client, if set
 getClientNameE conn clid = do
   md <- getMetadataE conn clid
-  T.sequence $ fmap fromSValue $ lookup sName md
+  T.sequence (fromSValue <$> lookup sName md)
 

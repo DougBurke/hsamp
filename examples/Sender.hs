@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2011, 2013
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -279,7 +279,7 @@ sendASync mt conn msg = do
   sTime <- getCurrentTime
   putMVar mt sTime
   msgId <- getMsgId
-  fmap (map fst) $ runE (callAllE conn msgId msg >>= mapM kvToRSE)
+  map fst <$> runE (callAllE conn msgId msg >>= mapM kvToRSE)
 
 waitForCalls :: PrintChannel -> Channel -> MVar [RString] -> IO ()
 waitForCalls pchan chan cv = do

@@ -1,5 +1,5 @@
 name:         hsamp
-version:      0.1
+version:      0.2
 stability:    experimental
 synopsis:     Send and receive messages using the Simple Application Message Protocol (SAMP).
 category:     Astronomy
@@ -31,7 +31,7 @@ maintainer:   dburke.gw@gmail.com
 homepage:       https://bitbucket.org/doug_burke/hsamp/
 bug-reports:    https://bitbucket.org/doug_burke/hsamp/issues
 
-tested-with:    GHC==7.6.3
+tested-with:    GHC==7.10.2
 build-type:     Simple
 cabal-version:  >= 1.8
 
@@ -47,19 +47,26 @@ flag  examples
   description: Build the example programs
   default: True
 
--- Just trying to get to build on ghc 7.6.3, so no constraints
+-- Just trying to get to build on ghc 7.10.2, so no constraints.
+-- I am not looking to support older versions of ghc at this
+-- time, since I am not able to test on those (and with the recent
+-- changes to the base library involving AMP/BBP it is awkward
+-- to write code that covers a large range of ghc versions when you
+-- are not testing on them all).
+--
 library
  build-depends:
-   base,
+   base >= 4.3.0,
    bytestring,
-   haxr,
+   haxr >= 3000.10.0,
    hslogger,
    http-conduit,
    http-types,
-   mtl,
-   network,
+   mtl >= 2.2.1,
+   network >= 2.6,
+   network-uri >= 2.6,
    random,
-   scotty >= 0.6,
+   scotty >= 0.7,
    split,
    strict,
    wai-extra

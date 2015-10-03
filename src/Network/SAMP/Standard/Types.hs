@@ -1,12 +1,11 @@
-{-# LANGUAGE CPP #-}
+{-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
-{-# LANGUAGE OverlappingInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 
 {-|
 Module      :  Network.SAMP.Standard.Types
-Copyright   :  (c) Douglas Burke 2011, 2013
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -68,7 +67,7 @@ module Network.SAMP.Standard.Types (
 
        ) where
 
-import Control.Monad.Error (MonadError, throwError)
+import Control.Monad.Except (MonadError, throwError)
 import Control.Monad (liftM, ap)
 
 import System.Random
@@ -513,7 +512,13 @@ stringToKeyValE :: (Monad m, Functor m) -- added Functor instance as inferred by
                 => String -- ^ the key name
                 -> String -- ^ the value
                 -> Err m SAMPKeyValue
-stringToKeyValE k v = (,) `liftM` toRStringE k `ap` fmap toSValue (toRStringE v)
+stringToKeyValE k v = do
+    km <- toRStringE k
+    vm <- toRStringE v
+    return (km, toSValue vm)
+
+-- stringToKeyValE k v = (,) `liftM` toRStringE k `ap` fmap toSValue (toRStringE v)
+
 
 {-
 TODO
@@ -594,10 +599,8 @@ instance XmlRpcType SAMPValue where
     fromValue (ValueArray xs) = liftM SAMPList $ mapM fromValue xs
     fromValue (ValueStruct xs) = liftM SAMPMap $ mapM toSAMPKeyValue xs
     
-#if MIN_VERSION_haxr(3000,10,0)    
     -- convert as strings
     fromValue (ValueUnwrapped s) = liftM SAMPString $ toRStringE s
-#endif
     
     fromValue x = fail $ "Unable to convert to SAMP Value from " ++ show x
 
@@ -625,7 +628,7 @@ class SAMPType a where
     -- | convert from a SAMP type
     fromSValue :: (Monad m) => SAMPValue -> Err m a
 
-instance SAMPType RString where
+instance {-# OVERLAPPING #-} SAMPType RString where
     toSValue = SAMPString
     fromSValue (SAMPString s) = return s
     fromSValue x = throwError $ "Expected a string, sent " ++ show x
@@ -649,12 +652,12 @@ instance SAMPType Integer where
     fromSValue (SAMPString s) = maybeToM ("Unable to convert " ++ show s ++ " to an Integer.") (asIntegral s)
     fromSValue x = throwError $ "Expected a string but sent " ++ show x
 
-instance SAMPType [SAMPKeyValue] where
+instance {-# OVERLAPPING #-} SAMPType [SAMPKeyValue] where
     toSValue = SAMPMap
     fromSValue (SAMPMap xs) = return xs
     fromSValue x = throwError $ "Expected a SAMP map, sent " ++ show x
 
-instance (SAMPType a) => SAMPType [a] where
+instance {-# OVERLAPPABLE #-} (SAMPType a) => SAMPType [a] where
     toSValue = SAMPList . map toSValue
     fromSValue (SAMPList xs) = mapM fromSValue xs
     fromSValue x = throwError $ "Expected a SAMP list, sent " ++ show x
@@ -888,7 +891,7 @@ sparams = toRS "samp.params"
 -- | Get a value from the contents of a SAMP Map (given as a list
 -- of key,value pairs).
 getKey :: (Monad m, SAMPType a) => 
-	  RString          -- ^ Field name
+       RString             -- ^ Field name
        -> [SAMPKeyValue]   -- ^ SAMP Map contents
        -> Err m a
 getKey k xs = maybeToM ("Key " ++ show k ++ " not found")

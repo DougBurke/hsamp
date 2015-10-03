@@ -2,7 +2,7 @@
 
 {-|
 Module      :  Network.SAMP.Standard.Server.Scotty
-Copyright   :  (c) Douglas Burke 2011, 2013
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -27,7 +27,7 @@ import Control.Monad.Trans (liftIO)
 
 import Network.HTTP.Types (status400)
 import Network.Socket (Socket, socketPort)
-import Network.Wai.Middleware.RequestLogger
+import Network.Wai.Middleware.RequestLogger (logStdoutDev)
 
 import System.Log.Logger
 
@@ -52,14 +52,15 @@ runServer ::
   -> String -- ^ the URL of the server (currently unused)
   -> (String -> IO ()) -- ^ this is important, and really needs documentation
   -> IO ()
-runServer socket url processCall = do
+runServer socket _ processCall = do
   portNum <- socketPort socket
   scotty (fromEnum portNum) $ do
     middleware logStdoutDev
 
     post "/xmlrpc/" $ do
-      cType <- reqHeader "content-type"
-      dbg $ "Content-Type: " ++ show cType
+      dbg "Processing a post call..."
+      cType <- header "content-type"
+      dbg ("  Content-Type: " ++ show cType)
       if cType == Just "text/xml"
         then handleXmlRpc processCall
         else invalidCT
@@ -75,7 +76,7 @@ this may be a bit OTT.
 invalidCT :: ActionM ()
 invalidCT = do
   status status400
-  text $ "400 Bad Request (missing or invalid Content-Type header)"
+  text "400 Bad Request (missing or invalid Content-Type header)"
 
 {-
 Should we allow processCall to return some form of error?
@@ -94,6 +95,6 @@ handleXmlRpc processCall = do
   -- routine that I send in in Sender does the logging...
   --
   -- dbg $ "Body of XML-RPC call:\n" ++ ((L.unpack . L.take 120) b) ++ "\n..."
-  liftIO $ processCall $ L.unpack b
+  liftIO (processCall (L.unpack b))
   -- status status200 -- is this needed?
 

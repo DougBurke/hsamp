@@ -1,10 +1,9 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {-|
 Module      :  Network.SAMP.Standard.Server
-Copyright   :  (c) Douglas Burke 2011, 2013
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -75,12 +74,7 @@ import qualified Control.Exception as CE
 import Network.SAMP.Standard.Types
 import Network.SAMP.Standard.Client (callHubE, callHubE_, replyE)
 
-#if MIN_VERSION_base(4,3,0)
 import Control.Monad (void)
-#else
-void :: Functor f => f a -> f ()
-void = fmap (const ())
-#endif
 
 -- the name of the SAMP client logging instance
 sLogger :: String
@@ -125,16 +119,17 @@ instance SAMPFun (IO ()) where
 
 instance (SAMPType a, SAMPFun b) => SAMPFun (a -> b) where
     toSAMPFun f (SAMPMethodCall n (x:xs)) = do
-				  v <- fromSValue x
-				  toSAMPFun (f v) (SAMPMethodCall n xs)
+                                  v <- fromSValue x
+                                  toSAMPFun (f v) (SAMPMethodCall n xs)
     toSAMPFun _ _ = fail "Too few arguments"
 
 -- | Register a XML-RPC endpoint that the client uses to receive
 -- information from the hub. This must be set up before either
 -- 'callE' or 'callAllE' can be used.
-setXmlrpcCallbackE :: SAMPConnection
-                   -> RString -- ^ the URL of the end point
-                   -> Err IO ()
+setXmlrpcCallbackE ::
+    SAMPConnection
+    -> RString -- ^ the URL of the end point
+    -> Err IO ()
 setXmlrpcCallbackE conn url =
     callHubE_ conn "samp.hub.setXmlrpcCallback" [SAMPString url]
 
@@ -142,11 +137,12 @@ setXmlrpcCallbackE conn url =
 -- the message id given to this communication by the hub.
 -- The client must be callable for this to work (see 'setXmlrpcCallbackE'),
 -- although this module does not enforce this.
-callE :: SAMPConnection
-      -> RString -- ^ the name of the client to contact
-      -> RString -- ^ a unique identifier for the communication (the message tag)
-      -> SAMPMessage -- ^ the message
-      -> Err IO RString -- ^ the message identifier created by the hub for this communication
+callE ::
+    SAMPConnection
+    -> RString -- ^ the name of the client to contact
+    -> RString -- ^ a unique identifier for the communication (the message tag)
+    -> SAMPMessage -- ^ the message
+    -> Err IO RString -- ^ the message identifier created by the hub for this communication
 callE conn clid msgtag msg =
     callHubE conn "samp.hub.call"
         [SAMPString clid, SAMPString msgtag, toSValue msg]
@@ -157,10 +153,11 @@ callE conn clid msgtag msg =
 --
 -- The client must be callable for this to work (see 'setXmlrpcCallbackE'),
 -- although this module does not enforce this.
-callAllE :: SAMPConnection
-         -> RString -- ^ a unique identifier for the communication (the message tag)
-         -> SAMPMessage -- ^ the message
-         -> Err IO [SAMPKeyValue] -- ^ the key is the name of the client and the value is the message id for that communication
+callAllE ::
+    SAMPConnection
+    -> RString -- ^ a unique identifier for the communication (the message tag)
+    -> SAMPMessage -- ^ the message
+    -> Err IO [SAMPKeyValue] -- ^ the key is the name of the client and the value is the message id for that communication
 callAllE conn msgtag msg =
     callHubE conn "samp.hub.callAll" [SAMPString msgtag, toSValue msg]
     >>= fromSValue
@@ -203,7 +200,12 @@ type SAMPCallFunc = (MType, MType -> RString -> RString -> RString -> [SAMPKeyVa
 -- via the @samp.client.receiveResponse@ message).
 type SAMPResponseFunc = RString -> RString -> RString -> SAMPResponse -> IO ()
 
-receiveNotification :: [SAMPNotificationFunc] -> RString -> RString -> SAMPMessage -> IO ()
+receiveNotification ::
+    [SAMPNotificationFunc]
+    -> RString
+    -> RString
+    -> SAMPMessage
+    -> IO ()
 receiveNotification funcs secret senderid sm = do
     dbg "In receiveNotification"                    
     let mtype = getSAMPMessageType sm
@@ -268,16 +270,17 @@ clientMethods xs c@(SAMPMethodCall name _) = do
 callable SAMP client. This can be appended to to handle
 extra messages beyond the SAMP Standard Profile.
 -}
-clientMethodMap :: SAMPConnection -- ^ the connection to use when replying to a message
-                 -> [SAMPNotificationFunc] -- ^ routines for handling notifications (@samp.client.receiveNotification@)
-                 -> [SAMPCallFunc] -- ^ routines for handling calls (@samp.client.receiveCall@)
-                 -> SAMPResponseFunc -- ^ routinr for handling responses (@samp.client.receiveResponse@)
-                 -> SAMPMethodMap -- ^ input for the 'clientMethods' routine
+clientMethodMap ::
+    SAMPConnection -- ^ the connection to use when replying to a message
+    -> [SAMPNotificationFunc] -- ^ routines for handling notifications (@samp.client.receiveNotification@)
+    -> [SAMPCallFunc] -- ^ routines for handling calls (@samp.client.receiveCall@)
+    -> SAMPResponseFunc -- ^ routinr for handling responses (@samp.client.receiveResponse@)
+    -> SAMPMethodMap -- ^ input for the 'clientMethods' routine
 clientMethodMap ci ns cs r =
-           [((== "samp.client.receiveNotification"), fun (receiveNotification ns)),
-            ((== "samp.client.receiveCall"), fun (receiveCall cs ci)),
-            ((== "samp.client.receiveResponse"), fun (receiveResponse r))
-           ]
+    [((== "samp.client.receiveNotification"), fun (receiveNotification ns)),
+     ((== "samp.client.receiveCall"), fun (receiveCall cs ci)),
+     ((== "samp.client.receiveResponse"), fun (receiveResponse r))
+    ]
 
 -- run an action that returns nothing
 rE :: (Monad m) => Err m () -> m ()
@@ -290,19 +293,22 @@ to process the call.
 This routine includes logging to the @SAMP.StandardProfile.Server@
 logger (at present only debug-level information).
 -}
-handleSAMPCall :: (SAMPMethodCall -> SAMPServerResult) -- ^ method to call
-           -> String -- ^ XML-RPC input containing the SAMP details of the call
-           -> IO ()
+handleSAMPCall ::
+    (SAMPMethodCall -> SAMPServerResult) -- ^ method to call
+    -> String -- ^ XML-RPC input containing the SAMP details of the call
+    -> IO ()
 handleSAMPCall f str = do
     dbg $ "SAMP body of call is:\n" ++ str
     rE $ parseSAMPCall str >>= f
 
 -- | Handle the SAMP messages sent to a callable client. This processes a
 -- single call using the supplied handlers.
-simpleClientServer :: SAMPConnection -- ^ the connection information for the hub
-             -> [SAMPNotificationFunc] -- ^ routines for handling notifications (@samp.client.receiveNotification@)
-             -> [SAMPCallFunc] -- ^ routines for handling calls (@samp.client.receiveCall@)
-             -> SAMPResponseFunc -- ^ routinr for handling responses (@samp.client.receiveResponse@)
-             -> String -- ^ the Xml-RPC input containing the SAMP details of the call
-             -> IO ()
-simpleClientServer ci ns cs r = handleSAMPCall (clientMethods (clientMethodMap ci ns cs r))
+simpleClientServer ::
+    SAMPConnection -- ^ the connection information for the hub
+    -> [SAMPNotificationFunc] -- ^ routines for handling notifications (@samp.client.receiveNotification@)
+    -> [SAMPCallFunc] -- ^ routines for handling calls (@samp.client.receiveCall@)
+    -> SAMPResponseFunc -- ^ routinr for handling responses (@samp.client.receiveResponse@)
+    -> String -- ^ the Xml-RPC input containing the SAMP details of the call
+    -> IO ()
+simpleClientServer ci ns cs r =
+    handleSAMPCall (clientMethods (clientMethodMap ci ns cs r))
