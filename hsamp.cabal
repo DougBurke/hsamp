@@ -59,6 +59,7 @@ library
    base >= 4.3.0,
    bytestring,
    data-default-class,
+   fast-logger,
    haxr >= 3000.10.0,
    hslogger,
    http-conduit,
@@ -70,6 +71,7 @@ library
    scotty >= 0.7,
    split,
    strict,
+   wai,
    wai-extra
 
  ghc-options:

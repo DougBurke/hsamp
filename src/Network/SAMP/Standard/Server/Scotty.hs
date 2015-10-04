@@ -21,6 +21,7 @@ module Network.SAMP.Standard.Server.Scotty
         runServer
        ) where
 
+import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as L
 
 import Control.Monad.Trans (liftIO)
@@ -29,9 +30,13 @@ import Data.Default.Class (def)
 
 import Network.HTTP.Types (status400)
 import Network.Socket (Socket)
-import Network.Wai.Middleware.RequestLogger (logStdoutDev)
+import Network.Wai (Middleware)
+import Network.Wai.Middleware.RequestLogger (Destination(..), destination,
+                                             -- logStdoutDev,
+                                             mkRequestLogger)
 
 import System.Log.Logger
+import System.Log.FastLogger (fromLogStr)
 
 import Web.Scotty
 
@@ -54,9 +59,11 @@ runServer ::
   -> String -- ^ the URL of the server (currently unused)
   -> (String -> IO ()) -- ^ this is important, and really needs documentation
   -> IO ()
-runServer socket _ processCall = 
+runServer socket _ processCall = do
+  mware <- logRequests
   scottySocket def socket $ do
-    middleware logStdoutDev
+    -- middleware logStdoutDev
+    middleware mware
 
     post "/xmlrpc/" $ do
       dbg "Processing a post call..."
@@ -67,7 +74,20 @@ runServer socket _ processCall =
         else invalidCT
 
     -- assume we get a reasonable 404 page if nothing else matches
-      
+
+{-
+The output from Network.Wai.Middleware.RequestLogger.logStdoutDev 
+uses the fast-logger package, whereas I have been using hslogger.
+The following uses hslogger to handle the logging from
+the request logger.
+-}
+
+logRequests :: IO Middleware
+logRequests =
+  let opts = def { destination = Callback logIt }
+      logIt = debugM cLogger . B.unpack . fromLogStr
+  in mkRequestLogger opts
+
 {-
 XML-RPC is done via a HTML POST of an XML document.
 At present I enforce the content-type restriction but
