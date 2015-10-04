@@ -55,9 +55,11 @@ Creates the server, listening to the assigned socket/port.
 Should provide more access to the configuration settings.
 -}
 runServer ::
-  Socket -- ^ the socket for the server (only used to get the port number at present)
+  Socket -- ^ the socket for the server
   -> String -- ^ the URL of the server (currently unused)
-  -> (String -> IO ()) -- ^ this is important, and really needs documentation
+  -> (String -> IO ())
+  -- ^ The function is called with the body of the response, which is
+  --   expected to be in XML format.
   -> IO ()
 runServer socket _ processCall = do
   mware <- logRequests
@@ -111,11 +113,5 @@ handleXmlRpc ::
  -> ActionM ()
 handleXmlRpc processCall = do
   b <- body
-  -- it appears the contents get logged elsewhere, but is this possible or is
-  -- a different, but similar, call getting displayed? Maybe the processCall
-  -- routine that I send in in Sender does the logging...
-  --
-  -- dbg $ "Body of XML-RPC call:\n" ++ ((L.unpack . L.take 120) b) ++ "\n..."
   liftIO (processCall (L.unpack b))
-  -- status status200 -- is this needed?
 

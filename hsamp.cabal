@@ -40,14 +40,14 @@ source-repository head
   location: https://bitbucket.org/doug_burke/hsamp/
 
 flag  testclient
-  description: Build the test client (probably deprecated)
+  description: Build the test client (the examples are probably better)
   default: False
 
 flag  examples
   description: Build the example programs
   default: True
 
--- Just trying to get to build on ghc 7.10.2, so no constraints.
+-- Just trying to get to build on ghc 7.10.2, so limited constraints.
 -- I am not looking to support older versions of ghc at this
 -- time, since I am not able to test on those (and with the recent
 -- changes to the base library involving AMP/BBP it is awkward
@@ -85,8 +85,6 @@ library
     Network.SAMP.Standard.Server.Scotty
     Network.SAMP.Standard.Types
 
--- Requires an old version of happstack-server and it is unclear whether
--- it was still in use, so I have not tried to fix this up yet.
 executable testclient
   hs-source-dirs:  examples
   main-is:         TestClient.hs
@@ -99,12 +97,13 @@ executable testclient
     build-depends:
       base,
       bytestring,
-      happstack-server,
       hsamp,
       hslogger,
       mtl,
       network,
-      parallel-io
+      network-uri,
+      parallel-io,
+      scotty
 
   else
     buildable:  False
