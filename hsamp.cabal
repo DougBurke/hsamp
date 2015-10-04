@@ -58,6 +58,7 @@ library
  build-depends:
    base >= 4.3.0,
    bytestring,
+   data-default-class,
    haxr >= 3000.10.0,
    hslogger,
    http-conduit,

@@ -25,8 +25,10 @@ import qualified Data.ByteString.Lazy.Char8 as L
 
 import Control.Monad.Trans (liftIO)
 
+import Data.Default.Class (def)
+
 import Network.HTTP.Types (status400)
-import Network.Socket (Socket, socketPort)
+import Network.Socket (Socket)
 import Network.Wai.Middleware.RequestLogger (logStdoutDev)
 
 import System.Log.Logger
@@ -52,9 +54,8 @@ runServer ::
   -> String -- ^ the URL of the server (currently unused)
   -> (String -> IO ()) -- ^ this is important, and really needs documentation
   -> IO ()
-runServer socket _ processCall = do
-  portNum <- socketPort socket
-  scotty (fromEnum portNum) $ do
+runServer socket _ processCall = 
+  scottySocket def socket $ do
     middleware logStdoutDev
 
     post "/xmlrpc/" $ do

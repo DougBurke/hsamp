@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2011, 2013
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -279,13 +279,23 @@ calls pchan clvar =
     [("samp.app.ping", handlePingCall pchan clvar),
      ("*", handleOtherCall pchan clvar)]
 
-handleShutdown :: ThreadId -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
+handleShutdown ::
+    ThreadId
+    -> MType
+    -> RString
+    -> RString
+    -> [SAMPKeyValue]
+    -> IO ()
 handleShutdown tid _ _ _ _ = killThread tid
 
 -- Return the value of the key from the input list, along with the
 -- remaining key,value pairs.
 
-getKeyVal :: ([SAMPKeyValue] -> RString -> Maybe a) -> [SAMPKeyValue] -> RString -> Maybe (a, [SAMPKeyValue])
+getKeyVal ::
+    ([SAMPKeyValue] -> RString -> Maybe a)
+    -> [SAMPKeyValue]
+    -> RString
+    -> Maybe (a, [SAMPKeyValue])
 getKeyVal get kvs key = 
     let f a = (a, filter ((/= key) . fst) kvs)
     in fmap f (get kvs key)
