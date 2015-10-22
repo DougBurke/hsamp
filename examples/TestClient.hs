@@ -28,8 +28,9 @@ import System.Environment (getArgs, getProgName)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr)
 import System.IO.Error
+
+import Control.Arrow (first)
 import Control.Monad (forM_, unless)
--- import Control.Monad.Error (catchError)
 import Control.Monad.Trans (liftIO)
 import Control.Concurrent (ThreadId, killThread, threadDelay, forkIO, myThreadId)
 import Control.Concurrent.ParallelIO.Global
@@ -179,7 +180,7 @@ reportClients cl = do
     ns <- getRegisteredClientsE cl
     putLn (concat ["*** Found ", show (length ns), " clients"])
     forM_ (zip ([1..]::[Int]) ns) $ \(n,name) -> do
-          putLn (concat ["   ", show n, " : ", fromRString name])
+          putLn (concat ["   ", show n, " : ", show name])
           subs <- getSubscriptionsE cl name
           reportIt "Subscriptions" subs
           mds <- getMetadataE cl name
@@ -188,7 +189,8 @@ reportClients cl = do
 reportSubscriptions :: SAMPConnection -> MType -> Err IO ()
 reportSubscriptions cl msg = do
     msgs <- getSubscribedClientsE cl msg
-    reportIt ("Subscriptions to " ++ show msg) msgs
+    let msgs' = map (first fromClientName) msgs
+    reportIt ("Subscriptions to " ++ show msg) msgs'
 
 pingMsg :: (Monad m) => Err m SAMPMessage
 pingMsg = toSAMPMessage "samp.app.ping" []
@@ -210,7 +212,7 @@ pingItems cl = do
           callPing p = do
             pmsg <- pingMsg
             rsp <- callAndWaitE cl p pmsg (Just 10)
-            let pn = fromRString p
+            let pn = show p
                 etxt = show (fromJust (getSAMPResponseErrorTxt rsp))
             if isSAMPWarning rsp
               then return ("WARNING pinging " ++ pn ++ "\n" ++ etxt)
@@ -222,9 +224,10 @@ pingItemsAsync :: SAMPConnection -> Err IO ()
 pingItemsAsync cl = do
     putLn "Calling clients that respond to samp.app.ping (asynchronous)"
     msg <- pingMsg
-    msgid <- toRStringE "need-a-better-system"
-    rsp <- callAllE cl msgid msg
-    liftIO $ forM_ rsp $ \(n,mid) -> putStrLn ("  contacted " ++ fromRString n ++ " with id " ++ showSAMPValue mid)
+    msgTag <- toMessageTag <$> toRStringE "need-a-better-system"
+    rsp <- callAllE cl msgTag msg
+    liftIO $ forM_ rsp $ \(n,mid) -> putStrLn ("  contacted " ++ show n ++
+                                               " with id " ++ show mid)
 
 doClient :: SAMPConnection -> PortNumber -> Err IO ()
 doClient conn pNum = do
@@ -255,22 +258,35 @@ notifications tid = [("samp.hub.event.shutdown", handleShutdown tid)]
 calls :: [SAMPCallFunc]
 calls = [("samp.app.ping", handlePing)]
 
-handleShutdown :: ThreadId  -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
+handleShutdown ::
+    ThreadId
+    -> MType
+    -> ClientSecret
+    -> ClientName
+    -> [SAMPKeyValue]
+    -> IO ()
 handleShutdown tid _ _ name _ = do
-    putStrLn ("Received a shutdown message from " ++ fromRString name)
+    putStrLn ("Received a shutdown message from " ++ show name)
     killThread tid
 
-handlePing :: MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse
+handlePing ::
+    MType
+    -> ClientSecret
+    -> ClientName
+    -> MessageId
+    -> [SAMPKeyValue]
+    -> IO SAMPResponse
 handlePing _ _ senderid msgid _ = do
-    putStrLn ("Received a ping request from " ++ fromRString senderid ++ " msgid=" ++ fromRString msgid)
+    putStrLn ("Received a ping request from " ++ show senderid ++
+              " msgid=" ++ show msgid)
     return (toSAMPResponse [])
 
 rfunc :: SAMPResponseFunc
 -- rfunc secret receiverid msgid rsp =
 rfunc _ receiverid msgid rsp =
     if isSAMPSuccess rsp
-      then do
-             putStrLn ("Got a response to msg=" ++ fromRString msgid ++ " from=" ++ fromRString receiverid)
-             return ()
-      else putStrLn ("ERROR: " ++ show (fromJust (getSAMPResponseErrorTxt rsp)))
+      then putStrLn ("Got a response to msg-id=" ++ show msgid ++
+                     " from=" ++ show receiverid)
+      else putStrLn ("ERROR: " ++
+                     show (fromJust (getSAMPResponseErrorTxt rsp)))
 

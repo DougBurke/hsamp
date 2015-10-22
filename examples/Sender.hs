@@ -55,14 +55,23 @@ import System.IO
 import System.IO.Error
 import System.Log.Logger
 import System.Random
-
+import System.Timeout (timeout)
+    
 import Utils
 
-timeout :: Int
-timeout = 10
+-- convert seconds to milliseconds, error-ing out if the converted
+-- value would cause overflow.
+sToMS :: Int -> Int
+sToMS n =
+    let nMax = maxBound `div` scale
+        scale = 1000000
+    in if n <= nMax then scale * n else error "Timeout too long"
+       
+timeoutPeriod :: Int
+timeoutPeriod = sToMS 10
 
 sleep :: Int -> IO ()
-sleep = threadDelay . (1000000 *)                                                            
+sleep = threadDelay . sToMS
 
 usage :: IO ()
 usage = do
@@ -163,7 +172,10 @@ could skip this step).
 
 -}
 
-processMessage :: SAMPConnection -> (ConnMode, MType, [SAMPKeyValue]) -> IO ()
+processMessage ::
+    SAMPConnection
+    -> (ConnMode, MType, [SAMPKeyValue])
+    -> IO ()
 processMessage conn (cmode, mtype, params) = do
   targets <- runE (getSubscribedClientsE conn mtype)
   if null targets
@@ -172,11 +184,13 @@ processMessage conn (cmode, mtype, params) = do
       msg <- runE (toSAMPMessage mtype params)
       (pchan, _) <- startPrintChannel -- not needed for notification case but do anyway
       case cmode of
-        Sync   -> parallel_ (map (sendSync pchan conn msg . fst) targets) >> stopGlobalPool
+        Sync   -> parallel_ (map (sendSync pchan conn msg . fst) targets)
+                  >> stopGlobalPool
 
         Notify -> do
           putStrLn "Notifications sent to:" 
-          tgts <- runE (notifyAllE conn msg >>= mapM (\n -> fmap ((,) n) (getClientNameE conn n)))
+          tgts <- runE (notifyAllE conn msg
+                        >>= mapM (\n -> fmap ((,) n) (getClientNameE conn n)))
           forM_ tgts $ \t -> putStrLn ("    " ++ showTarget t)
 
         ASync  -> do
@@ -189,66 +203,68 @@ processMessage conn (cmode, mtype, params) = do
           
           clients <- sendASync tvar conn msg
 
-          bv <- newEmptyMVar
           cv <- newMVar clients
-          _ <- forkIO (waitForCalls pchan chan cv >> putMVar bv True)
-          _ <- forkIO (sleep timeout >> putMVar bv False)
-          flag <- takeMVar bv
-          dbg $ "clients (True) or timeout (False): " ++ show flag
-
+          flag <- timeout timeoutPeriod (waitForCalls pchan chan cv)
+          case flag of
+            Just _ -> putStrLn "Received all calls"
+            _ -> putStrLn "Timed out waiting for calls"
+            
           -- do we need to do this? should this be done within a resource
           -- "handler" (to make sure the socket is closed on error)?
           dbg "Closing socket"
           N.sClose sock
-          
-          unless flag $ do
+
+          unless (flag == Nothing) $ do
             rclients <- takeMVar cv 
-            -- even if flag is True there is the possibility that all
-            -- the clients responded (as we haven't explicitly halted the
-            -- waitForCalls thread here) 
-            --
-            -- since we got no response we won't bother asking for their samp.name
-            -- settings either
-            unless (null rclients) $ case rclients of
-                [cl] -> fail $ "The following client failed to respond: " ++ fromRString cl
-                _ -> fail $ "The following clients failed to respond: " ++
-                        unwords (map fromRString rclients)
+            case rclients of
+              [] -> return ()
+              [cl] -> fail ("The following client failed to respond: " ++
+                            show cl)
+              _ -> fail ("The following clients failed to respond: " ++
+                         unwords (map show rclients))
 
 type TimeVar = MVar UTCTime
-type Channel = Chan RString
+type Channel = Chan ClientName
 
+type Target = (ClientName, Maybe RString)
+    
 emptyTimeVar :: IO TimeVar
 emptyTimeVar = newEmptyMVar
 
 newChannel :: IO Channel
 newChannel = newChan
 
-printResponse :: PrintChannel -> NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> IO ()
+printResponse ::
+    PrintChannel -> NominalDiffTime -> Target -> SAMPResponse -> IO ()
 printResponse pchan delta target rsp
     | isSAMPErrorOnly rsp = syncPrint pchan $ showError delta target rsp
     | isSAMPWarning rsp   = syncPrint pchan $ showWarning delta target rsp
     | otherwise           = syncPrint pchan $ showSuccess delta target rsp
 
-showTarget :: (RString, Maybe RString) -> String
-showTarget (tid, Nothing) = fromRString tid
-showTarget (tid, Just tname) = fromRString tid ++ " (" ++ fromRString tname ++ ")"
+showTarget :: Target -> String
+showTarget (tid, Nothing) = show tid
+showTarget (tid, Just tname) = show tid ++ " (" ++ fromRString tname ++ ")"
 
-showHeader :: String -> NominalDiffTime -> (RString, Maybe RString) -> String
+showHeader ::
+    String -> NominalDiffTime -> Target -> String
 showHeader lbl delta target = 
     lbl ++ " response from " ++ showTarget target ++ " in " ++ show delta ++ " seconds"
 
-showSuccess :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> [String]
+showSuccess ::
+    NominalDiffTime -> Target -> SAMPResponse -> [String]
 showSuccess delta target rsp = 
     let Just svals = getSAMPResponseResult rsp  
     in showHeader "Successful" delta target : map displayKV svals
 
-showError :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> [String]
+showError ::
+    NominalDiffTime -> Target -> SAMPResponse -> [String]
 showError delta target rsp = 
     let Just (emsg, evals) = getSAMPResponseError rsp
     in [showHeader "Error" delta target, "    " ++ fromRString emsg]
        ++ map displayKV evals
 
-showWarning :: NominalDiffTime -> (RString, Maybe RString) -> SAMPResponse -> [String]
+showWarning ::
+    NominalDiffTime -> Target -> SAMPResponse -> [String]
 showWarning delta target rsp = 
     let Just svals = getSAMPResponseResult rsp
         Just (emsg, evals) = getSAMPResponseError rsp
@@ -256,40 +272,43 @@ showWarning delta target rsp =
        ++ if null svals then [] else "  Response" : map displayKV svals
        ++ if null evals then [] else "  Error" : map displayKV evals
 
-sendSync :: PrintChannel -> SAMPConnection -> SAMPMessage -> RString -> IO ()
+sendSync ::
+    PrintChannel -> SAMPConnection -> SAMPMessage -> ClientName -> IO ()
 sendSync pchan conn msg tid = do
     sTime <- getCurrentTime
-    rsp <- runE (callAndWaitE conn tid msg (Just timeout))
+    rsp <- runE (callAndWaitE conn tid msg (Just timeoutPeriod))
     eTime <- getCurrentTime
     tname <- handleError (return . const Nothing) $ getClientNameE conn tid
     printResponse pchan (diffUTCTime eTime sTime) (tid,tname) rsp
 
-getMsgId :: IO RString
-getMsgId = getStdRandom $ randomRString 10
-
-kvToRSE :: (Monad m) => SAMPKeyValue -> Err m (RString, RString)
-kvToRSE (k,SAMPString v) = return (k, v)
-kvToRSE (k,v) = fail $ "Key " ++ fromRString k ++ " should be a SAMP string but found " ++ show v
+getMsgTag :: IO MessageTag
+getMsgTag = toMessageTag <$> (getStdRandom $ randomAlphaNumRString 10)
 
 -- TODO: need to handle errors more sensibly than runE here!
 
-sendASync :: TimeVar -> SAMPConnection -> SAMPMessage -> IO [RString]
+sendASync ::
+    TimeVar
+    -> SAMPConnection
+    -> SAMPMessage
+    -> IO [ClientName]
 sendASync mt conn msg = do
   dbg $ "Sending asynchronous message: " ++ show msg
   sTime <- getCurrentTime
   putMVar mt sTime
-  msgId <- getMsgId
-  map fst <$> runE (callAllE conn msgId msg >>= mapM kvToRSE)
+  msgTag <- getMsgTag
+  map fst <$> runE (callAllE conn msgTag msg)
 
-waitForCalls :: PrintChannel -> Channel -> MVar [RString] -> IO ()
+waitForCalls :: PrintChannel -> Channel -> MVar [ClientName] -> IO ()
 waitForCalls pchan chan cv = do
    receiverid <- readChan chan
-   modifyMVar_ cv $ \clients -> 
+   modifyMVar_ cv $ \clients ->
+     -- TODO: I do not understand the logic of this  
      if receiverid `elem` clients
        then return $ filter (/= receiverid) clients
        else do
-          syncPrint pchan ["Ignoring unexpected response from " ++ fromRString receiverid]
-          return clients
+         syncPrint pchan ["Ignoring unexpected response from " ++
+                          show receiverid]
+         return clients
    ncl <- readMVar cv
    unless (null ncl) $ waitForCalls pchan chan cv
 
@@ -314,7 +333,8 @@ makeServer pchan mt chan conn sock = do
     -- now run the server
     forkIO $ runServer sock url $ processCall pchan mt chan conn tid
 
-processCall :: PrintChannel -> TimeVar -> Channel -> SAMPConnection -> ThreadId -> String -> IO ()
+processCall ::
+    PrintChannel -> TimeVar -> Channel -> SAMPConnection -> ThreadId -> String -> IO ()
 processCall pchan mt chan conn tid =
     simpleClientServer conn (notifications pchan tid) calls (rfunc conn pchan mt chan) 
 
@@ -330,18 +350,23 @@ notifications pchan _ =
 calls :: [SAMPCallFunc]
 calls = []
 
-handleOther :: PrintChannel -> MType -> RString -> RString -> [SAMPKeyValue] -> IO ()
+handleOther :: PrintChannel -> MType -> ClientSecret -> ClientName -> [SAMPKeyValue] -> IO ()
 handleOther pchan mtype _ name keys = syncPrint pchan $ 
-    ("Notification of " ++ show mtype ++ " from " ++ fromRString name) :
+    ("Notification of " ++ show mtype ++ " from " ++ show name) :
     map displayKV keys ++ [""]
 
 -- TODO: check that msgid is correct, which means it has to be sent in!
 
-rfunc :: SAMPConnection -> PrintChannel -> TimeVar -> Channel -> SAMPResponseFunc
-rfunc conn pchan mt chan _ tid _ rsp = do
+rfunc ::
+    SAMPConnection
+    -> PrintChannel
+    -> TimeVar
+    -> Channel
+    -> SAMPResponseFunc
+rfunc conn pchan mt chan _ clName _ rsp = do
    eTime <- getCurrentTime
    sTime <- readMVar mt
-   tname <- handleError (return . const Nothing) $ getClientNameE conn tid
-   printResponse pchan (diffUTCTime eTime sTime) (tid,tname) rsp
-   writeChan chan tid
+   tname <- handleError (return . const Nothing) $ getClientNameE conn clName
+   printResponse pchan (diffUTCTime eTime sTime) (clName,tname) rsp
+   writeChan chan clName
 

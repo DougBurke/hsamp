@@ -139,28 +139,30 @@ setXmlrpcCallbackE conn url =
 -- although this module does not enforce this.
 callE ::
     SAMPConnection
-    -> RString -- ^ the name of the client to contact
-    -> RString -- ^ a unique identifier for the communication (the message tag)
+    -> ClientName -- ^ the name of the client to contact
+    -> MessageTag -- ^ a unique identifier for the communication
     -> SAMPMessage -- ^ the message
-    -> Err IO RString -- ^ the message identifier created by the hub for this communication
+    -> Err IO MessageId -- ^ the message identifier created by the hub for this communication
 callE conn clid msgtag msg =
     callHubE conn "samp.hub.call"
-        [SAMPString clid, SAMPString msgtag, toSValue msg]
+        [toSValue clid, toSValue msgtag, toSValue msg]
     >>= fromSValue
 
 -- | Send a message asynchronously to all clients which are subscribed to the
 -- message type.
 --
--- The client must be callable for this to work (see 'setXmlrpcCallbackE'),
--- although this module does not enforce this.
 callAllE ::
     SAMPConnection
-    -> RString -- ^ a unique identifier for the communication (the message tag)
+    -> MessageTag -- ^ a unique identifier for the communication
     -> SAMPMessage -- ^ the message
-    -> Err IO [SAMPKeyValue] -- ^ the key is the name of the client and the value is the message id for that communication
-callAllE conn msgtag msg =
-    callHubE conn "samp.hub.callAll" [SAMPString msgtag, toSValue msg]
-    >>= fromSValue
+    -> Err IO [(ClientName, MessageId)]
+callAllE conn msgtag msg = do
+    let conv (k,v) = do
+          mid <- fromSValue v
+          return (toClientName k, mid)
+    rsp <- callHubE conn "samp.hub.callAll" [toSValue msgtag, toSValue msg]
+    kvals <- fromSValue rsp
+    mapM conv kvals
     
 {-
 From SAMP 1.2 document, callable clients must support
@@ -186,31 +188,36 @@ Section 3.9.
 
 -}
 
+-- TODO: add in MessageId types as appropriate here
+
 -- | A mapping from a 'MType' to the routine used to handle notification
 -- of the @samp.client.receiveNotification@ message.
-type SAMPNotificationFunc = (MType, MType -> RString -> RString -> [SAMPKeyValue] -> IO ())
+type SAMPNotificationFunc = (MType, MType -> ClientSecret -> ClientName -> [SAMPKeyValue] -> IO ())
 
 -- | A mapping from a 'MType' to the routine used to handle calls
 -- of the message @samp.client.receiveCall@. The response will be returned to the hub using the
 -- @samp.hub.reply@ message (using 'Network.SAMP.Standard.Client.replyE')
 -- when using 'simpleClientServer'.
-type SAMPCallFunc = (MType, MType -> RString -> RString -> RString -> [SAMPKeyValue] -> IO SAMPResponse)
+type SAMPCallFunc =
+    (MType,
+     MType -> ClientSecret -> ClientName -> MessageId -> [SAMPKeyValue] -> IO SAMPResponse)
 
 -- | The handler for SAMP response messages (those received by a callable client
 -- via the @samp.client.receiveResponse@ message).
-type SAMPResponseFunc = RString -> RString -> RString -> SAMPResponse -> IO ()
+type SAMPResponseFunc =
+    ClientSecret -> ClientName -> MessageTag -> SAMPResponse -> IO ()
 
 receiveNotification ::
     [SAMPNotificationFunc]
-    -> RString
-    -> RString
+    -> ClientSecret
+    -> ClientName
     -> SAMPMessage
     -> IO ()
 receiveNotification funcs secret senderid sm = do
     dbg "In receiveNotification"                    
     let mtype = getSAMPMessageType sm
         mparams = getSAMPMessageParams sm
-    dbg $ "Notification mtype=" ++ show mtype ++ " sender=" ++ fromRString senderid
+    dbg $ "Notification mtype=" ++ show mtype ++ " sender=" ++ show senderid
     case lookup mtype funcs of
       Just func -> func mtype secret senderid mparams
       _ -> do
@@ -218,12 +225,19 @@ receiveNotification funcs secret senderid sm = do
              dbg emsg
              fail emsg
 
-receiveCall :: [SAMPCallFunc] -> SAMPConnection -> RString -> RString -> RString -> SAMPMessage -> IO ()
+receiveCall ::
+    [SAMPCallFunc]
+    -> SAMPConnection
+    -> ClientSecret
+    -> ClientName
+    -> MessageId
+    -> SAMPMessage
+    -> IO ()
 receiveCall funcs ci secret senderid msgid sm = do
     dbg "In receiveCall"
     let mtype = getSAMPMessageType sm
         mparams = getSAMPMessageParams sm
-    dbg $ "Call mtype=" ++ show mtype ++ " sender=" ++ fromRString senderid
+    dbg $ "Call mtype=" ++ show mtype ++ " sender=" ++ show senderid
     case lookup mtype funcs of
       Just func -> do
                      rsp <- func mtype secret senderid msgid mparams
@@ -234,10 +248,17 @@ receiveCall funcs ci secret senderid msgid sm = do
              dbg emsg
              fail emsg
 
-receiveResponse :: SAMPResponseFunc -> RString -> RString -> RString -> SAMPResponse -> IO ()
-receiveResponse f secret receiverid msgid rsp = do
-    dbg $ "Received a response to message=" ++ fromRString msgid ++ " receiver=" ++ fromRString receiverid
-    f secret receiverid msgid rsp
+receiveResponse ::
+    SAMPResponseFunc
+    -> ClientSecret
+    -> ClientName
+    -> MessageTag
+    -> SAMPResponse
+    -> IO ()
+receiveResponse f secret receiverid msgTag rsp = do
+    dbg ("Received a response to tag=" ++ show msgTag ++
+         " receiver=" ++ show receiverid)
+    f secret receiverid msgTag rsp
 
 {-|
 A map from SAMP method name to Haskell routine used to process

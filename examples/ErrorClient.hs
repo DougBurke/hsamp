@@ -1,6 +1,6 @@
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2011, 2013
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -62,7 +62,8 @@ doSAMP mtypes = do
         hdlr e = CE.throwIO e
 
     -- Awkward error handling to make sure we unregister on an error. It is
-    -- not quite correct.
+    -- not quite correct (need to say why, as I can't remember what I meant
+    -- by this)
     handleError (\m -> runE (unregisterE conn) >> fail m)
                 (act conn mtypes) `CE.catch` hdlr
     runE $ unregisterE conn
@@ -75,10 +76,10 @@ report conn msg = do
     liftIO $ putStrLn $ "Clients subscribed to " ++ show msg
     clients <- getSubscribedClientsE conn msg
     forM_ clients $ \(cl,_) -> do
-        liftIO $ putStr $ "  " ++ fromRString cl
+        liftIO $ putStr $ "  " ++ show cl
         name <- getClientNameE conn cl
         case name of
-            Just n -> liftIO $ putStr $ " -> " ++ fromRString n
+            Just n -> liftIO $ putStr $ " -> " ++ show n
             _ -> return ()
         liftIO $ putStr "\n"
 

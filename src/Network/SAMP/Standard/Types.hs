@@ -1,3 +1,4 @@
+{-# LANGUAGE DeriveGeneric #-}
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
@@ -44,10 +45,18 @@ module Network.SAMP.Standard.Types (
 
        RString, emptyRString, toRString, toRStringE, fromRString,
        asIntegral, asFloating, asBool,
-       randomRString,
+       randomRString, randomAlphaNumRString,
 
        MType, toMType, toMTypeE, fromMType, isMTWildCard,
 
+       MessageTag, toMessageTag, fromMessageTag,
+
+       MessageId, toMessageId, fromMessageId,
+
+       ClientName, toClientName, fromClientName,
+
+       ClientSecret, toClientSecret, fromClientSecret,
+                
        SAMPResponse, 
        toSAMPResponse, toSAMPResponseError, toSAMPResponseWarning,
        getSAMPResponseResult, getSAMPResponseError, getSAMPResponseErrorTxt,
@@ -75,14 +84,20 @@ import System.Random
 import qualified Network.Socket as NS
 import Network.XmlRpc.Internals
 
-import Data.String
+import qualified Data.Aeson as J
+import qualified Data.ByteString.Lazy.Char8 as L
+import qualified Data.Text as T
+import qualified Data.HashMap.Strict as HM
+    
+import Data.Char (chr, intToDigit, isAlphaNum, isDigit, ord)
+import Data.Hashable (Hashable)
 import Data.List (intercalate, isPrefixOf)
 import Data.List.Split (splitOn, splitOneOf)
-import Data.Char (chr, ord, isDigit, intToDigit)
 import Data.Maybe (fromJust)
+import Data.String
 
-import qualified Data.ByteString.Lazy.Char8 as L
-
+import GHC.Generics (Generic)
+    
 {-|
 Several of the networking libraries used by the SAMP
 routines require initialization, which is provided by this
@@ -135,7 +150,7 @@ use the full range of chacters (i.e. they include the four
 control characters @0x09@, @0x0a@, @0x0d@ and @0x7f@).
 -}
 
-newtype RChar = RC Char deriving (Eq, Ord)
+newtype RChar = RC { _unRC :: Char } deriving (Eq, Ord)
 
 -- We want to display RChar/RStrings as if they were normal
 -- Char/String elements
@@ -275,16 +290,35 @@ Characters are chosen from the full list of SAMP characters
 (e.g. 'validRChars') /except/ for @0x09@, @0x0a@, @0x0d@
 and @0x7f@ (i.e. the control characters).
 -}
-randomRString :: (RandomGen a) 
+randomRString :: (RandomGen g) 
               => Int -- ^ the number of characters (if <= 0 then an empty string is returned)
-              -> a -- ^ the generator to use
-              -> (RString, a)
+              -> g -- ^ the generator to use
+              -> (RString, g)
 randomRString n gen | n <= 0     = ([], gen)
                     | otherwise = go n gen []
     where
       go 0 gen' ans = (ans, gen')
       go m gen' acc = let (nc,gen'') = randomR (RC (chr 0x20), RC (chr 0x7e)) gen'
                       in go (m-1) gen'' (nc:acc)
+
+-- | Similar to `randomRString`, but restrict the characters that
+--   are chosen to the alpha-numeric set (as reported by
+--   Data.Char.isAlphaNum).
+--
+randomAlphaNumRString :: (RandomGen g) 
+              => Int -- ^ the number of characters (if <= 0 then an empty string is returned)
+              -> g -- ^ the generator to use
+              -> (RString, g)
+randomAlphaNumRString n gen | n <= 0     = ([], gen)
+                    | otherwise = go n gen []
+    where
+      go 0 gen' ans = (ans, gen')
+      -- throw out invalid characters (since the alpha-num characters
+      -- aren't in a consecutive range)
+      go m gen' acc = let (nc,gen'') = randomR (RC (chr 0x20), RC (chr 0x7e)) gen'
+                      in if isAlphaNum (_unRC nc)
+                         then go (m-1) gen'' (nc:acc)
+                         else go m gen'' acc
 
 -- helper function
 rconv :: (Read a) => RString -> Maybe a
@@ -364,7 +398,7 @@ names that SAMP passes around.
 
 They follow the following BNF productions:
 
->   <mchar> ::= [0-9a-z] | "-" | "_"
+>   <mchar> ::= [0-9A-Za-z] | "-" | "_"
 >   <atom>  ::= <mchar> | <atom> <mchar>
 >   <mtype> ::= <atom> | <mtype> "." <atom>
 
@@ -383,11 +417,39 @@ TODO:
 
  - do we want a Read instance?
 
+ - do we need to add some way of indicating 'x-samp' values
+   and supporting approximate-equality in checks?
+
+ - perhaps there should be two versions: a type for the
+   message itself (so it has to be complete, no wildcards)
+   and one for the general case, which can include wildcards?
 -}
 
 data MType = MT
      String -- if a wildcard then drop the * but NOT the last . (unless "*")
      Bool -- is this a wildcard
+     deriving Generic
+
+instance Hashable MType
+    
+{-
+-- standalone deriving is used here to add the comment about the Ord
+-- instance
+
+-- | The Ord instance is so that MTypes can be used as keys in
+--   a map. There is currently no semantics behind this ordering
+--   (i.e. is "samp.hub.*" greater or less than "samp.hub").
+--
+--   This striked me as a dangerous thing to have given that the
+--   Eq instance handles wild cards; really need two different
+--   types and a container type
+--      MType "actual"
+--      MType "wildcard"
+--      MType (Either "actual" "wildcard")
+--   and give appropriate instances
+--
+deriving instance Ord MType
+-}
 
 instance Show MType where
     show (MT mt False) = mt
@@ -408,6 +470,9 @@ If one has a wild card then the comparison is defined
 by the wildcard, so that 'table.load.*' matches 'table.load.votable'.
 For two wildcards we match on the MType fragments,
 so that 'table.*' matches 'table.load.*'.
+
+This does *not* consider 'samp.foo' to be the same as
+'x-samp.foo'.
 -}
 matchMTypes :: MType -> MType -> Bool
 matchMTypes (MT l False) (MT r False) = l == r
@@ -415,6 +480,11 @@ matchMTypes (MT l True)  (MT r False) = l `isPrefixOf` r
 matchMTypes (MT l False) (MT r True)  = r `isPrefixOf` l
 matchMTypes (MT l True)  (MT r True)  = l `isPrefixOf` r || r `isPrefixOf` l
 
+-- | The equality check includes comparison for wild cards
+--   (so that 'samp.hub.register' and 'samp.*' are considered
+--   equal). This may prove to be an unwise choice (e.g. if
+--   used as an index in a data structure).
+--
 instance Eq MType where
     (==) = matchMTypes
 
@@ -433,8 +503,9 @@ instance XmlRpcType MType where
     getType _ = TString
 
 mtchars :: String
-mtchars = ['0' .. '9'] ++ ['a' .. 'z'] ++ "-_."
+mtchars = ['0' .. '9'] ++ ['A' .. 'Z'] ++ ['a' .. 'z'] ++ "-_."
 
+-- would likely be faster to do a numeric check
 isMTChar :: Char -> Bool
 isMTChar = (`elem` mtchars)
 
@@ -538,6 +609,15 @@ and (<|) could be for conversion back to strings?
 -- | Convert a 'SAMPKeyValue' into a pair of strings.
 -- This fails if the 'SAMPValue' stored in the pair is not
 -- a 'SAMPString'.
+--
+-- THIS SEEMS TO BE BEING USED INCORRECTLY, IN THAT I GET
+
+{-
+
+ERROR: Key samp.error should be a SAMP string but found SAMPMap [("samp.errortxt",SAMPString "Unsupported message: samp.hub.callAll")]
+
+-}
+
 stringFromKeyValE :: Monad m
                  => SAMPKeyValue
                  -> Err m (String, String)
@@ -608,6 +688,14 @@ instance XmlRpcType SAMPValue where
     getType (SAMPList _) = TArray
     getType (SAMPMap _) = TStruct
 
+instance J.ToJSON SAMPValue where
+    toJSON (SAMPString s) = J.String (T.pack (fromRString (s)))
+    toJSON (SAMPList xs)  = J.toJSON (map J.toJSON xs)
+    toJSON (SAMPMap kvs)  = J.Object (HM.fromList (map conv kvs))
+        where
+          conv (k, vs) = (T.pack (fromRString k),
+                          J.toJSON vs)
+                            
 -- TODO: improve this
 
 -- | Convert a 'SAMPValue' to a displayable string. This is intended for
@@ -663,14 +751,20 @@ instance {-# OVERLAPPABLE #-} (SAMPType a) => SAMPType [a] where
     fromSValue x = throwError $ "Expected a SAMP list, sent " ++ show x
 
 {-
-TODO: need to encode a float using the correct rules.
 
-instance SAMPType Float where
+<SAMP float> ::= [ <sign> ] <float-digits>
+                 [ "e" | "E" [ <sign> ] <digits> ]
+
+and there is no min/max value specified, so only support
+Double values.
+
+-}
+instance SAMPType Double where
     toSValue = fromString . show
 
-    fromSValue (SAMPString s) = maybeToM ("Unable to convert " ++ show s ++ " to an Integer.") (asIntegral s)
+    fromSValue (SAMPString s) = maybeToM ("Unable to convert " ++ show s ++ " to an Integer.") (asFloating s)
     fromSValue x = throwError $ "Expected a string but sent " ++ show x
--}
+
 
 -- How can we make it so that this data is invalid once we unregister
 -- a client? Any calls with a previously valid structure will fail,
@@ -979,3 +1073,92 @@ renderSAMPCall = renderCall . fromSMC
 
 renderSAMPResponse :: SAMPMethodResponse -> L.ByteString
 renderSAMPResponse = renderResponse . fromSMR 
+
+-- | A message tag, which is used to identify messages between a
+--   client and the hub. These are semantically distinct from
+--   message ids.
+--
+--   Note that an `IsString` instance is not provided for this type,
+--   to make sure that potential conversion errors are handled.
+--
+newtype MessageTag = MTag { _unMTag :: RString }
+    deriving Eq
+
+toMessageTag :: RString -> MessageTag
+toMessageTag = MTag
+
+fromMessageTag :: MessageTag -> RString
+fromMessageTag = _unMTag
+               
+instance Show MessageTag where
+    show = show . _unMTag
+
+instance SAMPType MessageTag where
+    toSValue = SAMPString . fromMessageTag
+    fromSValue x = toMessageTag <$> fromSValue x
+
+-- | A message id, which is used to identify messages between
+--   the hub and a recipient (on behalf of a client). These
+--   are semantically distinct from message tags.
+--
+--   Note that an `IsString` instance is not provided for this type,
+--   to make sure that potential conversion errors are handled.
+--
+newtype MessageId = MId { _unMId :: RString }
+    deriving (Eq, Ord)
+
+toMessageId :: RString -> MessageId
+toMessageId = MId
+
+fromMessageId :: MessageId -> RString
+fromMessageId = _unMId
+
+instance Show MessageId where
+    show = show . _unMId
+
+instance SAMPType MessageId where
+    toSValue = SAMPString . fromMessageId
+    fromSValue x = toMessageId <$> fromSValue x
+           
+                                 
+-- | The public identifier for a client, which is created by the hub.
+--   This is used to refer to other clients. It is *not* the value
+--   of the @samp.name@ field of the metadata for the client.
+--
+newtype ClientName = CN { _unCN :: RString }
+    deriving (Eq, Ord)
+
+fromClientName :: ClientName -> RString
+fromClientName = _unCN
+
+toClientName :: RString -> ClientName
+toClientName = CN
+
+instance Show ClientName where
+    show = show . _unCN
+               
+instance SAMPType ClientName where
+    toSValue = toSValue . fromClientName
+    fromSValue s = toClientName <$> fromSValue s
+
+                   
+-- | The secret value for a client, which is created by the hub.
+--   It is used when communicating with the hub from the client,
+--   and should not be known by other agents.
+newtype ClientSecret = CS { _unCS :: RString }
+    deriving (Eq, Ord)
+
+fromClientSecret :: ClientSecret -> RString
+fromClientSecret = _unCS
+
+toClientSecret :: RString -> ClientSecret
+toClientSecret = CS 
+
+instance Show ClientSecret where
+    show = show . _unCS
+
+instance SAMPType ClientSecret where
+    toSValue = toSValue . fromClientSecret
+    fromSValue s = toClientSecret <$> fromSValue s
+
+

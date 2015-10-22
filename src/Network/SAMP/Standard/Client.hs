@@ -192,7 +192,8 @@ stripLines = filter (\x ->not (null x || head x == '#')) . splitLines
 -- a map containing all the assignments in the file.
 -- We just use an association list for the return value
 -- since the expected number of keys is small. The file
--- is assumed to be correctly formatted.
+-- is assumed to be correctly formatted, so that any
+-- errors in it will result in an exception.
 --
 processLockFile :: String -> [(String,String)]
 processLockFile = foldr step [] . stripLines
@@ -231,6 +232,7 @@ getHubInfoE = do
 
     dbg "Read contents of lock file."
     let alist = processLockFile cts
+    dbg ("Contents: " ++ show alist)
     maybeToM "Unable to read hub info" (extractHubInfo alist)
 
 {-|
@@ -267,6 +269,24 @@ makeCallE url msg args = do
   dbg (show rsp)
   fromValue rsp
 
+{-  CURRENTLY unused
+
+-- | Raise an error if the SAMPValue does not represent a
+--   successful (or partially-successful) response.
+--
+--   TODO: should this be part of the standard sequence,
+--         and should SAMPResponse be used instead of SAMPValue?
+
+validateSAMPValue :: SAMPValue -> Err IO SAMPValue
+validateSAMPValue sv = do
+  dbg ("Validating: " ++ show sv)
+  sr <- fromSValue sv
+  case getSAMPResponseError sr of
+    Nothing -> return sv
+    Just (msg, _) -> throwError ("SAMP call failed: " ++ fromRString msg)
+
+-}
+
 -- | This is the catchErrorT routine from https://www.fpcomplete.com/user/snoyberg/general-haskell/exceptions/exceptions-and-monad-transformers
 --   specialized to the Err IO monad (which is ErrorT String IO).
 catchErrT ::
@@ -284,7 +304,7 @@ makeCallE_ ::
   -> RString      -- ^ message name
   -> [SAMPValue]  -- ^ message arguments
   -> Err IO ()    -- ^ response
-makeCallE_ url msg args = void $ makeCallE url msg args
+makeCallE_ url msg args = void (makeCallE url msg args)
 
 {-|
 Similar to 'makeCallE' but takes a 'SAMPConnection' 
@@ -308,7 +328,7 @@ callHubE_ ::
   -> RString      -- ^ message name
   -> [SAMPValue]  -- ^ message arguments
   -> Err IO ()    -- ^ response
-callHubE_ conn msg args = void $ callHubE conn msg args
+callHubE_ conn msg args = void (callHubE conn msg args)
 
 -- | Register a client with a hub. See 'registerClientE' for a simple
 --   way to register the client and process the return vaues.
@@ -316,6 +336,7 @@ registerE :: SAMPInfo     -- ^ hub information
           -> Err IO [SAMPKeyValue] -- ^ Key/value pairs from the registration call.
 registerE (sKey,url,_) =
   makeCallE url "samp.hub.register" [SAMPString sKey]
+  -- >>= validateSAMPValue --- errrr; do I really mean validate here!
   >>= fromSValue
     
 sPrivateKey , sHubId , sSelfId :: RString
@@ -412,14 +433,14 @@ declareMetadataE cl ks =
 -- | Return the metadata for another client of the SAMP hub as a
 -- list of (key,value) pairs.
 getMetadataE :: SAMPConnection
-             -> RString -- ^ The id of the SAMP client to query
+             -> ClientName -- ^ The id of the SAMP client to query
              -> Err IO [SAMPKeyValue] -- ^ The metadata key/value pairs of the queried client
 getMetadataE conn clid =
-    callHubE conn "samp.hub.getMetadata" [SAMPString clid]
+    callHubE conn "samp.hub.getMetadata" [toSValue clid]
     >>= fromSValue
 
 mtToRS :: MType -> RString
-mtToRS = fromJust . toRString . show
+mtToRS = fromJust . toRString . fromMType
 
 -- | Declare the subscriptions for this client. The subscriptions are
 -- given as a list of (key,value) pairs where the keys are the MTypes
@@ -430,9 +451,11 @@ mtToRS = fromJust . toRString . show
 -- 
 -- See 'declareSubscriptionsSimpleE' for the case when the messages
 -- being subscribed to have no parameters.
-declareSubscriptionsE :: SAMPConnection
-                      -> [(MType, SAMPValue)] -- ^ the messages (and associated metadata) the client is subscribing to
-                      -> Err IO ()
+declareSubscriptionsE ::
+    SAMPConnection
+    -> [(MType, SAMPValue)]
+    -- ^ the messages (and associated metadata) the client is subscribing to
+    -> Err IO ()
 declareSubscriptionsE cl subs =
     let ks = map (CA.first mtToRS) subs
     in callHubE_ cl "samp.hub.declareSubscriptions" [SAMPMap ks]
@@ -440,9 +463,10 @@ declareSubscriptionsE cl subs =
 -- | Declare the subscriptions for this client. This can be used
 -- if all the messages require no parameters; use 
 -- 'declareSubscriptionsE' for the general case.
-declareSubscriptionsSimpleE :: SAMPConnection
-                            -> [MType] -- ^ the messages the client is subscribing to
-                            -> Err IO ()
+declareSubscriptionsSimpleE ::
+    SAMPConnection
+    -> [MType] -- ^ the messages the client is subscribing to
+    -> Err IO ()
 declareSubscriptionsSimpleE cl mtypes =
     let ks = map (\n -> (mtToRS n, SAMPMap [])) mtypes
     in callHubE_ cl "samp.hub.declareSubscriptions" [SAMPMap ks]
@@ -451,17 +475,18 @@ declareSubscriptionsSimpleE cl mtypes =
 -- returned as a list of (key,value) pairs.
 getSubscriptionsE ::
     SAMPConnection
-    -> RString -- ^ the name of the client to query
-    -> Err IO [SAMPKeyValue] -- ^ the (key,value) subscriptions of the queried client
+    -> ClientName -- ^ the name of the client to query
+    -> Err IO [SAMPKeyValue]
+       -- ^ the (key,value) subscriptions of the queried client
 getSubscriptionsE cl clid = 
-    callHubE cl "samp.hub.getSubscriptions" [SAMPString clid]
+    callHubE cl "samp.hub.getSubscriptions" [toSValue clid]
     >>= fromSValue
 
 -- | Return a list of all the registered clients of the hub - including
 -- itself - but excluding this client.
 getRegisteredClientsE ::
     SAMPConnection
-    -> Err IO [RString] -- ^ the names of the registered clients
+    -> Err IO [ClientName] -- ^ the names of the registered clients
 getRegisteredClientsE cl =
     callHubE cl "samp.hub.getRegisteredClients" []
     >>= fromSValue
@@ -472,30 +497,35 @@ getRegisteredClientsE cl =
 -- contents of the map).
 -- 
 -- An error occurs if the MType contains a wild card.
-getSubscribedClientsE :: SAMPConnection
-                      -> MType -- ^ the message (it can not contain a wildcard)
-                      -> Err IO [SAMPKeyValue]
+getSubscribedClientsE ::
+    SAMPConnection
+    -> MType -- ^ the message (it can not contain a wildcard)
+    -> Err IO [(ClientName, SAMPValue)]
 getSubscribedClientsE cl mtype 
     | isMTWildCard mtype = throwError "MType can not contain a wild card when calling getSubscribedClients"
-    | otherwise          = callHubE cl "samp.hub.getSubscribedClients" [toSValue mtype]
-                           >>= fromSValue
+    | otherwise          =
+        let conv :: SAMPKeyValue -> (ClientName, SAMPValue)
+            conv = CA.first toClientName
+        in callHubE cl "samp.hub.getSubscribedClients" [toSValue mtype]
+               >>= fromSValue >>= return . map conv
 
 -- | Send a message to a given client of the hub and do not
 -- wait for a response.
-notifyE :: SAMPConnection
-        -> RString -- ^ the name of the client to notify
-        -> SAMPMessage -- ^ the message
-        -> Err IO ()
+notifyE ::
+    SAMPConnection
+    -> ClientName -- ^ the name of the client to notify
+    -> SAMPMessage -- ^ the message
+    -> Err IO ()
 notifyE cl clid msg =
-    callHubE_ cl "samp.hub.notify" [SAMPString clid, toSValue msg]
+    callHubE_ cl "samp.hub.notify" [toSValue clid, toSValue msg]
 
 -- | Send a message to all clients and get back a list of those
 -- that were sent the message (i.e. are subscribed to it). Note that
 -- just because a client was sent a message does not mean it was successful.
 notifyAllE :: 
   SAMPConnection
-  -> SAMPMessage      -- ^ the message
-  -> Err IO [RString] -- ^ the list of clients that were sent the message
+  -> SAMPMessage         -- ^ the message
+  -> Err IO [ClientName] -- ^ the list of clients that were sent the message
 notifyAllE cl msg =
     callHubE cl "samp.hub.notifyAll" [toSValue msg]
     >>= fromSValue
@@ -511,23 +541,25 @@ notifyAllE_ cl msg = void $ notifyAllE cl msg
 -- controls how long the wait will be before error-ing out (if given).
 -- Unlike 'callE' and 'callAllE', the client need not be callable to use
 -- this routine.
-callAndWaitE :: SAMPConnection
-             -> RString -- ^ the name of the client to contact
-             -> SAMPMessage -- ^ the message
-             -> Maybe Int -- ^ the maximum timeout to wait, in seconds
-             -> Err IO SAMPResponse
+callAndWaitE ::
+    SAMPConnection
+    -> ClientName -- ^ the name of the client to contact
+    -> SAMPMessage -- ^ the message
+    -> Maybe Int -- ^ the maximum timeout to wait, in seconds
+    -> Err IO SAMPResponse
 callAndWaitE cl clid msg tout = 
     let t = fromMaybe 0 tout
-    in callHubE cl "samp.hub.callAndWait" [SAMPString clid, toSValue msg, toSValue t]
-    >>= fromSValue
+        args = [toSValue clid, toSValue msg, toSValue t]
+    in callHubE cl "samp.hub.callAndWait" args >>= fromSValue
     
 -- | Reply to a message from another client.
-replyE :: SAMPConnection
-       -> RString -- ^ the message identifier (as returned by the hub from 'callE' or 'callAllE')
-       -> SAMPResponse -- ^ the response
-       -> Err IO ()
+replyE ::
+    SAMPConnection
+    -> MessageId -- ^ the message identifier (as returned by the hub from 'callE' or 'callAllE')
+    -> SAMPResponse -- ^ the response
+    -> Err IO ()
 replyE cl msgid rsp =
-    callHubE_ cl "samp.hub.reply" [SAMPString msgid, toSValue rsp]
+    callHubE_ cl "samp.hub.reply" [toSValue msgid, toSValue rsp]
 
 {-|
 Ping the hub to see if it is running.
@@ -550,7 +582,7 @@ this one).
 -}
 getClientNamesE :: 
   SAMPConnection
-  -> Err IO [(RString, Maybe RString)] -- ^ key is the client id and the value is the @samp.name@ value (if set)
+  -> Err IO [(ClientName, Maybe RString)] -- ^ key is the client id and the value is the @samp.name@ value (if set)
 getClientNamesE conn = do
     clients <- getRegisteredClientsE conn
     forM clients $ \clid -> (,) clid <$> getClientNameE conn clid
@@ -560,7 +592,7 @@ Get the name (@samp.name@) of the client, if set.
 -}
 getClientNameE :: 
   SAMPConnection
-  -> RString -- ^ the client id
+  -> ClientName -- ^ the client id
   -> Err IO (Maybe RString) -- ^ the @samp.name@ value for the client, if set
 getClientNameE conn clid = do
   md <- getMetadataE conn clid
