@@ -75,6 +75,8 @@ TODO:
     "handles", so that they can be stopped if the client shut
     downs (or hub or ...)
 
+  - are the message id tags being removed once they have been processed?
+
 -}
 
 module Main where
@@ -99,9 +101,10 @@ import System.IO (hPutStrLn, stderr)
 import System.Posix.Files (ownerReadMode, ownerWriteMode)
 import System.Posix.Types (Fd)
 import System.Random (RandomGen, StdGen, getStdGen, setStdGen)
+-- import System.Timeout (timeout)
 
 import Control.Arrow (first)
-import Control.Concurrent (forkIO)
+import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar, newEmptyMVar, newMVar,
                                 putMVar, readMVar, takeMVar)
 import Control.Monad (forM, forM_, guard, void, when)
@@ -527,6 +530,7 @@ notify hi secret recName msg args otherArgs = do
         
 -- | A client wants to send a message to all the interested clients
 --   via the notify system.
+--
 notifyAll ::
     HubInfo
     -> ClientSecret   -- ^ the client sending the message
@@ -544,8 +548,6 @@ notifyAll hi secret msg args otherArgs = do
   let clMap = hiClients hub
       msender = M.lookup secret clMap
 
-      receivers = findSubscribedClients clMap msg
-                  
       -- do not need to worry about callable for the hub
       hubMatch = memberSubMap msg (hiSubscribed hir)
 
@@ -560,10 +562,12 @@ notifyAll hi secret msg args otherArgs = do
   rsp <- case msender of
            Just sender -> do
              let sendName = fromClientName (cdName sender)
+                 receivers = findOtherSubscribedClients clMap (cdName sender) msg
+                  
              forM_ receivers (sendClient sendName)
              when hubMatch (sendHub sendName)
                    
-             let rNames = map (SAMPString . fromClientName . cdName) receivers
+             let rNames = map (toSValue . cdName) receivers
                  hName = SAMPString hubName
                  names = if hubMatch then hName : rNames else rNames
                  rval = SAMPReturn (SAMPList names)
@@ -592,6 +596,17 @@ findSubscribedClients ::
     -> [ClientData]
 findSubscribedClients clMap msg =
     let find cd = isJust (cdCallback cd) &&
+                  memberSubMap msg (cdSubscribed cd)
+    in M.elems (M.filter find clMap)
+
+findOtherSubscribedClients ::
+    ClientMap
+    -> ClientName -- ^ client to exclude from the search
+    -> MType
+    -> [ClientData]
+findOtherSubscribedClients clMap clName msg =
+    let find cd = cdName cd /= clName &&
+                  isJust (cdCallback cd) &&
                   memberSubMap msg (cdSubscribed cd)
     in M.elems (M.filter find clMap)
 
@@ -755,9 +770,7 @@ sendToAll hi secret tag msg args otherArgs = do
            Just sender -> do
 
                let sendName = cdName sender
-                   allReceivers = findSubscribedClients clMap msg
-                   receivers = filter (\cd -> cdName cd /= sendName)
-                               allReceivers
+                   receivers = findOtherSubscribedClients clMap sendName msg
 
                    isHub = isHubSubscribed hi msg sendName
 
@@ -920,6 +933,18 @@ hubSentQueryByMeta :: HubHandlerFunc
 hubSentQueryByMeta _ _ _ = return (toSAMPResponse [])
 -}
 
+-- convert seconds to microseconds, error-ing out if the converted
+-- value would cause overflow. This is not ideal here, since the
+-- SAMP standard doesn't allow for this behavior.
+--
+toDuration :: Int -> Either String Int
+toDuration sec =
+    let nMax = maxBound `div` scale
+        scale = 1000000
+    in if sec <= nMax
+       then Right (sec * scale)
+       else Left ("Timeout too long for this hub (max=" ++ show nMax ++ " seconds)")
+
 -- | A client wants to send a message to another client via the
 --   call system, waiting for the response.
 --
@@ -929,14 +954,12 @@ callAndWait ::
     HubInfo
     -> ClientSecret   -- ^ the client sending the message
     -> ClientName     -- ^ the client to send the message to
-    -> Double         -- ^ the timeout (in seconds)
+    -> Int            -- ^ the timeout (in seconds)
     -> MType          -- ^ the message to send
     -> [SAMPKeyValue] -- ^ the arguments for the message
     -> [SAMPKeyValue] -- ^ extra arguments
     -> ActionM ()
-callAndWait hi secret recName timeout msg args otherArgs = do
-
-  when (timeout > 0) (liftIO (putStrLn ("INTERNAL: skipping timeout=" ++ show timeout)))
+callAndWait hi secret recName waitTime msg args otherArgs = do
 
   -- lots of repeated code with sendToClient
 
@@ -947,8 +970,7 @@ callAndWait hi secret recName timeout msg args otherArgs = do
         if fromClientName recName == hiName (hiReader hi)
           then do
             -- no timeout for hub connections!
-            -- for now do not pass on otherArgs to the hub
-            replyData <- liftIO (hubProcessMessage hi msg args otherArgs) -- ?
+            replyData <- liftIO (hubProcessMessage hi msg args otherArgs)
             let rmap = toSValue replyData
                 rsp = renderSAMPResponse (SAMPReturn rmap)
             return rsp
@@ -971,9 +993,32 @@ callAndWait hi secret recName timeout msg args otherArgs = do
         case emid of
           Right mid -> do
             let sendName = cdName sender
+                errorRsp = rawError "Timeout"
+                           
             dbg ("Sending " ++ fromMType msg ++ " from " ++
                  show sendName ++ " to " ++ show recName)
+            
+            -- TODO: remove the message id if the call is cancelled
+            --       due to the timeout.
+            --       This is why I want the timeout here, and not
+            --       applied to sendTo
+            --
+            --       WHAT TO DO WHEN THE TIMEOUT IS TOO LONG
+            --
+            --       also, really should start the timer after the
+            --       call has been made; so should clientReceiveCall
+            --       be forked or wait until it has finished. I think
+            --       the current behavior is okay, in part because the
+            --       semantics of the timeout has been left fuzzy
+            --
             forkCall (clientReceiveCall sendName receiver mid msg args otherArgs)
+
+            case toDuration waitTime of
+              Right tVal | tVal > 0 -> 
+                forkCall (threadDelay tVal >> putMVar rspmvar errorRsp)
+                         | otherwise -> return ()
+              _ -> liftIO (putStrLn ("*** timeout too long " ++ show waitTime))
+                   >> return ()
 
             rsp <- liftIO (takeMVar rspmvar)
             return rsp
@@ -1640,9 +1685,9 @@ handleCallAndWait hi (SAMPString s : SAMPString rid : SAMPMap msgMap :
         clName = toClientName rid
 
         argsE = do
-          timeout <- fromSValue timeoutArg
+          timeoutVal <- fromSValue timeoutArg
           (mtype, args, otherArgs) <- parseMsgResponseE msgMap
-          return (mtype, args, otherArgs, timeout)
+          return (mtype, args, otherArgs, timeoutVal)
                  
     in case handleError Left argsE of
          Right (mtype, args, otherArgs, tout) ->
@@ -2021,8 +2066,7 @@ broadcastMType hi name msg args {- otherArgs -} = do
   let mvar = hiState hi
       sendName = fromClientName name
   hub <- readMVar mvar
-  let receivers = findSubscribedClients (hiClients hub) msg
-      clients = filter (\cd -> cdName cd /= name) receivers
+  let clients = findOtherSubscribedClients (hiClients hub) name msg
       hir = hiReader hi
   forM_ clients (\cd -> notifyRecipient sendName cd msg args [])
         
