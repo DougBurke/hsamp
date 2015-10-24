@@ -168,18 +168,10 @@ import Web.Scotty (ActionM
 
 import Utils (getSocket)
 
+-- Hack for ds9 7.3.2 support
+import qualified HubCall as HC
+    
 -- import Paths_hsamp (version)
-
--- Needed to support ds9 7.3.2    
-import qualified System.IO.Streams as Streams
-import qualified Network.Http.Client as HC
-import qualified Data.ByteString.Lazy.UTF8  as U
-import qualified Network.URI as NU
-import qualified Text.Read.Compat as TRC
-import qualified OpenSSL as SSL
-import Data.Int (Int64)    
--- end ds9 support
-
 
 -- the name of the SAMP logging instance
 cLogger :: String
@@ -495,14 +487,14 @@ notify hi secret recName msg args otherArgs = do
         info ("Sending " ++ fromMType msg ++ " from " ++
               show sendName ++ " to " ++ show recName)
         forkCall (notifyRecipient sendName receiver msg args otherArgs)
-        return emptyResponse
+        return HC.emptyResponse
 
       -- The receiver is the hub, so do not need to send a message,
       -- but do we need to do something? At this point we know the
       -- hub is subscribed to the message
       sendHub _ = do
         info ("Hub has been notified about " ++ show msg)
-        return emptyResponse
+        return HC.emptyResponse
 
       noReceiver = do
         info "No match to the notify message"
@@ -880,7 +872,7 @@ sendToHub hi mtag sendName msg args otherArgs = do
                     , rmap ]
           nargs = map XI.toValue arglist
 
-          act = void (myCall url "samp.client.receiveResponse" nargs)
+          act = void (HC.call url "samp.client.receiveResponse" nargs)
           hdl e = dbgIO ("Error in sending reply to the original client at " ++
                          url ++ " - " ++ e)
 
@@ -1086,7 +1078,7 @@ reply hi secret msgId replyData = do
                           show (ifdSecret ifd))
                      forkCall (replyToOrigin (cdName cd) ifd replyData)
                      liftIO (removeMessageId hi msgId (cdSecret cd))
-                     return emptyResponse
+                     return HC.emptyResponse
                            
                  _ -> do
                    -- is this considered an error?
@@ -1123,7 +1115,7 @@ replyToOrigin clName ifd replyData =
                   , rmap ]
         nargs = map XI.toValue arglist
 
-        act = void (myCall url "samp.client.receiveResponse" nargs)
+        act = void (HC.call url "samp.client.receiveResponse" nargs)
         hdl e = dbgIO ("Error in sending reply to the original client at " ++
                        url ++ " - " ++ e)
 
@@ -1173,7 +1165,7 @@ notifyRecipient sendName receiver mtype args otherArgs = do
                   , SAMPString sendName
                   , SAMPMap argmap ]
         nargs = map XI.toValue arglist
-        act url = void (myCall url "samp.client.receiveNotification" nargs)
+        act url = void (HC.call url "samp.client.receiveNotification" nargs)
         hdl url e = dbgIO ("Error in sending " ++ show mtype ++ " to " ++
                            url ++ " - " ++ e)
 
@@ -1236,7 +1228,7 @@ clientReceiveCall sendName receiver msgId mtype args otherArgs =
                             " about message " ++ fromMType mtype)
           hPutStrLn stderr ("** " ++ show e)
 
-        act url = void (myCall url "samp.client.receiveCall" nargs)
+        act url = void (HC.call url "samp.client.receiveCall" nargs)
 
     in case cdCallback receiver of
          Just url -> do
@@ -1246,105 +1238,6 @@ clientReceiveCall sendName receiver msgId mtype args otherArgs =
                            `CE.catch` ignoreError
 
          _ -> return ()
-
-{-
-This is a re-implementation of haxr's XC.call routine, since I have
-to edit the XML serialization for ds9.
-
-myCall = Network.XmlRpc.Client.call
--}
-
-myCall :: String
-       -> String
-       -> [XI.Value]
-       -> XI.Err IO XI.Value
-myCall url method args = do
-  let req = XI.renderCall (XI.MethodCall method args)
-      reqConv = replaceEmptyStruct req 
-      -- reqConv = req  -- is ds9 7.4 okay?
-  liftIO (dbgIO ("** request is " ++ L.unpack reqConv))
-  respRaw <- XI.ioErrorToErr (post' url reqConv)
-  liftIO (dbgIO ("** response is " ++ L.unpack respRaw))
-  respParse <- XI.parseResponse (L.unpack respRaw)
-  handleResponse respParse
-
-handleResponse :: Monad m => XI.MethodResponse -> m XI.Value
-handleResponse (XI.Return v) = return v
-handleResponse (XI.Fault code str) = fail ("Error " ++ show code ++ ": " ++ str)
-
-post' :: String -> L.ByteString -> IO U.ByteString
-post' url content = do
-  uri <- maybeFail ("Bad URI: '" ++ url ++ "'") (parseURI url)
-  let a = NU.uriAuthority uri
-  auth <- maybeFail ("Bad URI authority: '" ++ show (fmap showAuth a) ++ "'") a
-  post_ uri auth content
-      where showAuth (NU.URIAuth u r p) = "URIAuth "++u++" "++r++" "++p
-
-post_ :: URI -> NU.URIAuth -> L.ByteString -> IO U.ByteString
-post_ uri auth content = SSL.withOpenSSL $ do
-    let hostname = B.pack (NU.uriRegName auth)
-        port     = fromMaybe 443 (TRC.readMaybe $ drop 1 $ NU.uriPort auth)
-
-    c <- case init $ NU.uriScheme uri of
-        "http"  ->
-            HC.openConnection hostname port
-        "https" -> do
-            ctx <- HC.baselineContextSSL
-            HC.openConnectionSSL ctx hostname port
-        x -> fail ("Unknown scheme: '" ++ x ++ "'!")
-
-    req  <- request uri auth (L.length content)
-    body' <- HC.inputStreamBody <$> Streams.fromLazyByteString content
-
-    _ <- HC.sendRequest c req body'
-
-    s <- HC.receiveResponse c $ \resp i -> 
-        case HC.getStatusCode resp of
-          200 -> readLazyByteString i
-          -- 200 -> putStrLn "*** processing response" >> readLazyByteString i
-          _   -> fail (show (HC.getStatusCode resp) ++ " " ++ B.unpack (HC.getStatusMessage resp))
-
-    HC.closeConnection c
-
-    return s
-
-readLazyByteString :: Streams.InputStream B.ByteString -> IO U.ByteString
-readLazyByteString i = L.fromChunks <$> go
-  where
-    go :: IO [B.ByteString]
-    go = do
-      res <- Streams.read i
-      case res of
-        Nothing -> return []
-        Just bs -> (bs:) <$> go
-
-userAgent :: B.ByteString
-userAgent = "Haskell XmlRpcClient/0.1 modified for hsamp"
-            
--- | Create an XML-RPC compliant HTTP request.
-request :: NU.URI -> NU.URIAuth -> Int64 -> IO HC.Request
-request uri auth len = HC.buildRequest $ do
-    HC.http HC.POST (B.pack $ uriPath uri)
-    HC.setContentType "text/xml"
-    HC.setContentLength len
-
-    case parseUserInfo auth of
-      (Just user, Just pass) -> HC.setAuthorizationBasic (B.pack user) (B.pack pass)
-      _                      -> return ()
-
-    -- mapM_ (uncurry setHeader) usrHeaders
-
-    HC.setHeader "User-Agent" userAgent
-
-    where
-      parseUserInfo uinfo = let (u,pw) = break (==':') $ NU.uriUserInfo uinfo
-                            in ( if null u then Nothing else Just u
-                               , if null pw then Nothing else Just (tail pw))
-
-maybeFail :: Monad m => String -> Maybe a -> m a
-maybeFail msg = maybe (fail msg) return
-                
--- end of code from haxr
 
 {-
 The output from Network.Wai.Middleware.RequestLogger.logStdoutDev 
@@ -2150,77 +2043,10 @@ register hi = do
             , ("samp.self-id", toSValue clName)
             , ("samp.hub-id", toSValue hubName) ]
 
-  respond "register" (mapResponse kvs)
+  respond "register" (HC.makeResponse kvs)
   forkCall (broadcastNewClient hi clName)
 
-
--- | The \"empty\" return value. Note that this does not return a
---   valid SAMP value (as far as I understand it), since it
---   reurns <param><value/></param>.
---
---   At present this hard codes the response since I am having trouble
---   with ds9 7.3.2, since I guess it doesn't like
---     <param><value><string></string></value></param>
---
---   My reading of http://xmlrpc.scripting.com/spec.html is that
---     <value/> and <value><string/></value>
---   are equivalent, since "If no type is indicated, the type is string."
---
-emptyResponse :: L.ByteString
--- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value/></param></params></methodResponse>"
-   -- ds9 7.4b8 fails with "Unrecognized response from server"
--- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value></value></param></params></methodResponse>"
-   -- ds9 7.4b8 fails with "Invalid close of value tag"
--- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value><string/></value></param></params></methodResponse>"
-   -- ds9 7.4b8 fails with "Invalid close of value tag"
--- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value><string></string></value></param></params></methodResponse>"
-   -- ds9 7.4b8 fails with "Invalid close of value tag"
-
--- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value></value></param></params></methodResponse>"
--- emptyResponse = XI.renderResponse (XI.Return (XI.ValueString "")) -- ValueUnwrapped?
-emptyResponse = renderSAMPResponse (SAMPReturn "")
-   -- the response here is
-   -- <methodResponse><params><param><value><string></string></value></param></params></methodResponse>
-   -- ds9 7.4b8 fails with "Invalid close of value tag"
-
--- | Return a SAMP map.
---
---   It appears that ds9 7.3.2 has problems parsing empty
---   XML elements, in that it seems to only accept <a></a>
---   and not <a/>. This is a problem, since the XML writer
---   used here uses the latter form. So, I manually hack
---   the output to use the latter form, for a=struct.
---   This is a band-aid, since there may be other tags that
---   need this change.
---
-mapResponse :: [SAMPKeyValue] -> L.ByteString
-mapResponse kvs =
-    let orig = renderSAMPResponse (SAMPReturn (SAMPMap kvs))
-    in replaceEmptyStruct orig
-       
-{-
-mapResponse [] = "<?xml version='1.0' ?>\n<methodResponse><params><param><value><struct></struct></value></param></params></methodResponse>"
-mapResponse kvs = renderSAMPResponse (SAMPReturn (SAMPMap kvs))                 
--}
-
-replace :: B.ByteString -> B.ByteString -> L.ByteString -> L.ByteString
-replace find new orig = L.fromStrict (mconcat (reverse (go origB [])))
-    where
-      origB = L.toStrict orig
-      dropB = B.drop (B.length find)
-      go xs ys | B.null xs = ys
-               | otherwise = let (as, bs) = B.breakSubstring find xs
-                             in if B.null bs
-                                then as:ys
-                                else go (dropB bs) (new:as:ys)
-
-
-replaceEmptyStruct :: L.ByteString -> L.ByteString
--- replaceEmptyStruct = replace "<struct/>" "<struct></struct>"
-replaceEmptyStruct = id
-        
--- mapResponse = renderSAMPResponse . SAMPReturn . SAMPMap
-                
+           
 -- | Indicate an error. Not sure how often this should be used
 --   as opposed to respondError, which uses the XML-RPC fault mechanism.
 errorResponse :: String -> L.ByteString
@@ -2254,7 +2080,7 @@ unregister hi secret = do
              liftIO (putMVar mvar nhub)
              nclientmap `seq` nhub `seq` return ()
              forkCall (broadcastRemovedClient hi clName)
-             return emptyResponse
+             return HC.emptyResponse
                     
            _ -> do
              dbg ("Unable to find a client with secret=" ++ show secret)
@@ -2287,7 +2113,7 @@ setMetadata hi secret mdata = do
                       >> putMVar mvar nhub
                       >> (mdata `seq` nclinfo `seq` nclientmap `seq`
                           nhub `seq` return ())
-                      >> return emptyResponse
+                      >> return HC.emptyResponse
                          
 declareMetadata ::
     HubInfo
@@ -2361,7 +2187,7 @@ setCallback his secret url = do
                  in do
                    dbgIO ("Registering Callback for client " ++
                           show (cdName clinfo))
-                   return (nhub, (emptyResponse,
+                   return (nhub, (HC.emptyResponse,
                                   Just (nclinfo `seq` nclientmap `seq`
                                         nhub)))
              
@@ -2410,7 +2236,7 @@ setSubscriptions hi secret subs = do
         putMVar mvar nhub
         -- QUS: does this fully evaluate everything?
         subs `seq` nclinfo `seq` nclientmap `seq` nhub `seq` return ()
-        return emptyResponse
+        return HC.emptyResponse
 
                     
 declareSubscriptions ::
@@ -2498,7 +2324,7 @@ getSubscribedClients hi secret msg = do
     Just clinfo -> do
       dbgIO ("Found subscribed clients other than client " ++
              show (cdName clinfo))
-      return (mapResponse subs)
+      return (HC.makeResponse subs)
 
           
 -- is this going to be general enough?
@@ -2535,7 +2361,7 @@ getMetadata hi secret clName = do
              let kvs = M.assocs query
              in do
                dbgIO ("Found a match for client: " ++ show clName)
-               return (mapResponse kvs)
+               return (HC.makeResponse kvs)
                  
          _ -> do
            dbgIO ("Unable to find the requested client: " ++ show clName)
@@ -2561,7 +2387,7 @@ getSubscriptions hi secret clName = do
                 conv (k, kvs) = (mtToRS k, SAMPMap kvs)
             in do
               dbgIO ("Found a match for client: " ++ show clName)
-              return (mapResponse (map conv svals))
+              return (HC.makeResponse (map conv svals))
                  
         _ -> do
           dbgIO ("Unable to find the requested client: " ++ show clName)

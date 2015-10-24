@@ -47,6 +47,11 @@ flag  examples
   description: Build the example programs
   default: True
 
+flag  xmlhack
+  description: Adjust the XML returned by the hub (e.g. for ds9 7.3.2). This is only used if examples is True.
+--  default: False
+  default: True
+
 -- Just trying to get to build on ghc 7.10.2, so limited constraints.
 -- I am not looking to support older versions of ghc at this
 -- time, since I am not able to test on those (and with the recent
@@ -206,9 +211,6 @@ executable hsamp-hub
       aeson,
       base,
       base64-bytestring,
-      -- base-compat is needed for ds9 support hacks, but could be
-      -- useful anyway
-      base-compat,
       bytestring,
       containers,
       data-default-class,
@@ -218,13 +220,7 @@ executable hsamp-hub
       haxr,
       hsamp,
       hslogger,
-      -- HsOpenSSL is needed for ds9 support hacks
-      HsOpenSSL,
-      -- http-streams is needed for ds9 support hacks
-      http-streams,
       http-types,
-      -- io-streams is needed for ds9 support hacks
-      io-streams,
       mtl,
       network,
       network-uri,
@@ -235,11 +231,23 @@ executable hsamp-hub
       transformers,
       unix,
       unordered-containers,
-      -- utf8-string is needed for ds9 support hacks
-      utf8-string,
       wai,
       wai-extra
 
+    if flag(xmlhack)
+      build-depends: 
+        base-compat,
+        HsOpenSSL,
+        http-streams,
+        io-streams,
+        utf8-string
+
+      hs-source-dirs:  examples/hackxml
+      other-modules:   HubCall
+    else
+      hs-source-dirs:  examples/dummy
+      other-modules:   HubCall
+    
   else
     buildable:  False
 
