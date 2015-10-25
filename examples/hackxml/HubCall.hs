@@ -36,95 +36,10 @@ import qualified Network.URI as NU
 import qualified Text.Read.Compat as TRC
 import qualified OpenSSL as SSL
 
+-- import Control.Monad.Trans (liftIO)
 import Data.Int (Int64)    
 import Data.Maybe (fromMaybe)
     
-{-
-import qualified Control.Exception as CE
-
-import qualified Data.Aeson as J
-import qualified Data.HashMap.Strict as HM
-import qualified Data.Map.Strict as M
-import qualified Data.Text.Lazy as LT
-
--- ghc 7.10.2 says that this import is redundant, but if
--- it is commented out then fdWrite and closeFd are not defined
-import qualified System.Posix.IO as P
-    
-import System.Directory (doesFileExist, removeFile)
-import System.Environment (getArgs, getEnv, getProgName)
-import System.Exit (exitFailure, exitSuccess)
-import System.IO (hPutStrLn, stderr)
-import System.Posix.Files (ownerReadMode, ownerWriteMode)
-import System.Posix.Types (Fd)
-import System.Random (RandomGen, StdGen, getStdGen, setStdGen)
--- import System.Timeout (timeout)
-
-import Control.Arrow (first)
-import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar (MVar, modifyMVar, newEmptyMVar, newMVar,
-                                putMVar, readMVar, takeMVar)
-import Control.Monad (forM, forM_, guard, void, when)
-import Control.Monad.Except (throwError)
-import Control.Monad.Trans (liftIO)
-
-import Data.Bits ((.|.))
-import Data.ByteString.Base64.Lazy (decodeLenient)
-import Data.Default.Class (def)
-import Data.Either (partitionEithers)
-import Data.Function (on)
-import Data.List (intercalate, sortBy)
-import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, isNothing,
-                   listToMaybe, mapMaybe)
-import Data.Time.Clock (UTCTime, getCurrentTime)
-    
--- import Data.Version (showVersion)
-
-import Network.SAMP.Standard (MType, RString, SAMPKeyValue
-                             , MessageId, toMessageId
-                             , MessageTag, fromMessageTag, toMessageTag
-                             , SAMPResponse, SAMPMethodCall(..)
-                             , SAMPMethodResponse(..)
-                             , SAMPValue(..)
-                             , ClientName, ClientSecret
-                             , toClientName, fromClientName
-                             , toClientSecret, fromClientSecret
-                             , fromSValue, toSValue
-                             , fromRString, toRString
-                             , fromMType, toMType, toMTypeE, isMTWildCard
-                             , randomAlphaNumRString
-                             , renderSAMPResponse, toSAMPResponse
-                             , toSAMPResponseError
-                             , parseSAMPCall
-                             , handleError)
--- import Network.SAMP.Standard.Server.Scotty (runServer)
-
-import qualified Network as N
-import Network.Socket (Socket, socketPort)
-    
-import Network.HTTP.Types (status400)
-import Network.URI (URI(..), parseAbsoluteURI, parseURI)
-
-import Network.Wai (Middleware)
-import Network.Wai.Middleware.RequestLogger (Destination(..), destination,
-                                             -- logStdoutDev,
-                                             mkRequestLogger)
-
-import System.Log.Logger (Priority(DEBUG, INFO, NOTICE, WARNING),
-                          debugM, infoM, noticeM,
-                          setLevel, updateGlobalLogger)
-import System.Log.FastLogger (fromLogStr)
-import System.Posix.IO (createFile)
-    
-import Web.Scotty (ActionM
-                  , body, header, middleware, get, post
-                  , json, raw
-                  , setHeader, scottySocket, status, text)
-
-import Utils (getSocket)
-
-    -}
-     
 {-
 This is a re-implementation of haxr's XC.call routine, since I have
 to edit the XML serialization for ds9.
@@ -140,6 +55,7 @@ call url method args = do
       -- reqConv = req  -- is ds9 7.4 okay?
   respRaw <- XI.ioErrorToErr (post' url reqConv)
   respParse <- XI.parseResponse (L.unpack respRaw)
+  -- liftIO (putStrLn ("--> sending: " ++ L.unpack reqConv))
   handleResponse respParse
 
 handleResponse :: Monad m => XI.MethodResponse -> m XI.Value
@@ -235,10 +151,12 @@ maybeFail msg = maybe (fail msg) return
 --   are equivalent, since "If no type is indicated, the type is string."
 --
 emptyResponse :: L.ByteString
-emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value/></param></params></methodResponse>"
-   -- ds9 7.4b8 fails with "Unrecognized response from server"
--- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value></value></param></params></methodResponse>"
-   -- ds9 7.4b8 fails with "Invalid close of value tag"
+-- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value/></param></params></methodResponse>"
+  -- ds9 7.4b8 fails with "Unrecognized response from server"
+
+emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value></value></param></params></methodResponse>" -- seems to be okay with ds9 7.4b8
+
+
 -- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value><string/></value></param></params></methodResponse>"
    -- ds9 7.4b8 fails with "Invalid close of value tag"
 -- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value><string></string></value></param></params></methodResponse>"

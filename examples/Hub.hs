@@ -71,11 +71,25 @@ possible.
 
 TODO:
 
+  - add web profile
+
+  - work out what's going on with ds9 connections
+
   - could run connections to clients using async, storing the
-    "handles", so that they can be stopped if the client shut
+    thread ids, so that they can be stopped if the client shut
     downs (or hub or ...)
 
-  - are the message id tags being removed once they have been processed?
+  - removal of problematic clients
+
+  - pinging an existing hub to see if we can take over
+
+  - handling of x-samp messages
+
+  - clean up and refactoring, e.g. 
+    - move the handling of hub messages to a map, which a user can then
+      extend or replace
+    - replace MType with separate "complete" and "allows wildcard"
+      versions
 
 -}
 
@@ -925,18 +939,18 @@ hubSentQueryByMeta :: HubHandlerFunc
 hubSentQueryByMeta _ _ _ = return (toSAMPResponse [])
 -}
 
--- convert seconds to microseconds, error-ing out if the converted
--- value would cause overflow. This is not ideal here, since the
--- SAMP standard doesn't allow for this behavior.
---
-toDuration :: Int -> Either String Int
-toDuration sec =
-    let nMax = maxBound `div` scale
-        scale = 1000000
-    in if sec <= nMax
-       then Right (sec * scale)
-       else Left ("Timeout too long for this hub (max=" ++ show nMax ++ " seconds)")
+toDuration :: Int -> Integer
+toDuration = toInteger . (1000000 *)
 
+sleep :: Integer -> IO ()
+sleep t | t <= 0    = return ()
+        | otherwise =
+            let sleepMax = maxBound :: Int
+                (niter, left) = t `quotRem` (toInteger sleepMax)
+                go n | n <= 0    = threadDelay (fromInteger left)
+                     | otherwise = threadDelay sleepMax >> go (n-1)
+            in go niter
+      
 -- | A client wants to send a message to another client via the
 --   call system, waiting for the response.
 --
@@ -989,28 +1003,20 @@ callAndWait hi secret recName waitTime msg args otherArgs = do
                            
             dbg ("Sending " ++ fromMType msg ++ " from " ++
                  show sendName ++ " to " ++ show recName)
-            
-            -- TODO: remove the message id if the call is cancelled
-            --       due to the timeout.
-            --       This is why I want the timeout here, and not
-            --       applied to sendTo
-            --
-            --       WHAT TO DO WHEN THE TIMEOUT IS TOO LONG
-            --
-            --       also, really should start the timer after the
-            --       call has been made; so should clientReceiveCall
-            --       be forked or wait until it has finished. I think
-            --       the current behavior is okay, in part because the
-            --       semantics of the timeout has been left fuzzy
-            --
-            forkCall (clientReceiveCall sendName receiver mid msg args otherArgs)
 
-            case toDuration waitTime of
-              Right tVal | tVal > 0 -> 
-                forkCall (threadDelay tVal >> putMVar rspmvar errorRsp)
-                         | otherwise -> return ()
-              _ -> liftIO (putStrLn ("*** timeout too long " ++ show waitTime))
-                   >> return ()
+            -- Note: the timer starts at receipt of the message
+            --       to the client, not from when the 
+            --       samp.client.receiveCall is made
+            let doit = clientReceiveCall sendName receiver mid msg args
+                                         otherArgs
+            forkCall doit
+
+            let tVal = toDuration waitTime
+            when (tVal > 0) (
+                forkCall (sleep tVal
+                          >> putMVar rspmvar errorRsp
+                          >> removeMessageId hi mid rSecret)
+                )
 
             rsp <- liftIO (takeMVar rspmvar)
             return rsp
@@ -2080,6 +2086,11 @@ unregister hi secret = do
              liftIO (putMVar mvar nhub)
              nclientmap `seq` nhub `seq` return ()
              forkCall (broadcastRemovedClient hi clName)
+
+             when (not (M.null (cdInFlight client)))
+                  (liftIO (putStrLn ("Non empty inFlightMap: " ++
+                                     show (M.keys (cdInFlight client)))))
+             
              return HC.emptyResponse
                     
            _ -> do
