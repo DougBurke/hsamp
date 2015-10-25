@@ -86,10 +86,9 @@ TODO:
   - handling of x-samp messages
 
   - clean up and refactoring, e.g. 
-    - move the handling of hub messages to a map, which a user can then
-      extend or replace
     - replace MType with separate "complete" and "allows wildcard"
       versions
+    - redo SAMPResponse so that it can handle extra values
 
 -}
 
@@ -1372,25 +1371,9 @@ handleSAMP hi secret (SAMPMethodCall name args) = do
   dbg ("Server called with method: " ++ mname)
   dbg ("  args: " ++ show args)
 
-  case mname of
-    "samp.hub.ping" -> respondOkay
-    "samp.hub.register" -> handleRegister hi secret args
-    "samp.hub.unregister" -> handleUnregister hi args
-    "samp.hub.setXmlrpcCallback" -> handleSetXmlrpcCallback hi args
-    "samp.hub.declareMetadata" -> handleDeclareMetadata hi args
-    "samp.hub.getMetadata" -> handleGetMetadata hi args
-    "samp.hub.declareSubscriptions" -> handleDeclareSubscriptions hi args
-    "samp.hub.getSubscriptions" -> handleGetSubscriptions hi args
-    "samp.hub.getRegisteredClients" -> handleGetRegisteredClients hi args
-    "samp.hub.getSubscribedClients" -> handleGetSubscribedClients hi args
-    "samp.hub.notify" -> handleNotify hi args
-    "samp.hub.notifyAll" -> handleNotifyAll hi args
-    "samp.hub.call" -> handleCall hi args
-    "samp.hub.callAll" -> handleCallAll hi args
-    "samp.hub.callAndWait" -> handleCallAndWait hi args
-    "samp.hub.reply" -> handleReply hi args
+  case lookupMType hi mname of
+    Just f -> f hi secret args
     _ -> respondError ("Unsupported message: " ++ mname)
-
 
 -- The XML-RPC standard mandates that both the Content-Type and
 -- Content-Length headers are included in the response. This is
@@ -1406,8 +1389,8 @@ respondToClient :: String -> IO L.ByteString -> ActionM ()
 respondToClient lbl act = liftIO act >>= respond lbl
       
 -- An empty response
-respondOkay :: ActionM ()
-respondOkay = respond "okay" (toReturnValue emptySAMPResponse)
+respondOkay :: HubFunc
+respondOkay _ _ _ = respond "okay" (toReturnValue emptySAMPResponse)
 
 -- Errors can be returned as a SAMP Response - e.g.
 --     toSAMPResponseError msg []
@@ -1420,51 +1403,33 @@ respondError = respond "error" . rawError
 rawError :: String -> L.ByteString
 rawError = XI.renderResponse . XI.Fault 1
                    
-handleRegister ::
-  HubInfo          -- ^ the hub
-  -> RString       -- ^ the hub secret
-  -> [SAMPValue]   -- ^ the arguments to the call
-                   --   only the first one is used (ignoring any others)
-  -> ActionM ()
+handleRegister :: HubFunc
 handleRegister _ _ [] = respondError "Missing hub secret"
 handleRegister hi secret (SAMPString s:_)
     | secret == s = register hi
     | otherwise = respondError "Invalid hub secret"
 handleRegister _ _ _ = respondError "Invalid hub secret"
 
-handleUnregister ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-                   --   only the first one is used (ignoring any others)
-  -> ActionM ()
-handleUnregister hi (SAMPString s:_) = unregister hi (toClientSecret s)
-handleUnregister _ _ = respondError "Invalid arguments"
+handleUnregister :: HubFunc
+handleUnregister hi _ (SAMPString s:_) = unregister hi (toClientSecret s)
+handleUnregister _ _ _ = respondError "Invalid arguments"
 
-handleDeclareMetadata ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleDeclareMetadata hi (SAMPString s : SAMPMap lvs : _) =
+handleDeclareMetadata :: HubFunc
+handleDeclareMetadata hi _ (SAMPString s : SAMPMap lvs : _) =
     declareMetadata hi (toClientSecret s) lvs
-handleDeclareMetadata _ _ = respondError "Invalid arguments"
+handleDeclareMetadata _ _ _ = respondError "Invalid arguments"
 
-handleSetXmlrpcCallback ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleSetXmlrpcCallback hi (SAMPString s : SAMPString url : _) =
+handleSetXmlrpcCallback :: HubFunc
+handleSetXmlrpcCallback hi _ (SAMPString s : SAMPString url : _) =
     setXmlrpcCallback hi (toClientSecret s) url
-handleSetXmlrpcCallback _ _ = respondError "Invalid arguments"
+handleSetXmlrpcCallback _ _ _ = respondError "Invalid arguments"
 
-handleDeclareSubscriptions ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleDeclareSubscriptions hi (SAMPString s : SAMPMap kvs : _) =
+handleDeclareSubscriptions :: HubFunc
+handleDeclareSubscriptions hi _ (SAMPString s : SAMPMap kvs : _) =
     case sampToSubMap kvs of
       Right subs -> declareSubscriptions hi (toClientSecret s) subs
       Left emsg -> respondError emsg
-handleDeclareSubscriptions _ _ = respondError "Invalid arguments"
+handleDeclareSubscriptions _ _ _ = respondError "Invalid arguments"
 
 -- do we need MType <-> SAMPString conversion routines?
 sampToSubMap :: [SAMPKeyValue] -> Either String SubscriptionMap
@@ -1483,19 +1448,13 @@ sampToSubMap kvs =
 
     in if null bad then Right (toSubMap good) else Left badMsg
                  
-handleGetRegisteredClients ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleGetRegisteredClients hi (SAMPString s : _) =
+handleGetRegisteredClients :: HubFunc
+handleGetRegisteredClients hi _ (SAMPString s : _) =
     respondToClient "get/reg clents" (getRegisteredClients hi (toClientSecret s))
-handleGetRegisteredClients _ _ = respondError "Invalid arguments"
+handleGetRegisteredClients _ _ _ = respondError "Invalid arguments"
 
-handleGetSubscribedClients ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleGetSubscribedClients hi (SAMPString s : SAMPString msg : _) =
+handleGetSubscribedClients :: HubFunc
+handleGetSubscribedClients hi _ (SAMPString s : SAMPString msg : _) =
     case toMType (fromRString msg) of
       Just mtype -> if isMTWildCard mtype
                     then respondError "MType can not include a wild card"
@@ -1503,53 +1462,38 @@ handleGetSubscribedClients hi (SAMPString s : SAMPString msg : _) =
                         respondToClient "get/sub clients"
                                         (getSubscribedClients hi (toClientSecret s) mtype)
       _ -> respondError "Invalid MType"
-handleGetSubscribedClients _ _ = respondError "Invalid arguments"
+handleGetSubscribedClients _ _ _ = respondError "Invalid arguments"
 
-handleGetMetadata ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleGetMetadata hi (SAMPString s : SAMPString name : _) =
+handleGetMetadata :: HubFunc
+handleGetMetadata hi _ (SAMPString s : SAMPString name : _) =
     respondToClient "get/metadata" (getMetadata hi (toClientSecret s) (toClientName name))
-handleGetMetadata _ _ = respondError "Invalid arguments"
+handleGetMetadata _ _ _ = respondError "Invalid arguments"
 
-handleGetSubscriptions ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleGetSubscriptions hi (SAMPString s : SAMPString name : _) =
+handleGetSubscriptions :: HubFunc
+handleGetSubscriptions hi _ (SAMPString s : SAMPString name : _) =
     respondToClient "get/subs" (getSubscriptions hi (toClientSecret s) (toClientName name))
-handleGetSubscriptions _ _ = respondError "Invalid arguments"
+handleGetSubscriptions _ _ _ = respondError "Invalid arguments"
 
                              
-handleNotify ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleNotify hi (SAMPString s : SAMPString rid : SAMPMap msgMap : _) =
+handleNotify :: HubFunc
+handleNotify hi _ (SAMPString s : SAMPString rid : SAMPMap msgMap : _) =
     case parseMsgResponse msgMap of
       Right (mtype, args, otherArgs) -> notify hi (toClientSecret s) (toClientName rid) mtype args otherArgs
       Left emsg -> respondError emsg
-handleNotify _ _ = respondError "Invalid arguments"
+handleNotify _ _ _ = respondError "Invalid arguments"
 
 
-handleNotifyAll ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleNotifyAll hi (SAMPString s : SAMPMap msgMap : _) =
+handleNotifyAll :: HubFunc
+handleNotifyAll hi _ (SAMPString s : SAMPMap msgMap : _) =
     case parseMsgResponse msgMap of
       Right (mtype, args, otherArgs) -> notifyAll hi (toClientSecret s) mtype args otherArgs
       Left emsg -> respondError emsg
-handleNotifyAll _ _ = respondError "Invalid arguments"
+handleNotifyAll _ _ _ = respondError "Invalid arguments"
 
                       
-handleCall ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleCall hi (SAMPString s : SAMPString rid :
-               SAMPString tagstr : SAMPMap msgMap : _) =
+handleCall :: HubFunc
+handleCall hi _ (SAMPString s : SAMPString rid :
+                 SAMPString tagstr : SAMPMap msgMap : _) =
 
     let tag = toMessageTag tagstr
         secret = toClientSecret s
@@ -1559,16 +1503,10 @@ handleCall hi (SAMPString s : SAMPString rid :
              sendToClient hi secret clName tag mtype args otherArgs
          Left emsg -> respondError emsg
 
-handleCall _ _ = respondError "Invalid arguments"
+handleCall _ _ _ = respondError "Invalid arguments"
 
--- TODO: handleCall routines (indiv/All) need to include hub
---       in the clients that are processing
-
-handleCallAll ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleCallAll hi (SAMPString s : SAMPString tagstr : SAMPMap msgMap : _) =
+handleCallAll :: HubFunc
+handleCallAll hi _ (SAMPString s : SAMPString tagstr : SAMPMap msgMap : _) =
     let tag = toMessageTag tagstr
         secret = toClientSecret s
     in case parseMsgResponse msgMap of
@@ -1576,15 +1514,12 @@ handleCallAll hi (SAMPString s : SAMPString tagstr : SAMPMap msgMap : _) =
              sendToAll hi secret tag mtype args otherArgs
          Left emsg -> respondError emsg
 
-handleCallAll _ _ = respondError "Invalid arguments"
+handleCallAll _ _ _ = respondError "Invalid arguments"
 
 
-handleCallAndWait ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleCallAndWait hi (SAMPString s : SAMPString rid : SAMPMap msgMap :
-                      timeoutArg : _) =
+handleCallAndWait :: HubFunc
+handleCallAndWait hi _ (SAMPString s : SAMPString rid : SAMPMap msgMap :
+                        timeoutArg : _) =
     let secret = toClientSecret s
         clName = toClientName rid
 
@@ -1598,14 +1533,11 @@ handleCallAndWait hi (SAMPString s : SAMPString rid : SAMPMap msgMap :
              callAndWait hi secret clName tout mtype args otherArgs
          Left emsg -> respondError emsg
 
-handleCallAndWait _ _ = respondError "Invalid arguments"
+handleCallAndWait _ _ _ = respondError "Invalid arguments"
 
                         
-handleReply ::
-  HubInfo          -- ^ the hub
-  -> [SAMPValue]   -- ^ the arguments to the call
-  -> ActionM ()
-handleReply hi (SAMPString s : SAMPString msg : SAMPMap rspMap : _) =
+handleReply :: HubFunc
+handleReply hi _ (SAMPString s : SAMPString msg : SAMPMap rspMap : _) =
     let msgId = toMessageId msg
         secret = toClientSecret s
 {-                 
@@ -1624,7 +1556,7 @@ handleReply hi (SAMPString s : SAMPString msg : SAMPMap rspMap : _) =
 
     in reply hi secret msgId rspMap
        
-handleReply _ _ = respondError "Invalid arguments"
+handleReply _ _ _ = respondError "Invalid arguments"
                      
 -- To share the same code between async and synchronous calls,
 -- we need a tag for the synchronous cases. This may indicate
@@ -1666,6 +1598,9 @@ getMapFromParamsE kvs = do
 
 -- | Parse a SAMP message to extract the message type and parameter
 --   values. Is there a version of this in the Client code?
+--
+--   TODO: this is essentially parsing a SAMPResponse (but with
+--         support for extra key/value pairs)
 --
 parseMsgResponse ::
     [SAMPKeyValue]
@@ -1798,12 +1733,44 @@ type HubHandlerFunc =
     -> [SAMPKeyValue]  -- ^ extra arguments
     -> IO SAMPResponse
 
+type HubFunc =
+    HubInfo
+    -> RString   -- hub secret [do we really need this?]
+    -> [SAMPValue]
+    -> ActionM ()
+
+       
 makeHubSubscriptions :: [(MType, HubHandlerFunc)] -> SubscriptionMap
 makeHubSubscriptions hdlrs =
     let emap = []
         kvs = map (\(a,_) -> (a,emap)) hdlrs
     in toSubMap kvs
-    
+
+
+lookupMType :: HubInfo -> String -> Maybe HubFunc
+lookupMType hi mtype = M.lookup mtype (hiHubHandlers (hiReader hi))
+                       
+defaultHubHandlers :: M.Map String HubFunc
+defaultHubHandlers =
+    M.fromList [
+          ("samp.hub.ping", respondOkay)
+         , ("samp.hub.register", handleRegister)
+         , ("samp.hub.unregister", handleUnregister)
+         , ("samp.hub.setXmlrpcCallback", handleSetXmlrpcCallback)
+         , ("samp.hub.declareMetadata", handleDeclareMetadata)
+         , ("samp.hub.getMetadata", handleGetMetadata)
+         , ("samp.hub.declareSubscriptions", handleDeclareSubscriptions)
+         , ("samp.hub.getSubscriptions", handleGetSubscriptions)
+         , ("samp.hub.getRegisteredClients", handleGetRegisteredClients)
+         , ("samp.hub.getSubscribedClients", handleGetSubscribedClients)
+         , ("samp.hub.notify", handleNotify)
+         , ("samp.hub.notifyAll", handleNotifyAll)
+         , ("samp.hub.call", handleCall)
+         , ("samp.hub.callAll", handleCallAll)
+         , ("samp.hub.callAndWait", handleCallAndWait)
+         , ("samp.hub.reply", handleReply)
+         ]
+
 -- | This information is not going to change whilst processing a
 --   request.
 --
@@ -1815,7 +1782,9 @@ data HubInfoReader =
     , hiSecretLen :: Int    -- number of characters in the client secrets
     , hiMetadata :: MetadataMap
     , hiSubscribed :: SubscriptionMap
+    -- note: two sets of handlers
     , hiHandlers :: [(MType, HubHandlerFunc)]
+    , hiHubHandlers :: M.Map String HubFunc
     , hiCallback :: String  -- URL for the hub
     } -- deriving Show
 
@@ -1897,6 +1866,7 @@ newHubInfo huburl gen secret = do
             , hiMetadata = hmdata
             , hiSubscribed = hsubs
             , hiHandlers = handlers
+            , hiHubHandlers = defaultHubHandlers
             , hiCallback = huburl
             }
       his = HubInfoState {

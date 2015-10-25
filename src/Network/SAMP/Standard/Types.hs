@@ -800,6 +800,8 @@ query the status of the response. The 'toSAMPResponse', 'toSAMPResponseError'
 and 'toSAMPResponseWarning' routines are used to create @SAMPResponse@
 values.
 
+TODO: add the ability to store extra key/value pairs (i.e.
+outside the samp.params store)
 -}
 data SAMPResponse =
     SR (Maybe [SAMPKeyValue]) (Maybe (RString, [SAMPKeyValue]))
