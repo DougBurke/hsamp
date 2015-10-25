@@ -1297,17 +1297,23 @@ createHub socket hi secret = do
 
         get "/api/clients.json" $ do
           dbg "Request for clients: json format"
-          out <- jsonGetClients hi
+          out <- liftIO (jsonGetClients hi)
           json out
 
         get "/api/metadata.json" $ do
           dbg "Request for client metadata: json format"
-          out <- jsonGetMetadata hi
+          out <- liftIO (jsonGetMetadata hi)
           json out
                
         get "/api/subscriptions.json" $ do
           dbg "Request for subscriptions: json format"
-          out <- jsonGetSubscriptions hi
+          out <- liftIO (jsonGetSubscriptions hi)
+          json out
+
+        -- very insecure!
+        get "/api/callbacks.json" $ do
+          dbg "Request for callbacks: json format"
+          out <- liftIO (jsonGetCallbacks hi)
           json out
               
         return ()
@@ -1810,7 +1816,7 @@ data HubInfoReader =
     , hiMetadata :: MetadataMap
     , hiSubscribed :: SubscriptionMap
     , hiHandlers :: [(MType, HubHandlerFunc)]
-    , hiCallBack :: String  -- URL for the hub
+    , hiCallback :: String  -- URL for the hub
     } -- deriving Show
 
 -- | This information may change due to processing a request
@@ -1891,7 +1897,7 @@ newHubInfo huburl gen secret = do
             , hiMetadata = hmdata
             , hiSubscribed = hsubs
             , hiHandlers = handlers
-            , hiCallBack = huburl
+            , hiCallback = huburl
             }
       his = HubInfoState {
               hiRandomGen = gen
@@ -2412,11 +2418,11 @@ getSubscriptions hi secret clName = do
 
 jsonGetClients ::
     HubInfo
-    -> ActionM (M.Map String [String])
+    -> IO (M.Map String [String])
 jsonGetClients hi = do
   let hir = hiReader hi
       mvar = hiState hi
-  hub <- liftIO (readMVar mvar)
+  hub <- readMVar mvar
   let clMap = hiClients hub
       out = hiName hir : map (fromClientName . cdName) (M.elems clMap)
       names = map fromRString out
@@ -2427,11 +2433,11 @@ jsonGetClients hi = do
 --   name as the key and the value is the metadata.
 jsonGetMetadata ::
     HubInfo
-    -> ActionM (M.Map String (M.Map String (M.Map String SAMPValue)))
+    -> IO (M.Map String (M.Map String (M.Map String SAMPValue)))
 jsonGetMetadata hi = do
   let hir = hiReader hi
       mvar = hiState hi
-  hub <- liftIO (readMVar mvar)
+  hub <- readMVar mvar
 
   let clMap = hiClients hub
 
@@ -2456,7 +2462,7 @@ jsonGetMetadata hi = do
 --   a map. Although now there's an extra map that I don't understand!
 jsonGetSubscriptions ::
     HubInfo
-    -> ActionM (M.Map String (M.Map String (M.Map String (M.Map String J.Value))))
+    -> IO (M.Map String (M.Map String (M.Map String (M.Map String J.Value))))
        -- ^ The returned object has the key \"subscriptions". The
        --   contents are labelled with the client name, each of
        --   which lists the messages being subscribed to, with the value
@@ -2465,7 +2471,7 @@ jsonGetSubscriptions ::
 jsonGetSubscriptions hi = do
   let hir = hiReader hi
       mvar = hiState hi
-  hub <- liftIO (readMVar mvar)
+  hub <- readMVar mvar
   let clMap = hiClients hub
 
       conv (mtype, minfo) = (fromMType mtype,
@@ -2482,3 +2488,29 @@ jsonGetSubscriptions hi = do
   return (M.fromList [("subscriptions", subs)])
          
          
+-- | Return the callback endpoints of those clients which have
+--   called samp.hub.setXmlrpcCallback.
+--
+jsonGetCallbacks ::
+    HubInfo
+    -> IO (M.Map String (M.Map String String))
+       -- ^ The returned object has the key \"callbacks\". The
+       --   contents are labelled with the client name, each of
+       --   which gives the URI, including the hub.
+jsonGetCallbacks hi = do
+  let hir = hiReader hi
+      mvar = hiState hi
+  hub <- readMVar mvar
+  let clMap = hiClients hub
+
+      fromName = fromRString . fromClientName
+      conv cd = do
+        cback <- cdCallback cd
+        return (fromName (cdName cd), cback)
+
+      hubInfo = (fromRString (hiName hir), hiCallback hir)
+               
+      out = hubInfo : mapMaybe conv (M.elems clMap)
+      cbs = M.fromList out
+
+  return (M.fromList [("callbacks", cbs)])
