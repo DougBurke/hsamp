@@ -121,7 +121,7 @@ import Control.Arrow (first)
 import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar, newEmptyMVar, newMVar,
                                 putMVar, readMVar, takeMVar)
-import Control.Monad (forM, forM_, guard, void, when)
+import Control.Monad (forM, forM_, guard, unless, void, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.Trans (liftIO)
 
@@ -780,11 +780,11 @@ sendToAll hi secret tag msg args otherArgs = do
 
                    isHub = isHubSubscribed hi msg sendName
 
-               let recNames = intercalate " " (map (show . cdName) receivers)
+               let recNames = unwords (map (show . cdName) receivers)
                dbg ("sendToAll with sendName= " ++ show sendName ++
                     " recNames=" ++ recNames)
                         
-               mkvs <- forM (receivers) $ \rcd -> do
+               mkvs <- forM receivers $ \rcd -> do
                                        
                    let rSecret = cdSecret rcd
                        rName = cdName rcd
@@ -928,7 +928,7 @@ emptySAMPResponse = toSAMPResponse []
 -- | Process the samp.app.ping message sent to the hub
 hubSentPing :: HubHandlerFunc
 hubSentPing _ _ args otherArgs = do
-  infoIO ("Hub has been sent samp.app.ping")
+  infoIO "Hub has been sent samp.app.ping"
   infoIO ("params = " ++ show args)
   infoIO (" extra = " ++ show otherArgs)
   return (toSAMPResponse otherArgs) -- emptySAMPResponse TODO: is this correct
@@ -1018,8 +1018,7 @@ callAndWait hi secret recName waitTime msg args otherArgs = do
                           >> removeMessageId hi mid rSecret)
                 )
 
-            rsp <- liftIO (takeMVar rspmvar)
-            return rsp
+            liftIO (takeMVar rspmvar)
 
           Left _ -> do
             dbg "*** Looks like the receiver has disappeared ***"
@@ -2087,7 +2086,7 @@ unregister hi secret = do
              nclientmap `seq` nhub `seq` return ()
              forkCall (broadcastRemovedClient hi clName)
 
-             when (not (M.null (cdInFlight client)))
+             unless (M.null (cdInFlight client))
                   (liftIO (putStrLn ("Non empty inFlightMap: " ++
                                      show (M.keys (cdInFlight client)))))
              

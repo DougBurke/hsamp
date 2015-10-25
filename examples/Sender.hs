@@ -43,6 +43,7 @@ import Control.Concurrent
 import Control.Concurrent.ParallelIO.Global
 import Control.Monad (forM_, unless, when)
 
+import Data.Maybe (isNothing)
 import Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
 
 import Network.SAMP.Standard
@@ -214,7 +215,7 @@ processMessage conn (cmode, mtype, params) = do
           dbg "Closing socket"
           N.sClose sock
 
-          unless (flag == Nothing) $ do
+          unless (isNothing flag) $ do
             rclients <- takeMVar cv 
             case rclients of
               [] -> return ()
@@ -282,7 +283,7 @@ sendSync pchan conn msg tid = do
     printResponse pchan (diffUTCTime eTime sTime) (tid,tname) rsp
 
 getMsgTag :: IO MessageTag
-getMsgTag = toMessageTag <$> (getStdRandom $ randomAlphaNumRString 10)
+getMsgTag = toMessageTag <$> getStdRandom (randomAlphaNumRString 10)
 
 -- TODO: need to handle errors more sensibly than runE here!
 

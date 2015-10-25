@@ -689,7 +689,7 @@ instance XmlRpcType SAMPValue where
     getType (SAMPMap _) = TStruct
 
 instance J.ToJSON SAMPValue where
-    toJSON (SAMPString s) = J.String (T.pack (fromRString (s)))
+    toJSON (SAMPString s) = J.String (T.pack (fromRString s))
     toJSON (SAMPList xs)  = J.toJSON (map J.toJSON xs)
     toJSON (SAMPMap kvs)  = J.Object (HM.fromList (map conv kvs))
         where

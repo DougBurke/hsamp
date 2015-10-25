@@ -506,8 +506,9 @@ getSubscribedClientsE cl mtype
     | otherwise          =
         let conv :: SAMPKeyValue -> (ClientName, SAMPValue)
             conv = CA.first toClientName
-        in callHubE cl "samp.hub.getSubscribedClients" [toSValue mtype]
-               >>= fromSValue >>= return . map conv
+
+            act = callHubE cl "samp.hub.getSubscribedClients" [toSValue mtype]
+        in map conv `liftM` (act >>= fromSValue)
 
 -- | Send a message to a given client of the hub and do not
 -- wait for a response.
