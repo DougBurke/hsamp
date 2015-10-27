@@ -88,7 +88,6 @@ TODO:
   - clean up and refactoring, e.g. 
     - replace MType with separate "complete" and "allows wildcard"
       versions
-    - redo SAMPResponse so that it can handle extra values
 
 -}
 
@@ -152,6 +151,7 @@ import Network.SAMP.Standard (MType, RString, SAMPKeyValue
                              , renderSAMPResponse, toSAMPResponse
                              , toSAMPResponseError
                              , parseSAMPCall
+                             , getKey
                              , handleError)
 -- import Network.SAMP.Standard.Server.Scotty (runServer)
 
@@ -916,12 +916,12 @@ hubProcessMessage hi mtype args otherArgs = do
       emsg = "Internal error: hub is not subscribed to " ++ mtToRS mtype
   case lookup mtype funcs of
     Just f -> f hi mtype args otherArgs
-    _ -> return (toSAMPResponseError emsg [])
+    _ -> return (toSAMPResponseError emsg [] otherArgs)
 
         
 -- | An empty SAMP Response
 emptySAMPResponse :: SAMPResponse
-emptySAMPResponse = toSAMPResponse []
+emptySAMPResponse = toSAMPResponse [] []
 
                     
 -- | Process the samp.app.ping message sent to the hub
@@ -930,12 +930,12 @@ hubSentPing _ _ args otherArgs = do
   infoIO "Hub has been sent samp.app.ping"
   infoIO ("params = " ++ show args)
   infoIO (" extra = " ++ show otherArgs)
-  return (toSAMPResponse otherArgs) -- emptySAMPResponse TODO: is this correct
+  return emptySAMPResponse
 
 {-
 -- | Process the [x-]samp.query.by-meta message sent to the hub.
 hubSentQueryByMeta :: HubHandlerFunc                 
-hubSentQueryByMeta _ _ _ = return (toSAMPResponse [])
+hubSentQueryByMeta _ _ _ = return emptySAMPResponse
 -}
 
 toDuration :: Int -> Integer
@@ -1046,8 +1046,8 @@ reply ::
     HubInfo
     -> ClientSecret   -- ^ the client sending the message
     -> MessageId
-    -- -> SAMPResponse    -- ^ response to the message
-    -> [SAMPKeyValue]    -- ^ response to the message
+    -> SAMPResponse    -- ^ response to the message
+    -- -> [SAMPKeyValue]    -- ^ response to the message
     -> ActionM ()
 reply hi secret msgId replyData = do
 
@@ -1103,16 +1103,16 @@ reply hi secret msgId replyData = do
 replyToOrigin ::
     ClientName       -- ^ name of the client making the response
     -> InFlightData
-    -- -> SAMPResponse
-    -> [SAMPKeyValue]
+    -> SAMPResponse
+    -- -> [SAMPKeyValue]
     -> IO ()
 replyToOrigin clName ifd replyData =
     let url = ifdUrl ifd
         secret = ifdSecret ifd
         tag = ifdTag ifd
 
-        -- rmap = toSValue replyData
-        rmap = SAMPMap replyData
+        rmap = toSValue replyData
+        -- rmap = SAMPMap replyData
         arglist = [ SAMPString (fromClientSecret secret)
                   , SAMPString (fromClientName clName)
                   , SAMPString (fromMessageTag tag)
@@ -1400,6 +1400,7 @@ respondOkay _ _ _ = respond "okay" (toReturnValue emptySAMPResponse)
 respondError :: String -> ActionM ()
 respondError = respond "error" . rawError
 
+-- The integer value is not specified/used by SAMP, so set it to 1
 rawError :: String -> L.ByteString
 rawError = XI.renderResponse . XI.Fault 1
                    
@@ -1540,22 +1541,11 @@ handleReply :: HubFunc
 handleReply hi _ (SAMPString s : SAMPString msg : SAMPMap rspMap : _) =
     let msgId = toMessageId msg
         secret = toClientSecret s
-{-                 
+
     in case handleError Left (fromSValue (SAMPMap rspMap)) of
          Right rsp -> reply hi secret msgId rsp
          Left emsg -> respondError emsg
 
-   FOR NOW IGNORE ERROR CHECKING IN THE RESPONSE AND JUST PASS
-   STRAIGHT THROUGH TO THE ORIGINAL CLIENT
-    in do
-      liftIO (putStrLn ("@@> reply map=" ++ show rspMap))
-      case handleError Left (fromSValue (SAMPMap rspMap)) of
-         Right rsp -> reply hi secret msgId rsp
-         Left emsg -> respondError emsg
--}
-
-    in reply hi secret msgId rspMap
-       
 handleReply _ _ _ = respondError "Invalid arguments"
                      
 -- To share the same code between async and synchronous calls,
@@ -1565,42 +1555,14 @@ handleReply _ _ _ = respondError "Invalid arguments"
 --
 dummyTag :: MessageTag
 dummyTag = toMessageTag (error "dummy tag value should not be used")
-           
--- some helper routines
-
-lookupE :: (Eq k, Show k) => k -> [(k, v)] -> Either String v
-lookupE k kvs = case lookup k kvs of
-                  Just v -> Right v
-                  _ -> Left ("Unable to find key " ++ show k)
-
-msgToMTypeE :: RString -> Either String MType
-msgToMTypeE r = handleError Left (toMTypeE (fromRString r))
-
-getMsgTypeE :: [SAMPKeyValue] -> Either String MType
-getMsgTypeE kvs = do
-  val <- lookupE "samp.mtype" kvs
-  case val of
-    SAMPString x -> msgToMTypeE x
-    SAMPList _ -> Left "Expected string for samp.mtype, sent a list" 
-    SAMPMap _ -> Left "Expected string for samp.mtype, sent a map" 
-
--- Is this needed or can it be inlined directly into getMapFromParamsE?
-getMsgParamsE :: [SAMPKeyValue] -> Either String SAMPValue
-getMsgParamsE = lookupE "samp.params"
-
-getMapFromParamsE :: [SAMPKeyValue] -> Either String [SAMPKeyValue]
-getMapFromParamsE kvs = do
-  val <- getMsgParamsE kvs
-  case val of
-    SAMPMap out -> Right out
-    SAMPString _ -> Left "Expected a map for samp.params, sent a string"
-    SAMPList _ -> Left "Expected a map for samp.params, sent a list"
 
 -- | Parse a SAMP message to extract the message type and parameter
 --   values. Is there a version of this in the Client code?
 --
---   TODO: this is essentially parsing a SAMPResponse (but with
+--   TODO: this is essentially parsing a SAMP message (but with
 --         support for extra key/value pairs)
+--
+--   Is it worth converting from Err m a to Either String a here?
 --
 parseMsgResponse ::
     [SAMPKeyValue]
@@ -1608,10 +1570,15 @@ parseMsgResponse ::
        -- ^ On success, returns the MType, samp.params, and then
        --   any remaining key,value pairs.
 parseMsgResponse kvs = do
-  mtype <- getMsgTypeE kvs
-  params <- getMapFromParamsE kvs
-  let wanted (k, _) = k `notElem` ["samp.mtype", "samp.params"]
-  return (mtype, params, filter wanted kvs)
+    let act = do
+          mtype <- getKey "samp.mtype" kvs
+          params <- getKey "samp.params" kvs
+          return (mtype, params)
+
+        wanted (k, _) = k `notElem` ["samp.mtype", "samp.params"]
+
+    (mtype, params) <- handleError Left act
+    return (mtype, params, filter wanted kvs)
 
 parseMsgResponseE ::
     Monad m
@@ -1928,6 +1895,8 @@ addClientToHub hi = do
 -- TODO: in the broadcast code; should we identify problematic
 -- clients (i.e. those that don't respond) so that they can be
 -- removed?
+
+-- TODO: do I need to include "other arguments" here?
 
 broadcastMType ::
     HubInfo

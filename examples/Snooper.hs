@@ -479,8 +479,10 @@ handlePingCall ::
 handlePingCall pchan clvar _ secret name msgid keys = do
     clname <- getDisplayName clvar name
     syncPrint pchan $ displayWithKeys
-      ["hsamp-snooper was pinged by " ++ clname, displayMsgId msgid, displaySecret secret] keys []
-    return (toSAMPResponse [])
+      ["hsamp-snooper was pinged by " ++ clname
+      , displayMsgId msgid
+      , displaySecret secret] keys []
+    return (toSAMPResponse [] [])
 
 -- Return a warning to point out that we are just logging this message
 -- (basically copying the behavior of Mark's snooper here).
@@ -498,8 +500,9 @@ handleOtherCall pchan clvar mtype secret name msgid keys = do
     clname <- getDisplayName clvar name
     syncPrint pchan $ displayWithKeys
       ["Call of " ++ show mtype ++ " by " ++ clname, displayMsgId msgid, displaySecret secret] keys []
-    let emsg = fromJust $ toRString $ "The message " ++ show mtype ++ " has only been logged, not acted on."
-    return (toSAMPResponseWarning [] emsg [])
+    let emsg = fromJust (toRString ("The message " ++ show mtype ++
+                                    " has only been logged, not acted on."))
+    return (toSAMPResponseWarning [] emsg [] [])
 
 -- TODO: handle warning case, although when is this ever called?
 

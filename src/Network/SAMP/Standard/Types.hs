@@ -60,6 +60,7 @@ module Network.SAMP.Standard.Types (
        SAMPResponse, 
        toSAMPResponse, toSAMPResponseError, toSAMPResponseWarning,
        getSAMPResponseResult, getSAMPResponseError, getSAMPResponseErrorTxt,
+       getSAMPResponseExtra,
        isSAMPSuccess, isSAMPError, isSAMPErrorOnly, isSAMPWarning,
 
        SAMPMessage, toSAMPMessage, getSAMPMessageType, getSAMPMessageParams,
@@ -491,14 +492,15 @@ instance Eq MType where
 instance SAMPType MType where
     toSValue = fromString . show
 
-    fromSValue (SAMPString s) = toMTypeE $ fromRString s
-    fromSValue x = throwError $ "Expected a string, sent " ++ show x
+    fromSValue (SAMPString s) = toMTypeE (fromRString s)
+    fromSValue x = throwError ("Expected a string, sent " ++ show x)
 
 instance XmlRpcType MType where
     toValue = toValue . show
 
     fromValue (ValueString s) = toMTypeE s
-    fromValue x = throwError $ "Unable to convert to a SAMP MType from " ++ show x
+    fromValue x = throwError ("Unable to convert to a SAMP MType from " ++
+                              show x)
 
     getType _ = TString
 
@@ -636,11 +638,8 @@ toSAMPKeyValue (n,v) = (,) `liftM` toRStringE n `ap` fromValue v
 {-
 Remove the listed keys from the keylist.
 -}
-cleanKeys :: [RString] -> [SAMPKeyValue] -> [SAMPKeyValue]
+cleanKeys :: Eq a => [a] -> [(a, b)] -> [(a, b)]
 cleanKeys ks = filter (\(k,_) -> k `notElem` ks)
-
-cleanXKeys :: [String] -> [(String,Value)] -> [(String,Value)]
-cleanXKeys ks = filter (\(k,_) -> k `notElem` ks)
 
 {- | The SAMP profile supports three basic data types,
 a string, a list or a map (keys are strings and they
@@ -719,36 +718,36 @@ class SAMPType a where
 instance {-# OVERLAPPING #-} SAMPType RString where
     toSValue = SAMPString
     fromSValue (SAMPString s) = return s
-    fromSValue x = throwError $ "Expected a string, sent " ++ show x
+    fromSValue x = throwError ("Expected a string but sent " ++ show x)
 
 instance SAMPType Bool where
     toSValue True = "1"
     toSValue _    = "0"
 
     fromSValue (SAMPString s) = maybeToM ("Unable to convert " ++ show s ++ " to a Bool.") (asBool s)
-    fromSValue x = throwError $ "Expected a string but sent " ++ show x
+    fromSValue x = throwError ("Expected a string but sent " ++ show x)
 
 instance SAMPType Int where
     toSValue = fromString . show
 
     fromSValue (SAMPString s) = maybeToM ("Unable to convert " ++ show s ++ " to an Int.") (asIntegral s)
-    fromSValue x = throwError $ "Expected a string but sent " ++ show x
+    fromSValue x = throwError ("Expected a string but sent " ++ show x)
 
 instance SAMPType Integer where
     toSValue = fromString . show
 
     fromSValue (SAMPString s) = maybeToM ("Unable to convert " ++ show s ++ " to an Integer.") (asIntegral s)
-    fromSValue x = throwError $ "Expected a string but sent " ++ show x
+    fromSValue x = throwError ("Expected a string but sent " ++ show x)
 
 instance {-# OVERLAPPING #-} SAMPType [SAMPKeyValue] where
     toSValue = SAMPMap
     fromSValue (SAMPMap xs) = return xs
-    fromSValue x = throwError $ "Expected a SAMP map, sent " ++ show x
+    fromSValue x = throwError ("Expected a SAMP map but sent " ++ show x)
 
 instance {-# OVERLAPPABLE #-} (SAMPType a) => SAMPType [a] where
     toSValue = SAMPList . map toSValue
     fromSValue (SAMPList xs) = mapM fromSValue xs
-    fromSValue x = throwError $ "Expected a SAMP list, sent " ++ show x
+    fromSValue x = throwError ("Expected a SAMP list but sent " ++ show x)
 
 {-
 
@@ -763,7 +762,7 @@ instance SAMPType Double where
     toSValue = fromString . show
 
     fromSValue (SAMPString s) = maybeToM ("Unable to convert " ++ show s ++ " to an Integer.") (asFloating s)
-    fromSValue x = throwError $ "Expected a string but sent " ++ show x
+    fromSValue x = throwError ("Expected a string but sent " ++ show x)
 
 
 -- How can we make it so that this data is invalid once we unregister
@@ -793,116 +792,125 @@ data SAMPConnection = SAMPConnection {
      } deriving (Eq, Show)
 
 {-|
-The response from a client to a SAMP call.
+The response from a recipient to a sender.
 
 Use the 'isSAMPSuccess', 'isSAMPError' and 'isSAMPWarning' routines to
 query the status of the response. The 'toSAMPResponse', 'toSAMPResponseError'
 and 'toSAMPResponseWarning' routines are used to create @SAMPResponse@
 values.
 
-TODO: add the ability to store extra key/value pairs (i.e.
-outside the samp.params store)
+The response includes the @samp.status@, @samp.result@, and @samp.error@
+fields, as well as any other values (with a key) to be passed around.
 -}
 data SAMPResponse =
-    SR (Maybe [SAMPKeyValue]) (Maybe (RString, [SAMPKeyValue]))
+    SROkay { _srokResult :: [SAMPKeyValue]
+           , _srokOther :: [SAMPKeyValue] }
+        |
+    SRWarning { _srwarnResult :: [SAMPKeyValue]
+              , _srwarnError :: (RString, [SAMPKeyValue])
+              , _srwarnOther :: [SAMPKeyValue] }
+        |
+    SRError { _srerrError :: (RString, [SAMPKeyValue])
+            , _srerrOther :: [SAMPKeyValue] }
     deriving (Eq, Show)
 
+
 instance SAMPType SAMPResponse where
-    toSValue (SR (Just vs) Nothing) = 
-        SAMPMap [(sStatus, sOkVal), (sResult, SAMPMap vs)]
-    toSValue (SR Nothing (Just (emsg,es))) =
-        SAMPMap [(sStatus, sErrVal), (sError, SAMPMap nvs)]
-          where
-            nvs = (sErrorTxt, SAMPString emsg) : es
-    toSValue (SR (Just vs) (Just (emsg,es))) =
-        SAMPMap [(sStatus, sWarnVal), (sResult, SAMPMap vs),
-                 (sError, SAMPMap nvs)]
-          where
-            nvs = (sErrorTxt, SAMPString emsg) : es
-    toSValue x = error $ "Invalid SAMPResponse: " ++ show x
+
+    toSValue (SROkay vals other) =
+        SAMPMap ([ (sStatus, sOkVal)
+                 , (sResult, SAMPMap vals)]
+                 ++ other)
+    toSValue (SRWarning vals (emsg, evals) other) =
+        SAMPMap ([ (sStatus, sWarnVal)
+                 , (sResult, SAMPMap vals)
+                 , (sError, SAMPMap err)]
+                 ++ other)
+            where
+              err = (sErrorTxt, SAMPString emsg) : evals
+    toSValue (SRError (emsg, evals) other) =
+        SAMPMap ([ (sStatus, sErrVal)
+                 , (sError, SAMPMap err)]
+                 ++ other)
+            where
+              err = (sErrorTxt, SAMPString emsg) : evals
 
     fromSValue (SAMPMap xs) = do
-        ss <- liftM fromRString $ getKey sStatus xs
+        -- Need to be explicit in ghc 7.10.2 as the (presumably overlapping)
+        -- SAMPValue instances seem to cause problems, which is why
+        -- the type of status is constrained in the case statement below.
+        status <- getKey sStatus xs
+        let leftovers = cleanKeys [sStatus, sResult, sError] xs
+
         let getError = do
               evals <- getKey sError xs
               emsg <- getKey sErrorTxt evals
               let nes = cleanKeys [sErrorTxt] evals
-              return (Just (emsg,nes))
-              
-        case ss of
+              return (emsg, nes)
+
+        case status :: RString of
           "samp.ok" -> do
-            fs <- getKey sResult xs
-            return $ SR (Just fs) Nothing
+              vals <- getKey sResult xs
+              return (SROkay vals leftovers)
+                      
+          "samp.warning" -> do
+              vals <- getKey sResult xs
+              err <- getError
+              return (SRWarning vals err leftovers)
 
           "samp.error" -> do
-            err <- getError  
-            return $ SR Nothing err
-
-          "samp.warning" -> do
-            fs <- getKey sResult xs
-            err <- getError
-            return $ SR (Just fs) err
-
-          _ -> throwError $ "Unexpected samp.status of " ++ show ss
-
-    fromSValue x = throwError $ "Expected a SAMP map but sent " ++ show x
-
+              err <- getError
+              return (SRError err leftovers)
+                     
+          _ -> throwError ("Unexpected samp.status of " ++ show status)
+                    
+    fromSValue x = throwError ("Expected a SAMP map but sent " ++ show x)
+                 
 -- | Create a SAMP response that indicates success
-toSAMPResponse :: [SAMPKeyValue] -- ^ key,value pairs to reply to the caller
-               -> SAMPResponse
-toSAMPResponse svals = SR (Just svals) Nothing
+toSAMPResponse ::
+    [SAMPKeyValue] -- ^ key,value pairs to reply to the caller
+    -> [SAMPKeyValue] -- ^ extra key/value pairs to send
+    -> SAMPResponse
+toSAMPResponse svals other = SROkay svals other
 
 -- | Create a SAMP response that indicates an error
-toSAMPResponseError :: RString -- ^ the error test (@samp.errortxt@)
-                    -> [SAMPKeyValue] -- ^ other elements of the error
-                    -> SAMPResponse
-toSAMPResponseError emsg evals = SR Nothing (Just (emsg,evals))
+toSAMPResponseError ::
+    RString -- ^ the error test (@samp.errortxt@)
+    -> [SAMPKeyValue] -- ^ other elements of the error
+    -> [SAMPKeyValue] -- ^ extra key/value pairs to send
+    -> SAMPResponse
+toSAMPResponseError emsg evals other = SRError (emsg, evals) other
 
 -- | Create a SAMP response that indicates a warning.
-toSAMPResponseWarning :: [SAMPKeyValue] -- ^ successful key,value pairs
-                      -> RString -- ^ error message (@samp.errortxt@)
-                      -> [SAMPKeyValue] -- ^ other elements of the error
-                      -> SAMPResponse
-toSAMPResponseWarning svals emsg evals = SR (Just svals) (Just (emsg,evals))
+toSAMPResponseWarning ::
+    [SAMPKeyValue] -- ^ successful key,value pairs
+    -> RString -- ^ error message (@samp.errortxt@)
+    -> [SAMPKeyValue] -- ^ other elements of the error
+    -> [SAMPKeyValue] -- ^ extra key/value pairs to send
+    -> SAMPResponse
+toSAMPResponseWarning svals emsg evals other =
+    SRWarning svals (emsg, evals) other
 
-sStatus , sResult , sError , sErrorTxt :: RString
+-- TODO: perhaps samp.ok/warning/error should be a separate
+--       type (e.g. enumerated) so that it's easier to pattern match
+--
+sStatus , sResult , sOkay, sWarning, sError , sErrorTxt :: RString
 sStatus = "samp.status"
 sResult = "samp.result"
+sOkay = "samp.ok"
+sWarning = "samp.warning"
 sError  = "samp.error"
 sErrorTxt = "samp.errortxt"
 
 sOkVal , sErrVal , sWarnVal :: SAMPValue
-sOkVal   = "samp.ok"
-sErrVal  = "samp.error"
-sWarnVal = "samp.warning"
+sOkVal   = toSValue sOkay
+sErrVal  = toSValue sError
+sWarnVal = toSValue sWarning
 
+-- | Convert via @SAMPValue@
 instance XmlRpcType SAMPResponse where
     toValue = toValue . toSValue
-
-    -- TODO: can we simplify the following by using the SAMPType instance?
-    fromValue (ValueStruct xs) = do
-        ss <- getField "samp.status" xs :: (Monad m) => Err m RString
-        let getError = do
-              evals <- getField "samp.error" xs
-              emsg <- getField "samp.errortxt" evals
-              nes <- mapM toSAMPKeyValue $ cleanXKeys ["samp.errortxt"] evals
-              return $ Just (emsg, nes)
-              
-        case ss of
-          "samp.ok" -> do
-            fs <- getField "samp.result" xs
-            return $ SR (Just fs) Nothing
-          "samp.error" -> do
-            err <- getError
-            return $ SR Nothing err
-          "samp.warning" -> do
-            fs <- getField "samp.result" xs
-            err <- getError
-            return $ SR (Just fs) err
-          _ -> fail $ "Unexpected samp.status of " ++ show ss
-
-    fromValue x = fail $ "Unable to convert to SAMP Response from " ++ show x
-
+    fromValue xs = fromValue xs >>= fromSValue
     getType _ = TStruct
 
 {-|
@@ -911,42 +919,53 @@ return 'True' here; use 'isSAMPWarning' for an explicit check
 of this case.
 -}
 isSAMPSuccess :: SAMPResponse -> Bool
-isSAMPSuccess (SR (Just _) _) = True
-isSAMPSuccess _ = False
-
+isSAMPSuccess (SROkay _ _) = True
+isSAMPSuccess (SRWarning _ _ _) = True
+isSAMPSuccess (SRError _ _) = False
+                              
 {-|
 Does the response indicate an error? Note that a warning will 
 return 'True' here; use 'isSAMPWarning' for an explicit check
 of this case.
 -}
 isSAMPError :: SAMPResponse -> Bool
-isSAMPError (SR _ (Just _)) = True
-isSAMPError _ = False
+isSAMPError (SROkay _ _) = False
+isSAMPError (SRWarning _ _ _) = True
+isSAMPError (SRError _ _) = True
 
 {-|
 Does the response indicate an error? Unlike 'isSAMPError' this 
 returns 'False' if the response was a warning.
 -}
 isSAMPErrorOnly :: SAMPResponse -> Bool
-isSAMPErrorOnly rsp = isSAMPError rsp && not (isSAMPWarning rsp)
+isSAMPErrorOnly (SROkay _ _) = False
+isSAMPErrorOnly (SRWarning _ _ _) = False
+isSAMPErrorOnly (SRError _ _) = True
 
 -- | Does the response indicate a warning?
 isSAMPWarning :: SAMPResponse -> Bool
-isSAMPWarning (SR (Just _) (Just _)) = True
-isSAMPWarning _ = False
+isSAMPWarning (SROkay _ _) = False
+isSAMPWarning (SRWarning _ _ _) = True
+isSAMPWarning (SRError _ _) = False
 
 -- | Return the result stored in a SAMP response.
+--
+--   This does not return the extra values.
 getSAMPResponseResult :: SAMPResponse -> Maybe [SAMPKeyValue]
-getSAMPResponseResult (SR r _) = r
-
+getSAMPResponseResult (SROkay r _) = Just r
+getSAMPResponseResult (SRWarning r _ _) = Just r
+getSAMPResponseResult (SRError _ _) = Nothing
+                                     
 {-|
 Return the error information stored in a SAMP response.
 The first element of the tuple is the @samp.errortxt@
 value, the second element is the other values of the error map.
 -}
 getSAMPResponseError :: SAMPResponse -> Maybe (RString, [SAMPKeyValue])
-getSAMPResponseError (SR _ e) = e
-
+getSAMPResponseError (SROkay _ _) = Nothing
+getSAMPResponseError (SRWarning _ e _) = Just e
+getSAMPResponseError (SRError e _) = Just e
+                        
 {-|
 Return the contents of the @samp.errortxt@ return value,
 if provided.
@@ -954,6 +973,14 @@ if provided.
 getSAMPResponseErrorTxt :: SAMPResponse -> Maybe RString
 getSAMPResponseErrorTxt = fmap fst . getSAMPResponseError
 
+{-|
+Return any "extra" values that were included in the response.
+-}
+getSAMPResponseExtra :: SAMPResponse -> [SAMPKeyValue]
+getSAMPResponseExtra (SROkay _ o) = o
+getSAMPResponseExtra (SRWarning _ _ o) = o
+getSAMPResponseExtra (SRError _ o) = o
+                          
 {-|
 A SAMP message, which contains the message type ('MType')
 and the message parameters as a list of key,value pairs.
@@ -986,10 +1013,11 @@ sparams = toRS "samp.params"
 
 -- | Get a value from the contents of a SAMP Map (given as a list
 -- of key,value pairs).
-getKey :: (Monad m, SAMPType a) => 
-       RString             -- ^ Field name
-       -> [SAMPKeyValue]   -- ^ SAMP Map contents
-       -> Err m a
+getKey ::
+    (Monad m, SAMPType a)
+    => RString             -- ^ Field name
+    -> [SAMPKeyValue]   -- ^ SAMP Map contents
+    -> Err m a
 getKey k xs = maybeToM ("Key " ++ show k ++ " not found")
                   (lookup k xs) >>= fromSValue
 
