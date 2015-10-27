@@ -871,7 +871,7 @@ toSAMPResponse ::
     [SAMPKeyValue] -- ^ key,value pairs to reply to the caller
     -> [SAMPKeyValue] -- ^ extra key/value pairs to send
     -> SAMPResponse
-toSAMPResponse svals other = SROkay svals other
+toSAMPResponse = SROkay
 
 -- | Create a SAMP response that indicates an error
 toSAMPResponseError ::
@@ -879,7 +879,7 @@ toSAMPResponseError ::
     -> [SAMPKeyValue] -- ^ other elements of the error
     -> [SAMPKeyValue] -- ^ extra key/value pairs to send
     -> SAMPResponse
-toSAMPResponseError emsg evals other = SRError (emsg, evals) other
+toSAMPResponseError emsg evals = SRError (emsg, evals)
 
 -- | Create a SAMP response that indicates a warning.
 toSAMPResponseWarning ::
@@ -888,8 +888,8 @@ toSAMPResponseWarning ::
     -> [SAMPKeyValue] -- ^ other elements of the error
     -> [SAMPKeyValue] -- ^ extra key/value pairs to send
     -> SAMPResponse
-toSAMPResponseWarning svals emsg evals other =
-    SRWarning svals (emsg, evals) other
+toSAMPResponseWarning svals emsg evals =
+    SRWarning svals (emsg, evals) 
 
 -- TODO: perhaps samp.ok/warning/error should be a separate
 --       type (e.g. enumerated) so that it's easier to pattern match
@@ -919,9 +919,9 @@ return 'True' here; use 'isSAMPWarning' for an explicit check
 of this case.
 -}
 isSAMPSuccess :: SAMPResponse -> Bool
-isSAMPSuccess (SROkay _ _) = True
-isSAMPSuccess (SRWarning _ _ _) = True
-isSAMPSuccess (SRError _ _) = False
+isSAMPSuccess SROkay {} = True
+isSAMPSuccess SRWarning {} = True
+isSAMPSuccess SRError {} = False
                               
 {-|
 Does the response indicate an error? Note that a warning will 
@@ -929,24 +929,24 @@ return 'True' here; use 'isSAMPWarning' for an explicit check
 of this case.
 -}
 isSAMPError :: SAMPResponse -> Bool
-isSAMPError (SROkay _ _) = False
-isSAMPError (SRWarning _ _ _) = True
-isSAMPError (SRError _ _) = True
+isSAMPError SROkay {} = False
+isSAMPError SRWarning {} = True
+isSAMPError SRError {} = True
 
 {-|
 Does the response indicate an error? Unlike 'isSAMPError' this 
 returns 'False' if the response was a warning.
 -}
 isSAMPErrorOnly :: SAMPResponse -> Bool
-isSAMPErrorOnly (SROkay _ _) = False
-isSAMPErrorOnly (SRWarning _ _ _) = False
-isSAMPErrorOnly (SRError _ _) = True
+isSAMPErrorOnly SROkay {} = False
+isSAMPErrorOnly SRWarning {} = False
+isSAMPErrorOnly SRError {} = True
 
 -- | Does the response indicate a warning?
 isSAMPWarning :: SAMPResponse -> Bool
-isSAMPWarning (SROkay _ _) = False
-isSAMPWarning (SRWarning _ _ _) = True
-isSAMPWarning (SRError _ _) = False
+isSAMPWarning SROkay {} = False
+isSAMPWarning SRWarning {} = True
+isSAMPWarning SRError {} = False
 
 -- | Return the result stored in a SAMP response.
 --
@@ -954,7 +954,7 @@ isSAMPWarning (SRError _ _) = False
 getSAMPResponseResult :: SAMPResponse -> Maybe [SAMPKeyValue]
 getSAMPResponseResult (SROkay r _) = Just r
 getSAMPResponseResult (SRWarning r _ _) = Just r
-getSAMPResponseResult (SRError _ _) = Nothing
+getSAMPResponseResult SRError {} = Nothing
                                      
 {-|
 Return the error information stored in a SAMP response.
@@ -962,7 +962,7 @@ The first element of the tuple is the @samp.errortxt@
 value, the second element is the other values of the error map.
 -}
 getSAMPResponseError :: SAMPResponse -> Maybe (RString, [SAMPKeyValue])
-getSAMPResponseError (SROkay _ _) = Nothing
+getSAMPResponseError SROkay {} = Nothing
 getSAMPResponseError (SRWarning _ e _) = Just e
 getSAMPResponseError (SRError e _) = Just e
                         
