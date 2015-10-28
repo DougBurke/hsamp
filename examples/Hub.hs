@@ -107,7 +107,7 @@ import qualified Data.Text.Lazy as LT
 import qualified System.Posix.IO as P
     
 import System.Directory (doesFileExist, removeFile)
-import System.Environment (getArgs, getEnv, getProgName)
+import System.Environment (getArgs, getProgName)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr)
 import System.Posix.Files (ownerReadMode, ownerWriteMode)
@@ -152,14 +152,15 @@ import Network.SAMP.Standard (MType, RString, SAMPKeyValue
                              , toSAMPResponseError
                              , parseSAMPCall
                              , getKey
-                             , handleError)
+                             , handleError, runE)
+import Network.SAMP.Standard.Setup (sampLockFileE)
 -- import Network.SAMP.Standard.Server.Scotty (runServer)
 
 import qualified Network as N
 import Network.Socket (Socket, socketPort)
     
 import Network.HTTP.Types (status400)
-import Network.URI (URI(..), parseAbsoluteURI, parseURI)
+import Network.URI (URI(..), parseURI)
 
 import Network.Wai (Middleware)
 import Network.Wai.Middleware.RequestLogger (Destination(..), destination,
@@ -229,34 +230,28 @@ homeEnvVar = "USERPROFILE"
 homeEnvVar = "HOME"
 #endif
 
-err :: String -> IO ()
-err msg = hPutStrLn stderr ("ERROR: " ++ msg) >> exitFailure
+-- | Return the location of the lock file. If the file exists then
+--   exit with an error.
+--
+--   This has not been tested on Windows so will probably fail there.
+--   It does not use Haskell's System.Directory.getHomeDirectory since
+--   this is unlikely to give the correct location on Windows.
+--
+--   This follows SAMP version 1.2 for location of the lock file.
+--
 
-{- | Return the location of the lock file. If the file exists then
-     exit with an error. Note that this always uses $HOME/.samp
+-- TODO: need to check that an existing hub responds to a samp.hub.ping call
 
-     This has not been tested on Windows so will probably fail there.
-     It does not use Haskell's System.Directory.getHomeDirectory since
-     this is unliekly to give the correct location on Windows.
-
-TODO: need to check that an existing hub responds to a samp.hub.ping call
-
--}
 getLockFile :: IO String
 getLockFile = do
-    home <- getEnv homeEnvVar  -- raises an exception if var not found
-    let fname = "file://" ++ home ++ "/.samp"
-        furl = parseAbsoluteURI fname
-    case furl of
-        Just url -> do
-            let hubName = uriPath url
-            flag <- doesFileExist hubName
-            if flag
-              then err ("Is a SAMP hub already running? " ++ hubName ++
-                        " already exists.") >> return ""
-              else return hubName
-
-        _ -> err ("Unable to parse location: <" ++ fname ++ ">") >> return ""
+  fileLoc <- runE sampLockFileE
+  let hubName = uriPath fileLoc
+  flag <- doesFileExist hubName
+  if flag
+    then hPutStrLn stderr ("ERROR: Is a SAMP hub already running? " ++
+                           hubName ++ " already exists.")
+         >> exitFailure
+    else return hubName
 
 -- | Create the hub file. The file is set to have no permissions
 --   in the group or owner settings (this makes the routine non-portable).
