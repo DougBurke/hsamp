@@ -63,8 +63,10 @@ module Network.SAMP.Standard.Types (
        getSAMPResponseExtra,
        isSAMPSuccess, isSAMPError, isSAMPErrorOnly, isSAMPWarning,
 
-       SAMPMessage, toSAMPMessage, getSAMPMessageType, getSAMPMessageParams,
-
+       SAMPMessage,
+       toSAMPMessage, toSAMPMessageMT,
+       getSAMPMessageType, getSAMPMessageParams, getSAMPMessageExtra,
+                          
        SAMPMethodCall(..),
        SAMPMethodResponse(..),
        parseSAMPCall, parseSAMPResponse,
@@ -982,54 +984,84 @@ getSAMPResponseExtra (SRWarning _ _ o) = o
 getSAMPResponseExtra (SRError _ o) = o
                           
 {-|
-A SAMP message, which contains the message type ('MType')
-and the message parameters as a list of key,value pairs.
+A SAMP message, which contains the message type ('MType'),
+the message parameters as a list of key,value pairs,
+and any extra parameters
 -}
-data SAMPMessage = SM MType [SAMPKeyValue] deriving (Eq, Show)
+data SAMPMessage = SM {
+      _smType :: MType
+    , _smParams :: [SAMPKeyValue]
+    , _smExtra ::  [SAMPKeyValue]
+    } deriving (Eq, Show)
 
 {-|
 Constructor for a 'SAMPMessage'.
 
 -}
-toSAMPMessage :: (Monad m) => 
-              MType -- ^ The 'MType' of the message (this is the @samp.mtype@ key). It can not contain a wild card.
-              -> [SAMPKeyValue]  -- ^ The parameters for the message (this is the @samp.params@ key).
-              -> Err m SAMPMessage
-toSAMPMessage mtype params
+toSAMPMessage ::
+    (Monad m)
+    => MType
+    -- ^ The 'MType' of the message (this is the @samp.mtype@ key). It
+    --   can not contain a wild card.
+    -> [SAMPKeyValue]
+    -- ^ The parameters for the message (this is the @samp.params@ key).
+    -> [SAMPKeyValue]
+    -- ^ Any extra key and value pairs to include in the message.
+    -> Err m SAMPMessage
+toSAMPMessage mtype params extra
     | isMTWildCard mtype = throwError "MType can not contain a wild card when creating a SAMP message."
-    | otherwise          = return (SM mtype params)
+    | otherwise          = return (SM mtype params extra)
 
--- | What is the 'MType' of the message (the @samp.mtype@ key)?
+toSAMPMessageMT ::
+    MType
+    -- ^ The 'MType' of the message (this is the @samp.mtype@ key). It
+    --   MUST NOT contain a wild card, but this is not enforced
+    -> [SAMPKeyValue]
+    -- ^ The parameters for the message (this is the @samp.params@ key).
+    -> [SAMPKeyValue]
+    -- ^ Any extra key and value pairs to include in the message.
+    -> SAMPMessage
+toSAMPMessageMT = SM
+
+-- | Return the 'MType' of the message (the @samp.mtype@ key).
 getSAMPMessageType :: SAMPMessage -> MType
-getSAMPMessageType (SM mt _) = mt
+getSAMPMessageType = _smType
 
--- | What are the parameters of the message (the @samp.params@ key)?
+-- | Return the parameters of the message (the @samp.params@ key).
 getSAMPMessageParams :: SAMPMessage -> [SAMPKeyValue]
-getSAMPMessageParams (SM _ ps) = ps
+getSAMPMessageParams = _smParams
+
+-- | Return the extra key,value pairs in this message (i.e. those
+--   not part of the @samp.params@ key).
+getSAMPMessageExtra :: SAMPMessage -> [SAMPKeyValue]
+getSAMPMessageExtra = _smExtra
 
 smtype , sparams :: RString
-smtype = toRS "samp.mtype"
-sparams = toRS "samp.params"
+smtype = "samp.mtype"
+sparams = "samp.params"
 
 -- | Get a value from the contents of a SAMP Map (given as a list
 -- of key,value pairs).
 getKey ::
     (Monad m, SAMPType a)
-    => RString             -- ^ Field name
-    -> [SAMPKeyValue]   -- ^ SAMP Map contents
+    => RString          -- ^ Field name
+    -> [SAMPKeyValue]   -- ^ SAMP Map
     -> Err m a
 getKey k xs = maybeToM ("Key " ++ show k ++ " not found")
                   (lookup k xs) >>= fromSValue
 
 instance SAMPType SAMPMessage where
-    toSValue (SM mt ps) = SAMPMap [(smtype, toSValue mt),
-                                   (sparams, SAMPMap ps)]
-
+    toSValue sm =
+        SAMPMap ([ (smtype, toSValue (_smType sm))
+                 , (sparams, SAMPMap (_smParams sm))
+                 ] ++ _smExtra sm)
+                        
     fromSValue (SAMPMap xs) = do
         mt <- getKey smtype xs
         ps <- getKey sparams xs
-        return $ SM mt ps
-    fromSValue x = throwError $ "Expected a SAMP map but sent " ++ show x
+        let extras = cleanKeys [smtype, sparams] xs
+        toSAMPMessage mt ps extras
+    fromSValue x = throwError ("Expected a SAMP map but sent " ++ show x)
 
 instance XmlRpcType SAMPMessage where
     toValue = toValue . toSValue
@@ -1037,10 +1069,16 @@ instance XmlRpcType SAMPMessage where
     -- can I use SAMPType for this too? At least once I have added in more
     -- instances.
     fromValue (ValueStruct xs) = do
-        mt <- getField "samp.mtype" xs >>= toMTypeE
-        ps <- getField "samp.params" xs >>= mapM toSAMPKeyValue
-        return $ SM mt ps
-    fromValue x = throwError $ "Unable to convert to SAMP Message from " ++ show x
+        let key1 = "samp.mtype"
+            key2 = "samp.params"
+            extras = cleanKeys [key1, key2] xs
+        mt <- getField key1 xs >>= toMTypeE
+        ps <- getField key2 xs >>= mapM toSAMPKeyValue
+        sextras <- mapM toSAMPKeyValue extras
+        toSAMPMessage mt ps sextras
+                      
+    fromValue x = throwError ("Unable to convert to SAMP Message from " ++
+                              show x)
 
     getType _ = TStruct
 

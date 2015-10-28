@@ -284,13 +284,20 @@ sPrivateKey = "samp.private-key"
 sHubId      = "samp.hub-id"
 sSelfId     = "samp.self-id"
 
--- lookup a RString value from a SAMPKeyValue list
+-- lookup a RString value from a SAMPKeyValue list;
+-- could use fromSValue to parse the response but
+-- this should give a slightly-more-useful error
+-- message (containing both key and value)
+--
 slookup :: (Monad m) => RString -> [SAMPKeyValue] -> Err m RString
-slookup k a = case lookup k a of
-                Just (SAMPString s) -> return s
-                Just x              -> throwError $ "Expected a string for key=" ++ fromRString k ++ " but found " ++ show x
-                _                   -> throwError $ "Unable to find key " ++ show k
-
+slookup k a =
+    let conv :: Monad m => SAMPValue -> Err m RString
+        conv (SAMPString s) = return s
+        conv x = throwError ("Expected a string for key=" ++ show k ++
+                             " but found " ++ show x)
+        noKey = throwError ("Unable to find key " ++ show k)
+    in maybe noKey conv (lookup k a)
+                                       
 -- | Create a 'SAMPConnection' record from the hub information and response
 -- from 'registerE'.
 getClientInfoE :: (Monad m)
@@ -341,13 +348,19 @@ toMetadata m txt html icon doc =
 
 -- | Create the key/value pairs used by 'declareMetadataE'
 -- for the common metadata settings. Also see 'toMetadata'.
-toMetadataE :: Monad m
-            => String -- ^ A one-word title for the application (@samp.name@)
-            -> Maybe String -- ^ A short description of the application in plain text (@samp.description.text@)
-            -> Maybe String -- ^ A description of the application in HTML (@samp.description.html@)
-            -> Maybe String -- ^ The URL of an icon in png, gif or jpeg format (@samp.icon.url@)
-            -> Maybe String -- ^ The URL of a documentation web page (@samp.documentation.url@)
-            -> Err m [SAMPKeyValue]
+toMetadataE ::
+    Monad m
+    => String -- ^ A one-word title for the application (@samp.name@)
+    -> Maybe String
+       -- ^ A short description of the application in plain text
+       --   (@samp.description.text@)
+    -> Maybe String
+       -- ^ A description of the application in HTML (@samp.description.html@)
+    -> Maybe String
+       -- ^ The URL of an icon in png, gif or jpeg format (@samp.icon.url@)
+    -> Maybe String
+       -- ^ The URL of a documentation web page (@samp.documentation.url@)
+    -> Err m [SAMPKeyValue]
 toMetadataE m txt html icon doc = 
     let f k (Just v) = toRStringE v >>= \vs -> return $ Just (k, SAMPString vs)
         f _ _ = return Nothing
@@ -364,17 +377,20 @@ for setting the common metadata fields.
 This overwrites the existing metadata stored in the hub for the
 client.
 -}
-declareMetadataE :: SAMPConnection
-                 -> [SAMPKeyValue] -- ^ the key/value pairs to declare 
-                 -> Err IO ()
+declareMetadataE ::
+    SAMPConnection
+    -> [SAMPKeyValue] -- ^ the key/value pairs to declare 
+    -> Err IO ()
 declareMetadataE cl ks = 
     callHubE_ cl "samp.hub.declareMetadata" [SAMPMap ks]
 
 -- | Return the metadata for another client of the SAMP hub as a
 -- list of (key,value) pairs.
-getMetadataE :: SAMPConnection
-             -> ClientName -- ^ The id of the SAMP client to query
-             -> Err IO [SAMPKeyValue] -- ^ The metadata key/value pairs of the queried client
+getMetadataE ::
+    SAMPConnection
+    -> ClientName -- ^ The id of the SAMP client to query
+    -> Err IO [SAMPKeyValue]
+       -- ^ The metadata key/value pairs of the queried client
 getMetadataE conn clid =
     callHubE conn "samp.hub.getMetadata" [toSValue clid]
     >>= fromSValue
@@ -523,7 +539,8 @@ this one).
 -}
 getClientNamesE :: 
   SAMPConnection
-  -> Err IO [(ClientName, Maybe RString)] -- ^ key is the client id and the value is the @samp.name@ value (if set)
+  -> Err IO [(ClientName, Maybe RString)]
+     -- ^ key is the client id and the value is the @samp.name@ value (if set)
 getClientNamesE conn = do
     clients <- getRegisteredClientsE conn
     forM clients $ \clid -> (,) clid <$> getClientNameE conn clid

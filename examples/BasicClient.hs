@@ -65,7 +65,7 @@ runClient = runE $ do
     -- Should really check that /tmp/foo.bar does not exist before
     -- sending this message!
     liftIO $ putStrLn "Sending file.load message for /tmp/foo.bar"
-    msg <- toSAMPMessage "file.load" [("filename", "/tmp/foo.bar")]
+    msg <- toSAMPMessage "file.load" [("filename", "/tmp/foo.bar")] []
     notifyAllE_ conn msg
 
     -- Unregister

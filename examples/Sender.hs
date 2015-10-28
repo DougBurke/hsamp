@@ -182,7 +182,7 @@ processMessage conn (cmode, mtype, params) = do
   if null targets
     then putStrLn $ "No clients are subscribed to the message " ++ show mtype
     else do
-      msg <- runE (toSAMPMessage mtype params)
+      msg <- runE (toSAMPMessage mtype params [])
       (pchan, _) <- startPrintChannel -- not needed for notification case but do anyway
       case cmode of
         Sync   -> parallel_ (map (sendSync pchan conn msg . fst) targets)
