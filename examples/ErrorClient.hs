@@ -53,7 +53,7 @@ main = do
 doSAMP :: [MType] -> IO ()
 doSAMP mtypes = do
     -- register the client
-    conn <- runE $ getHubInfoE >>= registerClientE
+    conn <- runE (sampLockFileE >>= getHubInfoE >>= registerClientE)
     putStrLn "Registered with the SAMP hub."
 
     -- catch a user interrupt so that we can unregister the client

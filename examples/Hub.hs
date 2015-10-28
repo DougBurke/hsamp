@@ -106,7 +106,7 @@ import qualified Data.Text.Lazy as LT
 -- it is commented out then fdWrite and closeFd are not defined
 import qualified System.Posix.IO as P
     
-import System.Directory (doesFileExist, removeFile)
+import System.Directory (removeFile)
 import System.Environment (getArgs, getProgName)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr)
@@ -141,9 +141,13 @@ import Network.SAMP.Standard (MType, RString, SAMPKeyValue
                              , SAMPMethodResponse(..)
                              , SAMPValue(..)
                              , SAMPMessage
+                             , SAMPInfo
+                             , getSAMPInfoLocation, getSAMPInfoHubURL
                              , ClientName, ClientSecret
+                             , HubSecret
                              , toClientName, fromClientName
                              , toClientSecret, fromClientSecret
+                             , toHubSecret, fromHubSecret
                              , fromSValue, toSValue
                              , fromRString, toRString
                              , fromMType, toMType, toMTypeE, isMTWildCard
@@ -155,8 +159,11 @@ import Network.SAMP.Standard (MType, RString, SAMPKeyValue
                              , getSAMPMessageParams
                              , getSAMPMessageExtra
                              , parseSAMPCall
-                             , handleError, runE)
-import Network.SAMP.Standard.Setup (sampLockFileE)
+                             , handleError
+                             , pingHubE
+                             , runE)
+    
+import Network.SAMP.Standard.Setup (getHubInfoE, sampLockFileE)
 -- import Network.SAMP.Standard.Server.Scotty (runServer)
 
 import qualified Network as N
@@ -234,7 +241,8 @@ homeEnvVar = "HOME"
 #endif
 
 -- | Return the location of the lock file. If the file exists then
---   exit with an error.
+--   the hub is pinged once, and if this fails, it is assumed that
+--   the file is "stale" and over-written.
 --
 --   This has not been tested on Windows so will probably fail there.
 --   It does not use Haskell's System.Directory.getHomeDirectory since
@@ -242,28 +250,62 @@ homeEnvVar = "HOME"
 --
 --   This follows SAMP version 1.2 for location of the lock file.
 --
-
--- TODO: need to check that an existing hub responds to a samp.hub.ping call
-
-getLockFile :: IO String
+--   At present this fails if the URI is not a file-based one.
+--
+getLockFile :: IO FilePath
 getLockFile = do
-  fileLoc <- runE sampLockFileE
-  let hubName = uriPath fileLoc
-  flag <- doesFileExist hubName
-  if flag
-    then hPutStrLn stderr ("ERROR: Is a SAMP hub already running? " ++
-                           hubName ++ " already exists.")
-         >> exitFailure
-    else return hubName
+  -- Would be nice to identify problematic hubs (e.g. if the
+  -- hub contents are invalid), but I do not want to try and
+  -- distinguish between the form of error (file does not exist
+  -- versus missing key) so just return Nothing.
+  --
+  uri <- runE sampLockFileE
+  when (uriScheme uri /= "file:")
+           (fail ("The hub file location must be a file, not "
+                  ++ show uri))
+
+  mSampInfo <- handleError (const (return Nothing))
+               (Just <$> getHubInfoE uri)
+               
+  case mSampInfo of
+    Just sampInfo -> checkHubRunning sampInfo
+                     >> return (uriPath (getSAMPInfoLocation sampInfo))
+    _ -> return (uriPath uri)
+
+         
+-- | Verifies that the hub file reflects a running Hub - calling
+--   'exitFailure' if it is, otherwise returns to the caller.
+--
+--   The check is done by calling samp.hub.ping on the hub; if
+--   it responds then error out.
+--
+checkHubRunning :: SAMPInfo -> IO ()
+checkHubRunning si = do
+  let uri = getSAMPInfoHubURL si
+      hubName = uriPath (getSAMPInfoLocation si) -- assumed to be a file
+  running <- handleError (const (return Nothing)) (Just <$> pingHubE uri)
+  case running of
+    Just _ -> do
+      hPutStrLn stderr ("ERROR: Is a SAMP hub already running? " ++
+                        hubName ++ " already exists.")
+      exitFailure
+      
+    Nothing -> do
+      putStrLn ("The hub with SAMP lock file " ++ hubName ++
+                " has not responded.")
+      putStrLn " ... so removing."
+      -- TODO: should remove it in case it is write-protected
+      return ()
+              
 
 -- | Create the hub file. The file is set to have no permissions
 --   in the group or owner settings (this makes the routine non-portable).
 --
 --   It is a bit ugly; is there an easier way to do this?
-writeLockFile :: String -> String -> RString -> IO ()
+writeLockFile :: FilePath -> String -> HubSecret -> IO ()
 writeLockFile name url secret = do
     let cts = [ "# TEST SAMP hub, using the Haskell SAMP library"
-              , "samp.secret=" ++ fromRString secret
+              , "samp.secret=" ++ fromRString (fromHubSecret secret)
               , "samp.hub.xmlrpc.url=" ++ url
               , "samp.profile.version=1.2" ]
         str = unlines cts
@@ -382,7 +424,7 @@ removeMessageId hi mid secret = do
       putMVar mvar ohub
 
               
-setupHubFile :: IO (Socket, FilePath, RString)
+setupHubFile :: IO (Socket, FilePath, HubSecret)
 setupHubFile = do
     lockfile <- getLockFile
     putStrLn ("Using lock file: " ++ lockfile)
@@ -394,11 +436,12 @@ setupHubFile = do
 
     gen <- getStdGen
     let (secret, gen') = makeSecret gen
+        hubSecret = toHubSecret secret
     setStdGen gen'
 
     let xmlrpc = portToURL port
-    writeLockFile lockfile xmlrpc secret
-    return (sock, lockfile, secret)
+    writeLockFile lockfile xmlrpc hubSecret
+    return (sock, lockfile, hubSecret)
 
 portToURL :: N.PortNumber -> String
 portToURL p = "http://127.0.0.1:" ++ show p ++ "/xmlrpc/"
@@ -1250,7 +1293,7 @@ logo64 :: L.ByteString
 logo64 = decodeLenient "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"
 
                                              
-createHub :: Socket -> HubInfo -> RString -> IO ()
+createHub :: Socket -> HubInfo -> HubSecret -> IO ()
 createHub socket hi secret = do
     mware <- logRequests
     scottySocket def socket $ do
@@ -1320,7 +1363,7 @@ cLength = "Content-Length"
 TODO: re-work this code
 -}
 
-callFromClient :: HubInfo -> RString -> ActionM ()
+callFromClient :: HubInfo -> HubSecret -> ActionM ()
 callFromClient hi secret = do
   b <- body
   let str = L.unpack b
@@ -1341,7 +1384,7 @@ toReturnValue = XI.renderResponse . XI.Return . XI.toValue
 
 handleSAMP ::
     HubInfo
-    -> RString
+    -> HubSecret
     -> SAMPMethodCall
     -> ActionM ()
 handleSAMP hi secret (SAMPMethodCall name args) = do
@@ -1386,7 +1429,7 @@ rawError = XI.renderResponse . XI.Fault 1
 handleRegister :: HubFunc
 handleRegister _ _ [] = respondError "Missing hub secret"
 handleRegister hi secret (SAMPString s:_)
-    | secret == s = register hi
+    | fromHubSecret secret == s = register hi
     | otherwise = respondError "Invalid hub secret"
 handleRegister _ _ _ = respondError "Invalid hub secret"
 
@@ -1645,7 +1688,7 @@ type HubHandlerFunc =
 
 type HubFunc =
     HubInfo
-    -> RString   -- hub secret [do we really need this?]
+    -> HubSecret
     -> [SAMPValue]
     -> ActionM ()
 
@@ -1688,7 +1731,7 @@ defaultHubHandlers =
 data HubInfoReader =
     HubInfoReader {
       hiName :: RString -- the name of the hub
-    , hiSecret :: RString -- the secret for the hub
+    , hiSecret :: HubSecret -- the secret for the hub
     , hiSecretLen :: Int    -- number of characters in the client secrets
     , hiMetadata :: MetadataMap
     , hiSubscribed :: SubscriptionMap
@@ -1748,7 +1791,7 @@ appEmail = "dburke@cfa.harvard.edu"
 newHubInfo ::
     String          -- ^ URL of the hub
     -> StdGen       -- ^ The generator to use
-    -> RString      -- ^ The secret to use
+    -> HubSecret    -- ^ The secret to use
     -> IO HubInfo
 newHubInfo huburl gen secret = do
   let miconurl = toRString (huburl ++ "logo.png")

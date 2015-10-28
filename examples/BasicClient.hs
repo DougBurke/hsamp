@@ -48,9 +48,9 @@ runClient :: IO ()
 runClient = runE $ do
 
     -- Read information from lockfile to locate and register with hub.
-    conn <- getHubInfoE >>= registerClientE 
-    liftIO $ putStrLn $ "Hub id:    " ++ fromRString (scHubId conn)
-    liftIO $ putStrLn $ "Client id: " ++ fromRString (scId conn)
+    conn <- sampLockFileE >>= getHubInfoE >>= registerClientE 
+    liftIO (putStrLn ("Hub id:    " ++ fromRString (scHubId conn)))
+    liftIO (putStrLn ("Client id: " ++ fromRString (scId conn)))
     
     -- Store metadata in hub for use by other applications.
     let vkey = ("dummy.version", "0.1-3")

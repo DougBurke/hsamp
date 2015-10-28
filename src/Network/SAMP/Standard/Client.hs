@@ -21,7 +21,6 @@ by the "Network.SAMP.Standard.Server" module.
 module Network.SAMP.Standard.Client (
 
        -- * High-level interface
-       getHubInfoE,
        registerClientE,
        unregisterE,
        toMetadata, toMetadataE,
@@ -37,6 +36,7 @@ module Network.SAMP.Standard.Client (
        callAndWaitE,
        replyE,
        pingE,
+       pingHubE,
 
        -- * Low-level interface
 
@@ -48,33 +48,24 @@ module Network.SAMP.Standard.Client (
 
        ) where
 
-import Network.XmlRpc.Client
-import Network.XmlRpc.Internals
-import Network.URI
+import qualified Control.Arrow as CA
+import qualified Control.Exception as CE
 
-import qualified Network.HTTP.Conduit as NC
-import qualified Data.ByteString.Lazy.Char8 as L
-
-import System.Log.Logger
-
-import qualified System.IO.Strict as S
-
-import Data.Maybe (fromJust, fromMaybe, catMaybes)
 import qualified Data.Traversable as T
 
-import qualified Control.Arrow as CA
 import Control.Monad (ap, forM, liftM, forM, void)
-
 import Control.Monad.Except (throwError, runExceptT)
 import Control.Monad.Trans (liftIO)
 
-import qualified Control.Exception as CE
+import Data.Maybe (fromJust, fromMaybe, catMaybes)
 
-import System.IO.Error (isDoesNotExistError)
-
-import Network.SAMP.Standard.Setup (sampLockFileE)
 import Network.SAMP.Standard.Types
-    
+import Network.XmlRpc.Client
+import Network.XmlRpc.Internals
+
+import System.Log.Logger
+
+
 -- the name of the SAMP client logging instance
 cLogger :: String
 cLogger = "SAMP.StandardProfile.Client"
@@ -82,98 +73,6 @@ cLogger = "SAMP.StandardProfile.Client"
 -- log the message to the SAMP client logger at the debug level.
 dbg :: String -> Err IO ()
 dbg = liftIO . debugM cLogger
-
--- read in the lock file from disk
-readLockFileE :: URI -> Err IO String
-readLockFileE uri = do
-    let fname = uriPath uri
-        errVal e = if isDoesNotExistError e
-                   then "Is a SAMP hub running? Unable to read: " ++ fname
-                   else show e
-
-    dbg ("About to read in contents of lock file: " ++ fname)
-    r <- liftIO (CE.try (S.readFile fname))
-    case r of
-        Right txt -> return txt
-        Left e -> throwError (errVal e)
-
--- download the lock file
-getLockFileE :: URI -> Err IO String
-getLockFileE uri = do
-    let loc = show uri
-    dbg ("About to download contents of lock file via " ++ show loc)
-    fmap L.unpack (liftIO (NC.simpleHttp loc))
-
--- As the SAMP control file may well be written using Windows
--- control characters we need to ensure these are handled,
--- since lines just splits on \n. This routine is taken straight
--- from Real World Haskell.
---
-splitLines :: String -> [String]
-splitLines [] = []
-splitLines cs = 
-   let (pre, suf) = break isLineTerminator cs
-       in pre : case suf of
-           ('\r':'\n':rest) -> splitLines rest
-           ('\r':rest) -> splitLines rest
-           ('\n':rest) -> splitLines rest
-           _           -> []
-
-isLineTerminator :: Char -> Bool
-isLineTerminator c = c `elem` ("\r\n"::String)
-
--- Remove un-needed lines from the SAMP lock file
--- and return a list of interesting lines
---
-stripLines ::String -> [String]
-stripLines = filter (\x ->not (null x || head x == '#')) . splitLines
-
--- Given the contents of a SAMP lockfile, return
--- a map containing all the assignments in the file.
--- We just use an association list for the return value
--- since the expected number of keys is small. The file
--- is assumed to be correctly formatted, so that any
--- errors in it will result in an exception.
---
-processLockFile :: String -> [(String,String)]
-processLockFile = foldr step [] . stripLines
-    where
-        step = (:) . CA.second tail . break (== '=')
-
--- TODO: should this provide information on what is missing
---       if there is an error
-extractHubInfo :: [(String,String)] -> Maybe SAMPInfo
-extractHubInfo alist = do
-    secret <- lookup "samp.secret" alist >>= toRString
-    url <- lookup "samp.hub.xmlrpc.url" alist
-    return (secret, url,
-            filter ((`notElem` ["samp.secret","samp.hub.xmlrpc.url"]) . fst) alist)
-
-{-|
-Return information about the SAMP hub needed by 'registerE' and
-'registerClientE'. It also includes any extra key,value pairs
-included in the SAMP lock file.
-
-This routine includes logging to the @SAMP.StandardProfile.Client@
-logger (at present only debug-level information).
-
-It should only be used after 'Network.SAMP.Standard.Types.withSAMP'
-has been called.
--}
-getHubInfoE :: Err IO SAMPInfo
-getHubInfoE = do
-    uri <- sampLockFileE
-    dbg $ "Looking for a SAMP lock file using the URI: " ++ show uri
-    cts <- case uriScheme uri of
-               "file:" -> readLockFileE uri
-               "http:" -> getLockFileE uri
-               "https:" -> getLockFileE uri -- untested
-               _ -> throwError $ "Unsupported URI for the lockfile: " ++ show uri
-
-    dbg "Read contents of lock file."
-    let alist = processLockFile cts
-    dbg ("Contents: " ++ show alist)
-    maybeToM "Unable to read hub info" (extractHubInfo alist)
 
 {-|
 Call the hub with the given message and arguments.
@@ -272,12 +171,15 @@ callHubE_ conn msg args = void (callHubE conn msg args)
 
 -- | Register a client with a hub. See 'registerClientE' for a simple
 --   way to register the client and process the return vaues.
-registerE :: SAMPInfo     -- ^ hub information
-          -> Err IO [SAMPKeyValue] -- ^ Key/value pairs from the registration call.
-registerE (sKey,url,_) =
-  makeCallE url "samp.hub.register" [SAMPString sKey]
-  -- >>= validateSAMPValue --- errrr; do I really mean validate here!
-  >>= fromSValue
+registerE ::
+    SAMPInfo     -- ^ hub information
+    -> Err IO [SAMPKeyValue]
+       -- ^ Key/value pairs from the registration call.
+registerE si =
+  let sKey = fromHubSecret (getSAMPInfoHubSecret si)
+      url = getSAMPInfoHubURL si
+  in makeCallE url "samp.hub.register" [SAMPString sKey]
+     >>= fromSValue
     
 sPrivateKey , sHubId , sSelfId :: RString
 sPrivateKey = "samp.private-key"
@@ -300,16 +202,20 @@ slookup k a =
                                        
 -- | Create a 'SAMPConnection' record from the hub information and response
 -- from 'registerE'.
-getClientInfoE :: (Monad m)
-               => SAMPInfo        -- ^ hub information
-               -> [SAMPKeyValue]  -- ^ response from 'registerE'
-               -> Err m SAMPConnection
-getClientInfoE (sKey,url,_) ks = SAMPConnection `liftM`
-                  return sKey 
-                  `ap` return url
-                  `ap` slookup sPrivateKey ks
-                  `ap` slookup sHubId ks
-                  `ap` slookup sSelfId ks
+getClientInfoE ::
+    (Monad m)
+    => SAMPInfo        -- ^ hub information
+    -> [SAMPKeyValue]  -- ^ response from 'registerE'
+    -> Err m SAMPConnection
+getClientInfoE si ks =
+  let sKey = getSAMPInfoHubSecret si
+      url = getSAMPInfoHubURL si
+  in SAMPConnection
+         `liftM` return sKey 
+         `ap` return url
+         `ap` slookup sPrivateKey ks
+         `ap` slookup sHubId ks
+         `ap` slookup sSelfId ks
 
 -- | Register the client with the hub and create the 'SAMPConnection' record
 -- used for communication. This is basically
@@ -321,8 +227,9 @@ registerClientE :: SAMPInfo -> Err IO SAMPConnection
 registerClientE si = registerE si >>= getClientInfoE si
 
 -- | Unregister the client from the hub.
-unregisterE :: SAMPConnection
-            -> Err IO ()
+unregisterE ::
+    SAMPConnection
+    -> Err IO ()
 unregisterE cl =
     callHubE_ cl "samp.hub.unregister" []
 
@@ -524,7 +431,7 @@ Ping the hub to see if it is running.
 Note that we do not support calling this method without
 the private key (taken from the 'SAMPConnection' record).
 Users who wish to see if a hub is alive and just have a URL
-can try using 'makeCallE_' directly - e.g.
+can try 'pingHubE' or using 'makeCallE_' directly - e.g.
 
 >    makeCallE_ url "samp.hub.ping" []
 -}
@@ -533,6 +440,15 @@ pingE ::
   -> Err IO ()
 pingE cl = callHubE_ cl "samp.hub.ping" []
 
+-- | Ping a hub to see if it is responding to queries. Unlike
+--   'pingE' this takes the Hub URL; i.e. it does not requires
+--   that a connection to the hub has already been made.
+--
+pingHubE ::
+    String        -- ^ URL of the hub
+    -> Err IO ()
+pingHubE url = makeCallE_ url "samp.hub.ping" []
+           
 {-|
 Get the names (@samp.name@) of all the registered clients (excluding
 this one).

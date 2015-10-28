@@ -25,6 +25,7 @@ import Network.Socket (Socket, PortNumber, socketPort)
 
 import Network.SAMP.Standard.Types
 import Network.SAMP.Standard.Client
+import Network.SAMP.Standard.Setup
 
 -- | Run a set of SAMP commands and exit on error.
 
@@ -36,12 +37,13 @@ doE = handleError
 
 createClient :: String -> String -> Err IO SAMPConnection
 createClient name description =
-     getHubInfoE >>=
-     registerClientE >>= \conn ->
-     toMetadataE name (Just description)
-         Nothing Nothing Nothing >>= \md ->
-     declareMetadataE conn (md ++ authorMetadata) >>
-     return conn
+    sampLockFileE >>=
+    getHubInfoE >>=
+    registerClientE >>= \conn ->
+    toMetadataE name (Just description)
+                Nothing Nothing Nothing >>= \md ->
+    declareMetadataE conn (md ++ authorMetadata) >>
+    return conn
 
 authorMetadata :: [SAMPKeyValue]
 authorMetadata = 

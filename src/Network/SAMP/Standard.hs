@@ -1,6 +1,6 @@
 {-|
 Module      :  Network.SAMP.Standard
-Copyright   :  (c) Douglas Burke 2011, 2013
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -28,14 +28,15 @@ Issues include:
 
  * Windows support is not tested,
 
- * no hub functionality.
+ * incomplete hub functionality.
 
 -}
 
 module Network.SAMP.Standard (
        module Network.SAMP.Standard.Types,
        module Network.SAMP.Standard.Client,
-       module Network.SAMP.Standard.Server
+       module Network.SAMP.Standard.Server,
+       module Network.SAMP.Standard.Setup
 
        -- * Types
 
@@ -56,6 +57,7 @@ module Network.SAMP.Standard (
 import Network.SAMP.Standard.Types
 import Network.SAMP.Standard.Client
 import Network.SAMP.Standard.Server
+import Network.SAMP.Standard.Setup
 
 {- $types
 

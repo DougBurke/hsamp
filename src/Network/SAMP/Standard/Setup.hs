@@ -16,20 +16,43 @@ Standard SAMP profile.
 
 module Network.SAMP.Standard.Setup (
                                     sampLockFileE
+                                   , getHubInfoE
                                    ) where
 
+import qualified Control.Arrow as CA
 import qualified Control.Exception as CE
+
+import qualified Data.ByteString.Lazy.Char8 as L
+
+import qualified Network.HTTP.Conduit as NC
+
+import qualified System.IO.Strict as S
+
 
 import Control.Monad.Except (throwError)
 import Control.Monad.Trans (liftIO)
 
 import Data.List (stripPrefix)
 
-import Network.URI (URI, parseAbsoluteURI)
+import Network.SAMP.Standard.Types (SAMPInfo, toSAMPInfo,
+                                    removeKeyE, toRStringE,
+                                    toHubSecret)
+import Network.URI (URI, parseAbsoluteURI, uriPath, uriScheme)
 import Network.XmlRpc.Internals (Err)
 
 import System.Environment (getEnv)
-import System.IO.Error (isDoesNotExistErrorType, ioeGetErrorType)
+import System.IO.Error (isDoesNotExistError, isDoesNotExistErrorType,
+                        ioeGetErrorType)
+import System.Log.Logger (debugM)
+
+    
+-- the name of the SAMP client logging instance
+cLogger :: String
+cLogger = "SAMP.StandardProfile.Setup"
+
+-- log the message to the SAMP client logger at the debug level.
+dbg :: String -> Err IO ()
+dbg = liftIO . debugM cLogger
 
 homeEnvVar :: String
 #if defined(mingw32_HOST_OS) || defined(__MINGW32__)
@@ -106,4 +129,102 @@ findHubIn fname =
                       Nothing -> throwError (emsg f)
 
     
-              
+-- As the SAMP control file may well be written using Windows
+-- control characters we need to ensure these are handled,
+-- since lines just splits on \n. This routine is taken straight
+-- from Real World Haskell.
+--
+splitLines :: String -> [String]
+splitLines [] = []
+splitLines cs = 
+   let (pre, suf) = break isLineTerminator cs
+       in pre : case suf of
+           ('\r':'\n':rest) -> splitLines rest
+           ('\r':rest) -> splitLines rest
+           ('\n':rest) -> splitLines rest
+           _           -> []
+
+isLineTerminator :: Char -> Bool
+isLineTerminator c = c `elem` ("\r\n"::String)
+
+-- Remove un-needed lines from the SAMP lock file
+-- and return a list of interesting lines
+--
+stripLines ::String -> [String]
+stripLines = filter (\x ->not (null x || head x == '#')) . splitLines
+
+-- | Given the contents of a SAMP lockfile, return
+--   a map containing all the assignments in the file.
+--   We just use an association list for the return value
+--   since the expected number of keys is small. The file
+--   is assumed to be correctly formatted, so that any
+--   errors in it will result in an exception.
+--
+processLockFile :: String -> [(String, String)]
+processLockFile = foldr step [] . stripLines
+    where
+        step = (:) . CA.second tail . break (== '=')
+
+-- | Extract the information from the contents of the hub file.
+--
+extractHubInfoE ::
+    Monad m
+    => URI                  -- ^ Location of the lock file
+    -> [(String, String)]   -- ^ key,value pairs from the lock file
+    -> Err m SAMPInfo
+extractHubInfoE fileLoc alist = do
+  (secretStr, xs1) <- removeKeyE "samp.secret" alist
+  (url, xs2) <- removeKeyE "samp.hub.xmlrpc.url" xs1
+  secret <- toHubSecret <$> toRStringE secretStr
+  return (toSAMPInfo fileLoc secret url xs2)
+
+         
+{-|
+Return information about the SAMP hub needed by 'registerE' and
+'registerClientE'. It also includes any extra key,value pairs
+included in the SAMP lock file.
+
+This routine includes logging to the @SAMP.StandardProfile.Client@
+logger (at present only debug-level information).
+
+It should only be used after 'Network.SAMP.Standard.Types.withSAMP'
+has been called.
+-}
+getHubInfoE ::
+    URI   -- ^ the output of 'sampLockFileE'
+    -> Err IO SAMPInfo
+getHubInfoE uri = do
+    dbg ("Looking for a SAMP lock file using the URI: " ++ show uri)
+    cts <- case uriScheme uri of
+             "file:" -> readLockFileE uri
+             "http:" -> getLockFileE uri
+             "https:" -> getLockFileE uri -- untested
+             _ -> throwError ("Unsupported URI for the lockfile: " ++
+                              show uri)
+
+    dbg "Read contents of lock file."
+    let alist = processLockFile cts
+    dbg ("Contents: " ++ show alist)
+    extractHubInfoE uri alist
+
+-- read in the lock file from disk
+readLockFileE :: URI -> Err IO String
+readLockFileE uri = do
+    let fname = uriPath uri
+        errVal e = if isDoesNotExistError e
+                   then "Is a SAMP hub running? Unable to read: " ++ fname
+                   else show e
+
+    dbg ("About to read in contents of lock file: " ++ fname)
+    r <- liftIO (CE.try (S.readFile fname))
+    case r of
+        Right txt -> return txt
+        Left e -> throwError (errVal e)
+
+-- download the lock file
+getLockFileE :: URI -> Err IO String
+getLockFileE uri = do
+    let loc = show uri
+    dbg ("About to download contents of lock file via " ++ show loc)
+    fmap L.unpack (liftIO (NC.simpleHttp loc))
+

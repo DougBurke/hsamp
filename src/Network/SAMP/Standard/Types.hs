@@ -33,12 +33,16 @@ module Network.SAMP.Standard.Types (
        -- * Connection
 
        SAMPConnection(..), SAMPInfo,
+       toSAMPInfo,
+       getSAMPInfoLocation,
+       getSAMPInfoHubURL,
+       getSAMPInfoHubSecret,
 
        -- * SAMP Types
 
        SAMPType(..), SAMPValue(..), SAMPKeyValue,
        showSAMPValue,
-       getKey, stringToKeyValE, stringFromKeyValE,
+       stringToKeyValE, stringFromKeyValE,
 
        RChar, toRChar, toRCharE, fromRChar,
        validRChars,
@@ -55,6 +59,7 @@ module Network.SAMP.Standard.Types (
 
        ClientName, toClientName, fromClientName,
 
+       HubSecret, toHubSecret, fromHubSecret,
        ClientSecret, toClientSecret, fromClientSecret,
                 
        SAMPResponse, 
@@ -72,6 +77,8 @@ module Network.SAMP.Standard.Types (
        parseSAMPCall, parseSAMPResponse,
        renderSAMPCall, renderSAMPResponse,
 
+       getKey, removeKeyE, cleanKeys,
+                
        -- * Error handling
 
        -- in part from haxr
@@ -93,6 +100,7 @@ import qualified Data.Text as T
 import qualified Data.HashMap.Strict as HM
     
 import Data.Char (chr, intToDigit, isAlphaNum, isDigit, ord)
+import Data.Either (partitionEithers)
 import Data.Hashable (Hashable)
 import Data.List (intercalate, isPrefixOf)
 import Data.List.Split (splitOn, splitOneOf)
@@ -100,6 +108,8 @@ import Data.Maybe (fromJust)
 import Data.String
 
 import GHC.Generics (Generic)
+
+import Network.URI (URI)
     
 {-|
 Several of the networking libraries used by the SAMP
@@ -119,10 +129,36 @@ withSAMP = NS.withSocketsDo
 runE :: Err IO a -> IO a
 runE = handleError fail
 
--- | Information about the hub (the SAMP secret, the URL and
--- any other key,value entries).
-type SAMPInfo = (RString, String, [(String, String)])
+-- | Information about the hub.
+data SAMPInfo = SI {
+      _siLocation :: URI
+    , _siSecret :: HubSecret
+    , _siHubURL :: String
+    , _siMetadata :: [(String, String)] -- Should these be RString?
+    }
 
+toSAMPInfo ::
+    URI        -- ^ location of the hub
+    -> HubSecret -- ^ the secret for the hub
+    -> String    -- ^ the URL of the hub
+    -> [(String, String)]  -- ^ extra metadata
+    -> SAMPInfo
+toSAMPInfo loc secret url metadata =
+    SI { _siLocation = loc
+       , _siSecret = secret
+       , _siHubURL = url
+       , _siMetadata = metadata
+       }
+
+getSAMPInfoLocation :: SAMPInfo -> URI
+getSAMPInfoLocation = _siLocation
+    
+getSAMPInfoHubURL :: SAMPInfo -> String
+getSAMPInfoHubURL = _siHubURL
+    
+getSAMPInfoHubSecret :: SAMPInfo -> HubSecret
+getSAMPInfoHubSecret = _siSecret
+    
 validRCharsAsInts :: [Int]
 validRCharsAsInts = [0x09, 0x0a, 0x0d] ++ [0x20 .. 0x7f]
 
@@ -637,12 +673,53 @@ than force Value, but need to look at to see if it is worth it.
 toSAMPKeyValue :: (Monad m) => (String, Value) -> Err m SAMPKeyValue
 toSAMPKeyValue (n,v) = (,) `liftM` toRStringE n `ap` fromValue v
 
-{-
-Remove the listed keys from the keylist.
--}
+              
+-- | Get a value from the contents of a SAMP Map (given as a list
+-- of key,value pairs).
+getKey ::
+    (Monad m, SAMPType a)
+    => RString          -- ^ Field name
+    -> [SAMPKeyValue]   -- ^ SAMP Map
+    -> Err m a
+getKey k xs = maybeToM ("Key " ++ show k ++ " not found")
+                  (lookup k xs) >>= fromSValue
+
+-- | Remove the listed keys from the association list.
 cleanKeys :: Eq a => [a] -> [(a, b)] -> [(a, b)]
 cleanKeys ks = filter (\(k,_) -> k `notElem` ks)
 
+-- | Extract the value of the first occurrence of the key
+--   in the association list, and remove the remainder of
+--   the list (which has been filtered to make sure that
+--   there are no other pairs with the key in it).
+--
+removeKeyE ::
+    (Monad m, Eq a, Show a)
+    => a        -- ^ key to find
+    -> [(a, b)] -- ^ association list
+    -> Err m (b, [(a, b)]) -- ^ value of key and remainder of the list
+removeKeyE k kvs =
+    let find c@(a, b) = if a == k then Left b else Right c
+        (ls, rs) = partitionEithers (map find kvs)
+    in case ls of
+         (b:_) -> return (b, rs)
+         _ -> throwError ("Unable to find key: " ++ show k)
+
+grabKeyE ::
+    (Monad m, SAMPType a)
+    => RString -- ^ key to find
+    -> [SAMPKeyValue]
+    -> Err m (a, [SAMPKeyValue]) -- ^ value of key and remainder of the list
+grabKeyE k kvs =
+    let find c@(a, b) = if a == k then Left b else Right c
+        (ls, rs) = partitionEithers (map find kvs)
+    in case ls of
+         (b:_) -> do
+                 ans <- fromSValue b
+                 return (ans, rs)
+         _ -> throwError ("Unable to find key: " ++ show k)
+
+              
 {- | The SAMP profile supports three basic data types,
 a string, a list or a map (keys are strings and they
 can contain a SAMP data type).
@@ -786,10 +863,13 @@ which should be done by routines from the "Network.SAMP.Standard.Client"
 module (e.g. 'Network.SAMP.Standard.Client.registerClientE').
 -}
 data SAMPConnection = SAMPConnection {
-     scSecret :: RString, -- ^ the SAMP secret, from the hub file
+     scSecret :: HubSecret, -- ^ the SAMP secret, from the hub file
      scHubURL :: String, -- ^ the URL of the server
+                 
+     -- TODO: following should be ClientSecret
      scPrivateKey :: RString, -- ^ the private key assigned to the client by the hub
      scHubId :: RString, -- ^ the name of the hub
+     -- TODO: following should be ClientName
      scId :: RString -- ^ the name of the client (assigned by the hub)
      } deriving (Eq, Show)
 
@@ -841,22 +921,20 @@ instance SAMPType SAMPResponse where
         -- Need to be explicit in ghc 7.10.2 as the (presumably overlapping)
         -- SAMPValue instances seem to cause problems, which is why
         -- the type of status is constrained in the case statement below.
-        status <- getKey sStatus xs
-        let leftovers = cleanKeys [sStatus, sResult, sError] xs
+        (status, xs2) <- grabKeyE sStatus xs
+        let leftovers = cleanKeys [sResult, sError] xs2
 
         let getError = do
-              evals <- getKey sError xs
-              emsg <- getKey sErrorTxt evals
-              let nes = cleanKeys [sErrorTxt] evals
-              return (emsg, nes)
+              (evals, _) <- grabKeyE sError xs2
+              grabKeyE sErrorTxt evals
 
         case status :: RString of
           "samp.ok" -> do
-              vals <- getKey sResult xs
+              vals <- getKey sResult xs2
               return (SROkay vals leftovers)
                       
           "samp.warning" -> do
-              vals <- getKey sResult xs
+              vals <- getKey sResult xs2
               err <- getError
               return (SRWarning vals err leftovers)
 
@@ -1040,16 +1118,6 @@ smtype , sparams :: RString
 smtype = "samp.mtype"
 sparams = "samp.params"
 
--- | Get a value from the contents of a SAMP Map (given as a list
--- of key,value pairs).
-getKey ::
-    (Monad m, SAMPType a)
-    => RString          -- ^ Field name
-    -> [SAMPKeyValue]   -- ^ SAMP Map
-    -> Err m a
-getKey k xs = maybeToM ("Key " ++ show k ++ " not found")
-                  (lookup k xs) >>= fromSValue
-
 instance SAMPType SAMPMessage where
     toSValue sm =
         SAMPMap ([ (smtype, toSValue (_smType sm))
@@ -1057,10 +1125,9 @@ instance SAMPType SAMPMessage where
                  ] ++ _smExtra sm)
                         
     fromSValue (SAMPMap xs) = do
-        mt <- getKey smtype xs
-        ps <- getKey sparams xs
-        let extras = cleanKeys [smtype, sparams] xs
-        toSAMPMessage mt ps extras
+      (mt, xs2) <- grabKeyE smtype xs
+      (ps, xs3) <- grabKeyE sparams xs2
+      toSAMPMessage mt ps xs3
     fromSValue x = throwError ("Expected a SAMP map but sent " ++ show x)
 
 instance XmlRpcType SAMPMessage where
@@ -1228,5 +1295,23 @@ instance Show ClientSecret where
 instance SAMPType ClientSecret where
     toSValue = toSValue . fromClientSecret
     fromSValue s = toClientSecret <$> fromSValue s
+
+-- | The secret value for a hub.
+--   It is used by a client when registering with a hub.
+newtype HubSecret = HS { _unHS :: RString }
+    deriving Eq
+
+fromHubSecret :: HubSecret -> RString
+fromHubSecret = _unHS
+
+toHubSecret :: RString -> HubSecret
+toHubSecret = HS 
+
+instance Show HubSecret where
+    show = show . _unHS
+
+instance SAMPType HubSecret where
+    toSValue = toSValue . fromHubSecret
+    fromSValue s = toHubSecret <$> fromSValue s
 
 
