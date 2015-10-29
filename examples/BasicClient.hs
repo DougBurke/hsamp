@@ -11,7 +11,7 @@ Portability :  requires haxr
 ------------------------------------------------------------------------
 -}
 
-module Main where
+module Main (main) where
 
 import Control.Monad.Trans (liftIO)
 

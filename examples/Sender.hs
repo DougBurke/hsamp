@@ -34,7 +34,7 @@ TODO:
 
 -}
 
-module Main where
+module Main (main) where
 
 import qualified Control.Exception as CE
 import qualified Network as N
@@ -70,9 +70,6 @@ sToMS n =
        
 timeoutPeriod :: Int
 timeoutPeriod = sToMS 10
-
-sleep :: Int -> IO ()
-sleep = threadDelay . sToMS
 
 usage :: IO ()
 usage = do

@@ -36,7 +36,7 @@ TODO:
 
 -}
 
-module Main where
+module Main (main) where
 
 import System.Environment (getArgs, getProgName)
 import System.Exit (exitSuccess, exitFailure)

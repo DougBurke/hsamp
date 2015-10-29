@@ -1,4 +1,3 @@
-{-# LANGUAGE CPP #-}
 {-# LANGUAGE OverloadedStrings #-}
 
 {-|
@@ -89,7 +88,7 @@ TODO:
 
 -}
 
-module Main where
+module Main (main) where
 
 import qualified Control.Exception as CE
 
@@ -204,10 +203,14 @@ cLogger = "SAMP.StandardProfile.Hub"
 -- why did I move away from the MonadIO version?
 -- dbg :: (MonadIO m) => String -> m ()
 
-dbg, info, notice :: String -> ActionM ()
+dbg, info :: String -> ActionM ()
 dbg = liftIO . dbgIO
 info = liftIO . infoIO
+
+{- currently unused       
+notice :: String -> ActionM ()
 notice = liftIO . noticeIO
+-}
 
 dbgIO, infoIO, noticeIO :: String -> IO ()
 dbgIO = debugM cLogger . ("DBG " ++)
@@ -231,13 +234,6 @@ main = do
     runHub
     exitSuccess
 
-homeEnvVar :: String
-#if defined(mingw32_HOST_OS) || defined(__MINGW32__)
-homeEnvVar = "USERPROFILE"
-#else
-homeEnvVar = "HOME"
-#endif
-
 -- | Return the location of the lock file. If the file exists then
 --   the hub is pinged once, and if this fails, it is assumed that
 --   the file is "stale" and over-written.
@@ -249,6 +245,9 @@ homeEnvVar = "HOME"
 --   This follows SAMP version 1.2 for location of the lock file.
 --
 --   At present this fails if the URI is not a file-based one.
+--
+--   This should probably use 'withSAMP' (although it is a no-op
+--   with ghc 7.10).
 --
 getLockFile :: IO FilePath
 getLockFile = do
@@ -1643,8 +1642,10 @@ toSubMap = SM . HM.fromList
 fromSubMap :: SubscriptionMap -> [(MType, [SAMPKeyValue])]
 fromSubMap (SM m) = HM.toList m
 
+{- currently unused                    
 insertSubMap :: MType -> [SAMPKeyValue] -> SubscriptionMap -> SubscriptionMap
 insertSubMap k v (SM m) = SM (HM.insert k v m)
+-}
 
 {-
 TODO: perhaps have a specialized version of the subscription map so
