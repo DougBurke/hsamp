@@ -865,12 +865,10 @@ module (e.g. 'Network.SAMP.Standard.Client.registerClientE').
 data SAMPConnection = SAMPConnection {
      scSecret :: HubSecret, -- ^ the SAMP secret, from the hub file
      scHubURL :: String, -- ^ the URL of the server
-                 
-     -- TODO: following should be ClientSecret
-     scPrivateKey :: RString, -- ^ the private key assigned to the client by the hub
+     scPrivateKey :: ClientSecret,
+     -- ^ the private key assigned to the client by the hub
      scHubId :: RString, -- ^ the name of the hub
-     -- TODO: following should be ClientName
-     scId :: RString -- ^ the name of the client (assigned by the hub)
+     scId :: ClientName -- ^ the name of the client (assigned by the hub)
      } deriving (Eq, Show)
 
 {-|

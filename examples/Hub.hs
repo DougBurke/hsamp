@@ -81,8 +81,6 @@ TODO:
 
   - removal of problematic clients
 
-  - pinging an existing hub to see if we can take over
-
   - handling of x-samp messages
 
   - clean up and refactoring, e.g. 

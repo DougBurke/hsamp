@@ -159,7 +159,7 @@ callHubE :: SAMPConnection
          -> Err IO SAMPValue     -- ^ response
 callHubE conn msg args = 
          makeCallE (scHubURL conn) msg
-                   $ SAMPString (scPrivateKey conn) : args
+                   (toSValue (scPrivateKey conn) : args)
 
 -- | As `callHubE` but ignores the return value.
 callHubE_ :: 
@@ -213,9 +213,9 @@ getClientInfoE si ks =
   in SAMPConnection
          `liftM` return sKey 
          `ap` return url
-         `ap` slookup sPrivateKey ks
+         `ap` (toClientSecret <$> slookup sPrivateKey ks)
          `ap` slookup sHubId ks
-         `ap` slookup sSelfId ks
+         `ap` (toClientName <$> slookup sSelfId ks)
 
 -- | Register the client with the hub and create the 'SAMPConnection' record
 -- used for communication. This is basically
