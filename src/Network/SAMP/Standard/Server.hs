@@ -64,17 +64,27 @@ module Network.SAMP.Standard.Server (
 
        ) where
 
-import System.Log.Logger
-
-import Network.XmlRpc.Internals
-
-import Control.Monad.Trans (liftIO)
 import qualified Control.Exception as CE
 
-import Network.SAMP.Standard.Types
+import Control.Monad (void)
+import Control.Monad.Except (throwError)
+import Control.Monad.Trans (liftIO)
+
+import Network.SAMP.Standard.Types (SAMPValue(..), SAMPType(..),
+                                    SAMPMethodCall(..), SAMPConnection,
+                                    SAMPMessage, SAMPResponse,
+                                    RString, MType, SAMPKeyValue,
+                                    ClientSecret, ClientName,
+                                    MessageTag, MessageId,
+                                    fromRString,
+                                    parseSAMPCall,
+                                    getSAMPMessageType,
+                                    getSAMPMessageParams,
+                                    toClientName,
+                                    Err, handleError)
 import Network.SAMP.Standard.Client (callHubE, callHubE_, replyE)
 
-import Control.Monad (void)
+import System.Log.Logger
 
 -- the name of the SAMP client logging instance
 sLogger :: String
@@ -91,7 +101,15 @@ showException :: CE.SomeException -> String
 showException = show
 
 handleIO :: IO a -> Err IO a
-handleIO io = liftIO (CE.try io) >>= either (fail . showException) return
+handleIO io = liftIO (CE.try io) >>=
+              either (throwError . showException) return
+              -- either (fail . showException) return
+
+-- | My version of haxr's maybeToM. It is specialized to Err, but
+--   most importantly, uses throwError rather than fail.
+maybeToM :: Monad m => String -> Maybe a -> Err m a
+maybeToM _ (Just x) = return x
+maybeToM err Nothing = throwError err
 
 -- | The return result
 type SAMPServerResult = Err IO ()
@@ -114,14 +132,14 @@ class SAMPFun a where
     toSAMPFun :: a -> SAMPMethod
 
 instance SAMPFun (IO ()) where
-    toSAMPFun x (SAMPMethodCall _ []) = void $ handleIO x
-    toSAMPFun _ _ = fail "Too many arguments"
+    toSAMPFun x (SAMPMethodCall _ []) = void (handleIO x)
+    toSAMPFun _ _ = throwError "Too many arguments"
 
 instance (SAMPType a, SAMPFun b) => SAMPFun (a -> b) where
     toSAMPFun f (SAMPMethodCall n (x:xs)) = do
                                   v <- fromSValue x
                                   toSAMPFun (f v) (SAMPMethodCall n xs)
-    toSAMPFun _ _ = fail "Too few arguments"
+    toSAMPFun _ _ = throwError "Too few arguments"
 
 -- | Register a XML-RPC endpoint that the client uses to receive
 -- information from the hub. This must be set up before either

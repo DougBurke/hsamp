@@ -99,10 +99,16 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.Map.Strict as M
 import qualified Data.Text.Lazy as LT
 
+-- Hack for ds9 7.3.2 support
+import qualified HubCall as HC
+    
+import qualified Network as N
+import qualified Network.XmlRpc.Internals as XI
+
 -- ghc 7.10.2 says that this import is redundant, but if
 -- it is commented out then fdWrite and closeFd are not defined
 import qualified System.Posix.IO as P
-    
+
 import System.Directory (removeFile)
 import System.Environment (getArgs, getProgName)
 import System.Exit (exitFailure, exitSuccess)
@@ -147,7 +153,8 @@ import Network.SAMP.Standard (MType, RString, SAMPKeyValue
                              , toHubSecret, fromHubSecret
                              , fromSValue, toSValue
                              , fromRString, toRString
-                             , fromMType, toMType, toMTypeE, isMTWildCard
+                             , fromMType, fromMTypeRS
+                             , toMType, toMTypeE, isMTWildCard
                              , randomAlphaNumRString
                              , renderSAMPResponse, toSAMPResponse
                              , toSAMPResponseError
@@ -155,6 +162,7 @@ import Network.SAMP.Standard (MType, RString, SAMPKeyValue
                              , getSAMPMessageType
                              , getSAMPMessageParams
                              , getSAMPMessageExtra
+                             , getKey
                              , parseSAMPCall
                              , handleError
                              , pingHubE
@@ -163,7 +171,6 @@ import Network.SAMP.Standard (MType, RString, SAMPKeyValue
 import Network.SAMP.Standard.Setup (getHubInfoE, sampLockFileE)
 -- import Network.SAMP.Standard.Server.Scotty (runServer)
 
-import qualified Network as N
 import Network.Socket (Socket, socketPort)
     
 import Network.HTTP.Types (status400)
@@ -173,8 +180,6 @@ import Network.Wai (Middleware)
 import Network.Wai.Middleware.RequestLogger (Destination(..), destination,
                                              -- logStdoutDev,
                                              mkRequestLogger)
-
-import qualified Network.XmlRpc.Internals as XI
 
 import System.Log.Logger (Priority(DEBUG, INFO, NOTICE, WARNING),
                           debugM, infoM, noticeM,
@@ -189,9 +194,6 @@ import Web.Scotty (ActionM
 
 import Utils (getSocket)
 
--- Hack for ds9 7.3.2 support
-import qualified HubCall as HC
-    
 -- import Paths_hsamp (version)
 
 -- the name of the SAMP logging instance
@@ -436,13 +438,17 @@ setupHubFile = do
         hubSecret = toHubSecret secret
     setStdGen gen'
 
-    let xmlrpc = portToURL port
+    let xmlrpc = addXMLRPCEndPoint (portToURL port)
     writeLockFile lockfile xmlrpc hubSecret
     return (sock, lockfile, hubSecret)
 
 portToURL :: N.PortNumber -> String
-portToURL p = "http://127.0.0.1:" ++ show p ++ "/xmlrpc/"
-              
+portToURL p = "http://127.0.0.1:" ++ show p ++ "/"
+
+-- | This asssumes a valid URL on input.
+addXMLRPCEndPoint :: String -> String
+addXMLRPCEndPoint u = u ++ "xmlrpc/"
+                     
 getHubURL :: Socket -> IO String
 getHubURL sock = portToURL <$> socketPort sock
 
@@ -942,7 +948,7 @@ hubProcessMessage ::
     -> IO SAMPResponse
 hubProcessMessage hi msg = do
   let funcs = hiHandlers (hiReader hi)
-      emsg = "Internal error: hub is not subscribed to " ++ mtToRS mtype
+      emsg = "Internal error: hub is not subscribed to " ++ fromMTypeRS mtype
       mtype = getSAMPMessageType msg
       otherArgs = getSAMPMessageExtra msg
   case lookup mtype funcs of
@@ -959,17 +965,66 @@ emptySAMPResponse = toSAMPResponse [] []
 hubSentPing :: HubHandlerFunc
 hubSentPing _ msg = do
   let args = getSAMPMessageParams msg
-      otherArgs = getSAMPMessageExtra msg
+      extra = getSAMPMessageExtra msg
   infoIO "Hub has been sent samp.app.ping"
   infoIO ("params = " ++ show args)
-  infoIO (" extra = " ++ show otherArgs)
-  return emptySAMPResponse
+  infoIO (" extra = " ++ show extra)
+  return emptySAMPResponse -- return extra?
 
 {-
+TODO: why does the following not correctly catch when the key
+    parameter is not available?
+-}
+
 -- | Process the [x-]samp.query.by-meta message sent to the hub.
 hubSentQueryByMeta :: HubHandlerFunc                 
-hubSentQueryByMeta _ _ _ = return emptySAMPResponse
--}
+hubSentQueryByMeta hi msg = do
+  let params = getSAMPMessageParams msg
+      mtype = getSAMPMessageType msg
+      extra = getSAMPMessageExtra msg
+
+      act :: XI.Err (Either RString) (RString, SAMPValue)
+      act = do
+        key <- getKey "key" params
+        val <- getKey "value" params
+        return (key, val)
+
+      -- technically the error message could be an invalid RString,
+      -- but that should only be due to a bug in this code
+      conv str = case toRString str of
+                   Just r -> Left r
+                   _ -> Left ("Error processing key or value parameters " ++
+                              "of " ++ fromMTypeRS mtype)
+                        
+      evals = case toRString (show params) of
+                Just pstr -> [("samp.debugtxt", toSValue pstr)]
+                _ -> []
+      errRsp emsg = toSAMPResponseError emsg evals []
+
+      getMatches kwant vwant = do
+        let mvar = hiState hi
+        hub <- liftIO (readMVar mvar)
+        let clMap = hiClients hub
+            -- the check is case sensitive
+            check mdata = maybe False (const True) (do
+                kval <- M.lookup kwant mdata
+                guard (vwant == kval))
+                           
+            find = check . cdMetadata
+            clients = map (fromClientName . cdName)
+                      (M.elems (M.filter find clMap))
+
+            hir = hiReader hi
+            out = if check (hiMetadata hir)
+                  then hiName hir : clients
+                  else clients
+
+        return (toSAMPResponse [("ids", toSValue out)] extra)
+
+  infoIO ("Hub has been sent " ++ show mtype)
+  case handleError conv act of
+    Right (key, value) -> getMatches key value
+    Left emsg -> return (errRsp emsg)
 
 toDuration :: Int -> Integer
 toDuration = toInteger . (1000000 *)
@@ -1737,7 +1792,7 @@ data HubInfoReader =
     -- note: two sets of handlers
     , hiHandlers :: [(MType, HubHandlerFunc)]
     , hiHubHandlers :: M.Map String HubFunc
-    , hiCallback :: String  -- URL for the hub
+    , hiCallback :: String  -- URL for the hub; need to think about this
     } -- deriving Show
 
 -- | This information may change due to processing a request
@@ -1788,7 +1843,7 @@ appAffil = "Chandra X-ray Center, Smithsonian Astrophysical Observatory"
 appEmail = "dburke@cfa.harvard.edu"
     
 newHubInfo ::
-    String          -- ^ URL of the hub
+    String          -- ^ base URL of the hub
     -> StdGen       -- ^ The generator to use
     -> HubSecret    -- ^ The secret to use
     -> IO HubInfo
@@ -1803,12 +1858,12 @@ newHubInfo huburl gen secret = do
       hmdata = case miconurl of
                  Just u -> M.insert "samp.icon.url" (SAMPString u) hmdata1
                  _ -> hmdata1
-                      
+
+      -- probably going to change how MTypes are checked, which will
+      -- hopefully remove the need for duplication
       handlers = [ ("samp.app.ping", hubSentPing)
-                   {-
                  , ("samp.query.by-meta", hubSentQueryByMeta)
                  , ("x-samp.query.by-meta", hubSentQueryByMeta)
-                    -}
                  ]
       hsubs = makeHubSubscriptions handlers
       hir = HubInfoReader {
@@ -1819,7 +1874,7 @@ newHubInfo huburl gen secret = do
             , hiSubscribed = hsubs
             , hiHandlers = handlers
             , hiHubHandlers = defaultHubHandlers
-            , hiCallback = huburl
+            , hiCallback = addXMLRPCEndPoint huburl
             }
       his = HubInfoState {
               hiRandomGen = gen
@@ -1951,16 +2006,12 @@ broadcastNewSubscriptions ::
   -> IO ()
 broadcastNewSubscriptions hi name subs =
     let hubName = toClientName (hiName (hiReader hi))
-        conv (mt, xs) = (mtToRS mt, SAMPMap xs)
+        conv (mt, xs) = (fromMTypeRS mt, SAMPMap xs)
         kvs = map conv (fromSubMap subs)
         msg = toSAMPMessageMT "samp.hub.event.subscriptions" params []
         params = [ ("id", toSValue name)
                  , ("subscriptions", SAMPMap kvs)]
     in broadcastMType hi hubName msg
-
--- Any valid MType is a valid RString
-mtToRS :: MType -> RString
-mtToRS = fromJust . toRString . fromMType
 
 {-
 The response to a message - i.e. sending the notifications - can
@@ -2329,7 +2380,7 @@ getSubscriptions hi secret clName = do
       case mquery of
         (query:_) ->
             let svals = fromSubMap query
-                conv (k, kvs) = (mtToRS k, SAMPMap kvs)
+                conv (k, kvs) = (fromMTypeRS k, SAMPMap kvs)
             in do
               dbgIO ("Found a match for client: " ++ show clName)
               return (HC.makeResponse (map conv svals))

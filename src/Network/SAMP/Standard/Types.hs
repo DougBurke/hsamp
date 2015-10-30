@@ -51,7 +51,7 @@ module Network.SAMP.Standard.Types (
        asIntegral, asFloating, asBool,
        randomRString, randomAlphaNumRString,
 
-       MType, toMType, toMTypeE, fromMType, isMTWildCard,
+       MType, toMType, toMTypeE, fromMType, fromMTypeRS, isMTWildCard,
 
        MessageTag, toMessageTag, fromMessageTag,
 
@@ -86,31 +86,38 @@ module Network.SAMP.Standard.Types (
 
        ) where
 
-import Control.Monad.Except (MonadError, throwError)
-import Control.Monad (liftM, ap)
-
-import System.Random
-
-import qualified Network.Socket as NS
-import Network.XmlRpc.Internals
-
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.Text as T
 import qualified Data.HashMap.Strict as HM
     
-import Data.Char (chr, intToDigit, isAlphaNum, isDigit, ord)
+import qualified Network.Socket as NS
+
+import Control.Monad.Except (MonadError, throwError)
+import Control.Monad (liftM, ap)
+
+-- import Data.Char (chr, intToDigit, isAlphaNum, isDigit, ord)
+import Data.Char (chr, isAlphaNum, isDigit)
 import Data.Either (partitionEithers)
 import Data.Hashable (Hashable)
 import Data.List (intercalate, isPrefixOf)
 import Data.List.Split (splitOn, splitOneOf)
 import Data.Maybe (fromJust)
-import Data.String
+import Data.String (IsString(..))
 
 import GHC.Generics (Generic)
 
 import Network.URI (URI)
+import Network.XmlRpc.Internals (Err, XmlRpcType(..), Value(..), Type(..),
+                                 MethodCall(..), MethodResponse(..),
+                                 renderCall, renderResponse,
+                                 parseCall, parseResponse,
+                                 toValue, getField,
+                                 handleError)
+                                 
     
+import System.Random (Random(random), RandomGen, randomR)
+
 {-|
 Several of the networking libraries used by the SAMP
 routines require initialization, which is provided by this
@@ -122,6 +129,12 @@ At present this includes 'Network.Socket.withSocketsDo'.
 withSAMP :: IO a -> IO a
 withSAMP = NS.withSocketsDo
 -- withSAMP = NS.withSocketsDo . NE.withHttpEnumerator
+
+-- | My version of haxr's maybeToM. It is specialized to Err, but
+--   most importantly, uses throwError rather than fail.
+maybeToM :: Monad m => String -> Maybe a -> Err m a
+maybeToM _ (Just x) = return x
+maybeToM err Nothing = throwError err
 
 -- | Runs the SAMP computation and returns the result.
 -- Any error is converted to a user exception. This is
@@ -242,7 +255,12 @@ toRChar = handleError (const Nothing) . toRCharE
 -- | See 'toRChar'.
 toRCharE :: (Monad m) => Char -> Err m RChar
 toRCharE c | isRChar c = return (RC c)
+           | otherwise = throwError ("'" ++ [c] ++
+                                     "' is not a valid SAMP character.")
+
+{-                         
            | otherwise = throwError $ "'" ++ [c] ++ "'/" ++ toHex c ++ " is not a valid SAMP character."
+-}
 
 -- | Extract the contents of the 'RChar'.
 fromRChar :: RChar -> Char
@@ -298,7 +316,8 @@ instance XmlRpcType RString where
     toValue = ValueString . fromRString
 
     fromValue (ValueString s) = toRStringE s
-    fromValue x = fail $ "Unable to convert to a SAMP string from " ++ show x
+    fromValue x = throwError ("Unable to convert to a SAMP string from " ++
+                              show x)
 
     getType _ = TString
 
@@ -576,16 +595,27 @@ toMTypeE mt = go mt ""
        go ('.':'.':_) _ = throwError $ hdr ++ " (there must be characters between the '.')"
 
        go (x:xs) acc | isMTChar x = go xs (x:acc)
+                     | otherwise  = throwError (hdr ++
+                                                " (invalid character '" ++
+                                                [x] ++ "')")
+
+{-                                    
                      | otherwise  = throwError $ hdr ++ " (invalid character '" ++ [x] ++ "'/" ++ toHex x ++ ")" -- could include hex code
 
+-- the following does NOT handle UTF!                                    
 toHex :: Char -> String
 toHex c = let x = ord c
               y = [x `div` 16, x `mod` 16]
           in "0x" ++ map intToDigit y
+-}
 
 -- | Extract the contents of the 'MType'.
 fromMType :: MType -> String
 fromMType = show
+
+-- | Extract the contents of the 'MType'.
+fromMTypeRS :: MType -> RString
+fromMTypeRS = fromJust . toRString . show  -- a valid MType is a valid RString
 
 -- | Does the 'MType' contain a wild card?
 isMTWildCard :: MType -> Bool
@@ -619,10 +649,12 @@ rather than
 >    kv <- stringToKeyValE "author.name" "foo@bar.com"
 
 -}
-stringToKeyValE :: (Monad m, Functor m) -- added Functor instance as inferred by ghc
-                => String -- ^ the key name
-                -> String -- ^ the value
-                -> Err m SAMPKeyValue
+
+stringToKeyValE ::
+    (Monad m)
+    => String -- ^ the key name
+    -> String -- ^ the value
+    -> Err m SAMPKeyValue
 stringToKeyValE k v = do
     km <- toRStringE k
     vm <- toRStringE v
@@ -658,9 +690,10 @@ ERROR: Key samp.error should be a SAMP string but found SAMPMap [("samp.errortxt
 
 -}
 
-stringFromKeyValE :: Monad m
-                 => SAMPKeyValue
-                 -> Err m (String, String)
+stringFromKeyValE ::
+    (Monad m)
+    => SAMPKeyValue
+    -> Err m (String, String)
 stringFromKeyValE (k,SAMPString v) = return (fromRString k, fromRString v)
 stringFromKeyValE (k,x) = throwError $ "Key " ++ show k ++ " should be a SAMP string but found " ++ show x
 
@@ -670,7 +703,10 @@ than force Value, but need to look at to see if it is worth it.
 -}
 
 -- | Convert a (String, Value) tuple into (RString, SAMPValue)
-toSAMPKeyValue :: (Monad m) => (String, Value) -> Err m SAMPKeyValue
+toSAMPKeyValue ::
+    (Monad m)
+    => (String, Value)
+    -> Err m SAMPKeyValue
 toSAMPKeyValue (n,v) = (,) `liftM` toRStringE n `ap` fromValue v
 
               
@@ -760,7 +796,8 @@ instance XmlRpcType SAMPValue where
     -- convert as strings
     fromValue (ValueUnwrapped s) = liftM SAMPString $ toRStringE s
     
-    fromValue x = fail $ "Unable to convert to SAMP Value from " ++ show x
+    fromValue x = throwError ("Unable to convert to SAMP Value from " ++
+                              show x)
 
     getType (SAMPString _) = TString
     getType (SAMPList _) = TArray
@@ -794,6 +831,10 @@ class SAMPType a where
     -- | convert from a SAMP type
     fromSValue :: (Monad m) => SAMPValue -> Err m a
 
+instance SAMPType SAMPValue where
+    toSValue = id
+    fromSValue = return
+                  
 instance {-# OVERLAPPING #-} SAMPType RString where
     toSValue = SAMPString
     fromSValue (SAMPString s) = return s
