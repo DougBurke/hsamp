@@ -97,12 +97,13 @@ makeCallE url msg args = do
       hdlr :: CE.IOException -> Err IO a
       hdlr e =
         let s = show e
-        in throwError $ if s == "connect: does not exist (Connection refused)"
-                        then "Is a SAMP hub running? Unable to connect to " ++ url
-                        else s
+            emsg = if s == "connect: does not exist (Connection refused)"
+                   then "Is a SAMP hub running? Unable to connect to " ++ url
+                   else s
+        in throwError emsg 
 
-  dbg $ "Calling message " ++ rmsg ++ " at " ++ url
-  dbg $ "  with args " ++ show args
+  dbg ("Calling message " ++ rmsg ++ " at " ++ url)
+  dbg ("  with args " ++ show args)
   rsp <- call url rmsg (map toValue args) `catchErrT` hdlr
   dbg ("Response to " ++ rmsg)
   dbg (show rsp)
@@ -134,7 +135,7 @@ catchErrT ::
   -> (e -> Err IO a)
   -> Err IO a
 catchErrT a onE = do
-  eresult <- liftIO $ runExceptT a `CE.catch` (runExceptT . onE)
+  eresult <- liftIO (runExceptT a `CE.catch` (runExceptT . onE))
   either throwError return eresult
 
 -- | Like 'makeCallE' but ignores the return value.
@@ -153,10 +154,11 @@ key to the start of the message arguments.
 This is a low-level routine and users are expected to
 use more appropriate routines where available.
 -} 
-callHubE :: SAMPConnection
-         -> RString      -- ^ message name
-         -> [SAMPValue]  -- ^ message arguments
-         -> Err IO SAMPValue     -- ^ response
+callHubE ::
+    SAMPConnection
+    -> RString      -- ^ message name
+    -> [SAMPValue]  -- ^ message arguments
+    -> Err IO SAMPValue     -- ^ response
 callHubE conn msg args = 
          makeCallE (scHubURL conn) msg
                    (toSValue (scPrivateKey conn) : args)
@@ -242,12 +244,18 @@ sDoc  = "samp.documentaion.url"
 
 -- | Create the key/value pairs used by 'declareMetadataE'
 -- for the common metadata settings. Also see 'toMetadataE'.
-toMetadata :: RString -- ^ A one-word title for the application (@samp.name@)
-           -> Maybe RString -- ^ A short description of the application in plain text (@samp.description.text@)
-           -> Maybe RString -- ^ A description of the application in HTML (@samp.description.html@)
-           -> Maybe RString -- ^ The URL of an icon in png, gif or jpeg format (@samp.icon.url@)
-           -> Maybe RString -- ^ The URL of a documentation web page (@samp.documentation.url@)
-           -> [SAMPKeyValue]
+toMetadata ::
+    RString -- ^ A one-word title for the application (@samp.name@)
+    -> Maybe RString
+    -- ^ A short description of the application in plain text
+    --   (@samp.description.text@)
+    -> Maybe RString
+    -- ^ A description of the application in HTML (@samp.description.html@)
+    -> Maybe RString
+    -- ^ The URL of an icon in png, gif or jpeg format (@samp.icon.url@)
+    -> Maybe RString
+    -- ^ The URL of a documentation web page (@samp.documentation.url@)
+    -> [SAMPKeyValue]
 toMetadata m txt html icon doc =
     let f k = fmap $ (,) k . SAMPString
         ms = [f sTxt txt, f sHtml html, f sIcon icon, f sDoc doc]
@@ -259,20 +267,22 @@ toMetadataE ::
     Monad m
     => String -- ^ A one-word title for the application (@samp.name@)
     -> Maybe String
-       -- ^ A short description of the application in plain text
-       --   (@samp.description.text@)
+    -- ^ A short description of the application in plain text
+    --   (@samp.description.text@)
     -> Maybe String
-       -- ^ A description of the application in HTML (@samp.description.html@)
+    -- ^ A description of the application in HTML (@samp.description.html@)
     -> Maybe String
-       -- ^ The URL of an icon in png, gif or jpeg format (@samp.icon.url@)
+    -- ^ The URL of an icon in png, gif or jpeg format (@samp.icon.url@)
     -> Maybe String
-       -- ^ The URL of a documentation web page (@samp.documentation.url@)
+    -- ^ The URL of a documentation web page (@samp.documentation.url@)
     -> Err m [SAMPKeyValue]
 toMetadataE m txt html icon doc = 
-    let f k (Just v) = toRStringE v >>= \vs -> return $ Just (k, SAMPString vs)
+    let f k (Just v) = toRStringE v >>=
+                       \vs -> return (Just (k, SAMPString vs))
         f _ _ = return Nothing
-        ms = [f sName (Just m), f sTxt txt, f sHtml html, f sIcon icon, f sDoc doc]
-    in liftM catMaybes $ sequence ms
+        ms = [ f sName (Just m), f sTxt txt, f sHtml html
+             , f sIcon icon, f sDoc doc]
+    in liftM catMaybes (sequence ms)
 
 {-|
 Declare the metadata for the client. The metadata is provided as a
@@ -419,7 +429,9 @@ callAndWaitE cl clid msg tout =
 -- | Reply to a message from another client.
 replyE ::
     SAMPConnection
-    -> MessageId -- ^ the message identifier (as returned by the hub from 'callE' or 'callAllE')
+    -> MessageId
+    -- ^ the message identifier (as returned by the hub from 'callE' or
+    --   'callAllE')
     -> SAMPResponse -- ^ the response
     -> Err IO ()
 replyE cl msgid rsp =
@@ -459,7 +471,7 @@ getClientNamesE ::
      -- ^ key is the client id and the value is the @samp.name@ value (if set)
 getClientNamesE conn = do
     clients <- getRegisteredClientsE conn
-    forM clients $ \clid -> (,) clid <$> getClientNameE conn clid
+    forM clients (\clid -> (,) clid <$> getClientNameE conn clid)
 
 {-|
 Get the name (@samp.name@) of the client, if set.

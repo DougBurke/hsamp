@@ -111,8 +111,7 @@ import Network.XmlRpc.Internals (Err, XmlRpcType(..), Value(..), Type(..),
                                  MethodCall(..), MethodResponse(..),
                                  renderCall, renderResponse,
                                  parseCall, parseResponse,
-                                 toValue, getField,
-                                 handleError)
+                                 toValue, handleError)
 import Numeric (showHex)                                 
     
 import System.Random (Random(random), RandomGen, randomR)
@@ -234,7 +233,7 @@ instance Enum RChar where
     toEnum x | x < 0 || x >= nRChars = error "bad argument"
              | otherwise             = RC (validRChars !! x)
 
-    fromEnum (RC c) = length $ takeWhile (/=c) validRChars
+    fromEnum (RC c) = length (takeWhile (/=c) validRChars)
 
     enumFrom x = enumFromTo x maxBound                 
 
@@ -243,7 +242,8 @@ instance Enum RChar where
         bound | fromEnum y >= fromEnum x = maxBound
               | otherwise                = minBound
 
-    enumFromTo (RC s) (RC e) = toRS $ takeWhile (<=e) $ dropWhile (<s) validRChars
+    enumFromTo (RC s) (RC e) = toRS (takeWhile (<=e)
+                                     (dropWhile (<s) validRChars))
 
     -- rely on the default implementation for enumFromThenTo
 
@@ -343,10 +343,12 @@ Characters are chosen from the full list of SAMP characters
 (e.g. 'validRChars') /except/ for @0x09@, @0x0a@, @0x0d@
 and @0x7f@ (i.e. the control characters).
 -}
-randomRString :: (RandomGen g) 
-              => Int -- ^ the number of characters (if <= 0 then an empty string is returned)
-              -> g -- ^ the generator to use
-              -> (RString, g)
+randomRString ::
+    (RandomGen g) 
+    => Int
+    -- ^ the number of characters (if <= 0 then an empty string is returned)
+    -> g -- ^ the generator to use
+    -> (RString, g)
 randomRString n gen | n <= 0     = ([], gen)
                     | otherwise = go n gen []
     where
@@ -358,10 +360,12 @@ randomRString n gen | n <= 0     = ([], gen)
 --   are chosen to the alpha-numeric set (as reported by
 --   Data.Char.isAlphaNum).
 --
-randomAlphaNumRString :: (RandomGen g) 
-              => Int -- ^ the number of characters (if <= 0 then an empty string is returned)
-              -> g -- ^ the generator to use
-              -> (RString, g)
+randomAlphaNumRString ::
+    (RandomGen g) 
+    => Int
+    -- ^ the number of characters (if <= 0 then an empty string is returned)
+    -> g -- ^ the generator to use
+    -> (RString, g)
 randomAlphaNumRString n gen | n <= 0     = ([], gen)
                     | otherwise = go n gen []
     where
@@ -578,11 +582,13 @@ toMTypeE mt = go mt ""
 
        dotFirst = hdr ++ " (no characters before '.')"
        missingDot = hdr ++ " (missing '.' before wildcard)"
-       invalidChar = hdr ++ " (invalid character '"
        invalidWild = hdr ++ " (wildcard can only appear at end)"
        missingWild = hdr ++ " (missing name or wildcard after '.')"
        multiDots = hdr ++ " (there must be characters between the '.')"
-           
+
+       invalidChar x = hdr ++ " (invalid character '" ++ [x] ++ "'/" ++
+                       toHex x ++ ")"
+                    
        -- really should use a simple parser/fsa
        -- nb: we need to store the last '.' in a wildcard
        --     for the Eq instance
@@ -597,8 +603,7 @@ toMTypeE mt = go mt ""
        go ('.':'.':_) _ = throwError multiDots
 
        go (x:xs) acc | isMTChar x = go xs (x:acc)
-                     | otherwise  = throwError (invalidChar ++ [x] ++ "'/" ++
-                                                toHex x ++ ")")
+                     | otherwise  = throwError (invalidChar x)
 
 -- | Convert a character to a hexadecimal encoding, ensuring 0-padded
 --   (i.e. the length is an even number).
@@ -752,16 +757,11 @@ grabKeyE ::
     => RString -- ^ key to find
     -> [SAMPKeyValue]
     -> Err m (a, [SAMPKeyValue]) -- ^ value of key and remainder of the list
-grabKeyE k kvs =
-    let find c@(a, b) = if a == k then Left b else Right c
-        (ls, rs) = partitionEithers (map find kvs)
-    in case ls of
-         (b:_) -> do
-                 ans <- fromSValue b
-                 return (ans, rs)
-         _ -> throwError ("Unable to find key: " ++ show k)
-
-              
+grabKeyE k kvs = do
+    (sval, rs) <- removeKeyE k kvs
+    val <- fromSValue sval
+    return (val, rs)
+           
 {- | The SAMP profile supports three basic data types,
 a string, a list or a map (keys are strings and they
 can contain a SAMP data type).
@@ -792,15 +792,16 @@ instance IsString SAMPValue where
 
 instance XmlRpcType SAMPValue where
     toValue (SAMPString s) = toValue s
-    toValue (SAMPList xs) = ValueArray $ map toValue xs
-    toValue (SAMPMap xs) = ValueStruct [(fromRString n, toValue v) | (n,v) <- xs]
+    toValue (SAMPList xs) = ValueArray (map toValue xs)
+    toValue (SAMPMap xs) = ValueStruct [(fromRString n, toValue v) |
+                                        (n,v) <- xs]
 
-    fromValue (ValueString s) = liftM SAMPString $ toRStringE s
-    fromValue (ValueArray xs) = liftM SAMPList $ mapM fromValue xs
-    fromValue (ValueStruct xs) = liftM SAMPMap $ mapM toSAMPKeyValue xs
+    fromValue (ValueString s) = liftM SAMPString (toRStringE s)
+    fromValue (ValueArray xs) = liftM SAMPList (mapM fromValue xs)
+    fromValue (ValueStruct xs) = liftM SAMPMap (mapM toSAMPKeyValue xs)
     
     -- convert as strings
-    fromValue (ValueUnwrapped s) = liftM SAMPString $ toRStringE s
+    fromValue (ValueUnwrapped s) = liftM SAMPString (toRStringE s)
     
     fromValue x = throwError ("Unable to convert to SAMP Value from " ++
                               show x)
@@ -823,10 +824,12 @@ instance J.ToJSON SAMPValue where
 -- debugging and simple screen output rather than serialisation.
 showSAMPValue :: SAMPValue -> String
 showSAMPValue (SAMPString s) = show s
-showSAMPValue (SAMPList xs) = concat ["[", intercalate "," (map showSAMPValue xs), "]"]
-showSAMPValue (SAMPMap ms) = concat ["{", intercalate "," vals, "}"]
-         where
-             vals = map (\(n,v) -> concat [show n, " -> ", showSAMPValue v]) ms
+showSAMPValue (SAMPList xs) =
+    concat ["[", intercalate "," (map showSAMPValue xs), "]"]
+showSAMPValue (SAMPMap ms) =
+    concat ["{", intercalate "," vals, "}"]
+        where
+          vals = map (\(n,v) -> concat [show n, " -> ", showSAMPValue v]) ms
 
 -- | Conversion routines for 'SAMPValue' values. This is intended to
 -- make it easier to convert between Haskell and SAMP types.
@@ -1119,7 +1122,6 @@ data SAMPMessage = SM {
 
 {-|
 Constructor for a 'SAMPMessage'.
-
 -}
 toSAMPMessage ::
     (Monad m)
@@ -1175,30 +1177,13 @@ instance SAMPType SAMPMessage where
       toSAMPMessage mt ps xs3
     fromSValue x = throwError ("Expected a SAMP map but sent " ++ show x)
 
+-- | Convert via @SAMPValue@                   
 instance XmlRpcType SAMPMessage where
     toValue = toValue . toSValue
-
-    -- can I use SAMPType for this too? At least once I have added in more
-    -- instances.
-    fromValue (ValueStruct xs) = do
-        let key1 = "samp.mtype"
-            key2 = "samp.params"
-            extras = cleanKeys [key1, key2] xs
-        mt <- getField key1 xs >>= toMTypeE
-        ps <- getField key2 xs >>= mapM toSAMPKeyValue
-        sextras <- mapM toSAMPKeyValue extras
-        toSAMPMessage mt ps sextras
-                      
-    fromValue x = throwError ("Unable to convert to SAMP Message from " ++
-                              show x)
-
+    fromValue xs = fromValue xs >>= fromSValue
+                   
     getType _ = TStruct
 
--- method calls
-
---
--- Types for methods calls and responses
---
 
 {-|
 A SAMP method call. Consists of a method name and a list of  
@@ -1233,19 +1218,21 @@ toSMR (Return vs) = SAMPReturn `liftM` fromValue vs
 toSMR (Fault _ msg) = return (SAMPFault msg)
 
 fromSMR :: SAMPMethodResponse -> MethodResponse
-fromSMR (SAMPReturn vs) = Return $ toValue vs
-fromSMR (SAMPFault msg) = Fault 0 msg
+fromSMR (SAMPReturn vs) = Return (toValue vs)
+fromSMR (SAMPFault msg) = Fault 0 msg -- the integer value is not specified
 
 -- | Parses a SAMP method call from the XmlRpc input.
-parseSAMPCall :: (Show e, MonadError e m) =>
-              String -- ^ XmlRpc input
-              -> Err m SAMPMethodCall
+parseSAMPCall ::
+    (Show e, MonadError e m)
+    => String -- ^ XmlRpc input
+    -> Err m SAMPMethodCall
 parseSAMPCall c = parseCall c >>= toSMC
 
 -- | Parses a SAMP method response.
-parseSAMPResponse :: (Show e, MonadError e m) =>
-                  String -- ^ XmlRpc input
-                  -> Err m SAMPMethodResponse
+parseSAMPResponse ::
+    (Show e, MonadError e m)
+    => String -- ^ XmlRpc input
+    -> Err m SAMPMethodResponse
 parseSAMPResponse c = parseResponse c >>= toSMR
 
 renderSAMPCall :: SAMPMethodCall -> L.ByteString
