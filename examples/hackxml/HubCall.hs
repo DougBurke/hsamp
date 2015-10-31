@@ -13,7 +13,7 @@ Portability :  requires haxr, not tested on Windows (will not work due to POSIX 
 This is only needed whilst the xmlhack flag is being supported. This
 module is a replacement for the haxr call routine that ensures that
 there are no empty XML elements written using the <name/> form (at
-present it only does this for struct elements).
+present it only does this for struct and some value elements).
 
 -}
 
@@ -154,12 +154,13 @@ emptyResponse :: L.ByteString
 -- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value/></param></params></methodResponse>"
   -- ds9 7.4b8 fails with "Unrecognized response from server"
 
-emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value></value></param></params></methodResponse>" -- seems to be okay with ds9 7.4b8
+emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value></value></param></params></methodResponse>"
+  -- ds9 7.4b8 is okay
 
+-- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value><string></string></value></param></params></methodResponse>"
+   -- ds9 7.4b8 is okay
 
 -- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value><string/></value></param></params></methodResponse>"
-   -- ds9 7.4b8 fails with "Invalid close of value tag"
--- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value><string></string></value></param></params></methodResponse>"
    -- ds9 7.4b8 fails with "Invalid close of value tag"
 
 -- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value></value></param></params></methodResponse>"
