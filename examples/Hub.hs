@@ -73,6 +73,10 @@ TODO:
   - add web profile
 
   - work out what's going on with ds9 connections
+    - have sorted out will Bill the 'Parse exception: not enough input'
+      that I get from handling responses from ds9 (content-length header
+      is being set incorrectly by ds9)
+    - todo: validate that ds9 supports <x/> form of tags
 
   - could run connections to clients using async, storing the
     thread ids, so that they can be stopped if the client shut
@@ -1006,7 +1010,7 @@ hubSentQueryByMeta hi msg = do
         hub <- liftIO (readMVar mvar)
         let clMap = hiClients hub
             -- the check is case sensitive
-            check mdata = maybe False (const True) (do
+            check mdata = isJust (do
                 kval <- M.lookup kwant mdata
                 guard (vwant == kval))
                            
