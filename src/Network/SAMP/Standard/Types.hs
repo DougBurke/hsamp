@@ -96,8 +96,7 @@ import qualified Network.Socket as NS
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad (liftM, ap)
 
--- import Data.Char (chr, intToDigit, isAlphaNum, isDigit, ord)
-import Data.Char (chr, isAlphaNum, isDigit)
+import Data.Char (chr, isAlphaNum, isDigit, ord)
 import Data.Either (partitionEithers)
 import Data.Hashable (Hashable)
 import Data.List (intercalate, isPrefixOf)
@@ -114,7 +113,7 @@ import Network.XmlRpc.Internals (Err, XmlRpcType(..), Value(..), Type(..),
                                  parseCall, parseResponse,
                                  toValue, getField,
                                  handleError)
-                                 
+import Numeric (showHex)                                 
     
 import System.Random (Random(random), RandomGen, randomR)
 
@@ -255,12 +254,8 @@ toRChar = handleError (const Nothing) . toRCharE
 -- | See 'toRChar'.
 toRCharE :: (Monad m) => Char -> Err m RChar
 toRCharE c | isRChar c = return (RC c)
-           | otherwise = throwError ("'" ++ [c] ++
-                                     "' is not a valid SAMP character.")
-
-{-                         
-           | otherwise = throwError $ "'" ++ [c] ++ "'/" ++ toHex c ++ " is not a valid SAMP character."
--}
+           | otherwise = throwError ("'" ++ [c] ++ "'/" ++ toHex c ++
+                                     " is not a valid SAMP character.")
 
 -- | Extract the contents of the 'RChar'.
 fromRChar :: RChar -> Char
@@ -581,33 +576,40 @@ toMTypeE mt = go mt ""
      where
        hdr = "Invalid MType '" ++ mt ++ "'"
 
+       dotFirst = hdr ++ " (no characters before '.')"
+       missingDot = hdr ++ " (missing '.' before wildcard)"
+       invalidChar = hdr ++ " (invalid character '"
+       invalidWild = hdr ++ " (wildcard can only appear at end)"
+       missingWild = hdr ++ " (missing name or wildcard after '.')"
+       multiDots = hdr ++ " (there must be characters between the '.')"
+           
        -- really should use a simple parser/fsa
        -- nb: we need to store the last '.' in a wildcard
        --     for the Eq instance
        go "" acc = return $ MT (reverse acc) False
-       go ".*" acc | null acc  = throwError $ hdr ++ " (no characters before '.')"
-                   | otherwise = return $ MT (reverse ('.':acc)) True
-       go "*" acc | null acc  = return $ MT "" True
-                  | otherwise = throwError $ hdr ++ " (missing '.' before wildcard)"
+       go ".*" acc | null acc  = throwError dotFirst
+                   | otherwise = return (MT (reverse ('.':acc)) True)
+       go "*" acc | null acc  = return (MT "" True)
+                  | otherwise = throwError missingDot
 
-       go ('*':_) _ = throwError $ hdr ++ " (wildcard can only appear at end)"
-       go "." _ = throwError $ hdr ++ " (missing name or wildcard after '.')"
-       go ('.':'.':_) _ = throwError $ hdr ++ " (there must be characters between the '.')"
+       go ('*':_) _ = throwError invalidWild
+       go "." _ = throwError missingWild
+       go ('.':'.':_) _ = throwError multiDots
 
        go (x:xs) acc | isMTChar x = go xs (x:acc)
-                     | otherwise  = throwError (hdr ++
-                                                " (invalid character '" ++
-                                                [x] ++ "')")
+                     | otherwise  = throwError (invalidChar ++ [x] ++ "'/" ++
+                                                toHex x ++ ")")
 
-{-                                    
-                     | otherwise  = throwError $ hdr ++ " (invalid character '" ++ [x] ++ "'/" ++ toHex x ++ ")" -- could include hex code
-
--- the following does NOT handle UTF!                                    
+-- | Convert a character to a hexadecimal encoding, ensuring 0-padded
+--   (i.e. the length is an even number).
+--
+--   It could act like ShowS but avoid that for now.
+--
 toHex :: Char -> String
-toHex c = let x = ord c
-              y = [x `div` 16, x `mod` 16]
-          in "0x" ++ map intToDigit y
--}
+toHex c =
+    let s = showHex (ord c) ""
+        n = length s `mod` 2
+    in "0x" ++ replicate n '0' ++ s
 
 -- | Extract the contents of the 'MType'.
 fromMType :: MType -> String
@@ -681,10 +683,12 @@ and (<|) could be for conversion back to strings?
 -- | Convert a 'SAMPKeyValue' into a pair of strings.
 -- This fails if the 'SAMPValue' stored in the pair is not
 -- a 'SAMPString'.
---
--- THIS SEEMS TO BE BEING USED INCORRECTLY, IN THAT I GET
 
 {-
+
+TODO: is the following still a valid complaint?
+
+THIS SEEMS TO BE BEING USED INCORRECTLY, IN THAT I GET
 
 ERROR: Key samp.error should be a SAMP string but found SAMPMap [("samp.errortxt",SAMPString "Unsupported message: samp.hub.callAll")]
 
@@ -695,7 +699,9 @@ stringFromKeyValE ::
     => SAMPKeyValue
     -> Err m (String, String)
 stringFromKeyValE (k,SAMPString v) = return (fromRString k, fromRString v)
-stringFromKeyValE (k,x) = throwError $ "Key " ++ show k ++ " should be a SAMP string but found " ++ show x
+stringFromKeyValE (k,x) = throwError ("Key " ++ show k ++
+                                      " should be a SAMP string but found " ++
+                                      show x)
 
 {-
 The following routines could be made generic - ie use XmlRpcType a rather

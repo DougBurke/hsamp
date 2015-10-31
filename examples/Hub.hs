@@ -975,11 +975,6 @@ hubSentPing _ msg = do
   infoIO (" extra = " ++ show extra)
   return emptySAMPResponse -- return extra?
 
-{-
-TODO: why does the following not correctly catch when the key
-    parameter is not available?
--}
-
 -- | Process the [x-]samp.query.by-meta message sent to the hub.
 hubSentQueryByMeta :: HubHandlerFunc                 
 hubSentQueryByMeta hi msg = do
