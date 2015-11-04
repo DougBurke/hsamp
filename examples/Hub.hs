@@ -187,7 +187,7 @@ import Network.Wai.Middleware.RequestLogger (Destination(..), destination,
                                              mkRequestLogger)
 
 import System.Log.Logger (Priority(DEBUG, INFO, NOTICE, WARNING),
-                          debugM, infoM, noticeM,
+                          debugM, infoM, noticeM, warningM,
                           setLevel, updateGlobalLogger)
 import System.Log.FastLogger (fromLogStr)
 import System.Posix.IO (createFile)
@@ -207,19 +207,21 @@ cLogger = "SAMP.StandardProfile.Hub"
 
 -- log the message to the SAMP logger at the debug or info level.
 --
-dbg, info :: MonadIO m => String -> m ()
+dbg, info, warn :: MonadIO m => String -> m ()
 dbg = liftIO . dbgIO
 info = liftIO . infoIO
+warn = liftIO . warnIO
 
 {- currently unused       
 notice :: String -> ActionM ()
 notice = liftIO . noticeIO
 -}
 
-dbgIO, infoIO, noticeIO :: String -> IO ()
+dbgIO, infoIO, noticeIO, warnIO :: String -> IO ()
 dbgIO = debugM cLogger . ("DBG " ++)
 infoIO = infoM cLogger . ("INFO " ++)
 noticeIO = noticeM cLogger . ("NOTICE " ++)
+warnIO = warningM cLogger . ("WARNING " ++)
            
 main :: IO ()
 main = do
@@ -335,7 +337,7 @@ makeSecret = randomAlphaNumRString 16
 -- | Create a new message identifier, including updating the
 --   hub with the information about it.
 --
---   Note that, at present, there is a lot of repeated work
+--   TODO: Note that, at present, there is a lot of repeated work
 --   here and in the caller (i.e. checking that the receiver is
 --   known). This needs to be consolidated once the sendToAll processing
 --   has been written.
@@ -346,16 +348,13 @@ newMessageId ::
     -> (MessageTag, ClientData, Maybe (MVar L.ByteString)) -- ^ the source of the message
     -> IO (Either String MessageId)
        -- ^ in case the client can not be found
-newMessageId hi secret (tag, sender, mmvar) = do
-  let mvar = hiState hi
-  ohub <- takeMVar mvar
-  let oclMap = hiClients ohub
-  case M.lookup secret oclMap of
-    Just orec -> do
-
+newMessageId hi secret (tag, sender, mmvar) = 
+  changeHubWithSecretE hi secret $ \ohub orec -> do
+      
       cTime <- getCurrentTime
                
-      let oflight = cdInFlight orec
+      let oclientmap = hiClients ohub
+          oflight = cdInFlight orec
           onum = cdNextInFlight orec
           nnum = succ onum
 
@@ -371,29 +370,28 @@ newMessageId hi secret (tag, sender, mmvar) = do
           -- collision is small. However, it may make manual
           -- tracing of message flow a bit easier.
           (s, ngen) = makeSecret (hiRandomGen ohub)
-          mid = toMessageId (fromJust (toRString ("mid" ++ show onum ++ ":" ++
-                                                  fromRString s)))
 
+          rstr = fromJust (toRString (show onum))
+          mid = toMessageId ("mid" ++ rstr ++ ":" ++ s)
+          {-
+          mid = toMessageId (fromJust (toRString ("mid" ++ show onum ++
+                                                  ":" ++ fromRString s)))
+          -}
+                
           nflight = M.insert mid ifd oflight
           nrec = orec { cdInFlight = nflight
                       , cdNextInFlight = nnum }
-          nclMap = M.adjust (const nrec) secret oclMap
+          nclMap = M.adjust (const nrec) secret oclientmap
           nhub = ohub { hiClients = nclMap
                       , hiRandomGen = ngen }
 
-      putMVar mvar nhub
       dbgIO ("Inserted messageId=" ++ show mid ++ " for receiver=" ++
-            fromRString (fromClientName (cdName orec)))
-      nclMap `seq` nhub `seq` nflight `seq` ifd `seq`
-             mid `seq` nnum `seq` return ()
-      return (Right mid)
+             fromRString (fromClientName (cdName orec)))
+      let sact = nclMap `seq` nhub `seq` nflight `seq` ifd `seq`
+                 mid `seq` nnum `seq` return ()
+      return (nhub, mid, sact)
             
-    _ -> do
-      dbgIO ("Unable to find the receiver matching secret=" ++
-             fromRString (fromClientSecret secret))
-      return (Left "Unknown receiving client")
-
-
+ 
 -- TODO: clean up repeated code
 removeMessageId ::
     HubInfo
@@ -403,28 +401,25 @@ removeMessageId ::
                      --   needed, but it looks like we have it so can
                      --   avoid some work here
     -> IO ()
-removeMessageId hi mid secret = do
-  let mvar = hiState hi
-  ohub <- takeMVar mvar
-  let oclMap = hiClients ohub
-  case M.lookup secret oclMap of
-    Just ocd -> do
-      let oflMap = cdInFlight ocd
-          nflMap = M.delete mid oflMap
-          ncd = ocd { cdInFlight = nflMap }
-          nclMap = M.adjust (const ncd) secret oclMap
-          nhub = ohub { hiClients = nclMap }
-      dbgIO ("Removing message id " ++ show mid ++ " client " ++
-             show (cdName ocd))
-      putMVar mvar nhub
-      nhub `seq` nclMap `seq` ncd `seq` nclMap `seq` return ()
-           
-    Nothing -> do
-      dbgIO ("Looks like the client for message id " ++ show mid ++
-             " has already been removed")
-      putMVar mvar ohub
+removeMessageId hi mid secret =
+    -- could check the return value to display a warning about
+    -- "invalid" secret
+    void $ changeHubWithSecretE hi secret $ \ohub oclient -> do
+        let oclMap = hiClients ohub
+            oflMap = cdInFlight oclient
+            nflMap = M.delete mid oflMap
+            nclient = oclient { cdInFlight = nflMap }
+            nclMap = M.adjust (const nclient) secret oclMap
+            nhub = ohub { hiClients = nclMap }
+                   
+        dbgIO ("Removing message id " ++ show mid ++ " client " ++
+               show (cdName oclient))
 
-              
+        let sact = nhub `seq` nclMap `seq` nclient `seq` nclMap `seq`
+                   return ()
+        return (nhub, (), sact)
+
+               
 setupHubFile :: IO (Socket, FilePath, HubSecret)
 setupHubFile = do
     lockfile <- getLockFile
@@ -504,6 +499,10 @@ broadcastShutDown hi = do
   broadcastMType hi name (toSAMPMessageMT "samp.hub.event.shutdown" [] [])
 
 
+-- TODO: change the name withSender to withSecret as it is not guaranteed that
+--       the secret is a client who sent a message.
+--
+                 
 -- TODO: as many uses of withSender are of the form
 --
 --          withSender ... act >>= respond lbl
@@ -512,7 +511,36 @@ broadcastShutDown hi = do
 --      with a different type?
 --
 
--- | Process a message from a client.
+-- | Run an action with a copy of the Hub's state. It is possible that
+--   the action changes the hub state, but it has to do so by calling
+--   @modifyMVar@ (or similar routine). See 'changeHub' for an
+--   alternative.
+--
+withHub ::
+    MonadIO m
+    => HubInfo
+    -> (HubInfoState -> m a)
+    -> m a
+withHub hi act = liftIO (readMVar (hiState hi)) >>= act
+
+-- | Run an action and change the hub state.
+--
+changeHub ::
+    MonadIO m
+    => HubInfo
+    -> (HubInfoState -> IO (HubInfoState, a))
+       -- ^ The action is performed with a @modifyMVar@ call.
+       --   The return value is the new hub state.
+    -> m a
+changeHub hi act = 
+  let mvar = hiState hi
+  in liftIO (modifyMVar mvar act)
+                 
+-- | Run an action with a copy of the Hub's state. See
+--   'changeHubWithSender' for an alternative.
+--
+--   This is similar to 'withHub' but ensures that the client secret
+--   is valid.
 --
 withSender ::
     MonadIO m
@@ -525,16 +553,66 @@ withSender ::
        --   message is processed (but may become out of date at any
        --   time)
     -> m L.ByteString
-withSender hi secret act = do
-  let mvar = hiState hi
-  hub <- liftIO (readMVar mvar)
-  let clMap = hiClients hub
-  case M.lookup secret clMap of
-    Just sender -> act hub sender
-    _ -> do
-      info ("Unable to find a client with secret=" ++ show secret)
-      return (errorResponse "Invalid client id")
+withSender hi secret act =
+    withHub hi $ \hub ->
+      case M.lookup secret (hiClients hub) of
+        Just sender -> act hub sender
+        _ -> do
+          info ("Unable to find a client with secret=" ++ show secret)
+          return (errorResponse "Invalid client id")
 
+-- | Run an action - checking that the client is valid -
+--   and copy the hub state.
+--
+changeHubWithSender ::
+    MonadIO m
+    => HubInfo
+    -> ClientSecret
+    -> (HubInfoState -> ClientData -> IO (HubInfoState, L.ByteString, IO ()))
+       -- ^ The action is performed within a @modifyMVar@ call.
+       --   The return value is the new hub state, the return
+       --   value, and an IO action to run after setting the
+       --   new hub state (e.g. any broadcast message to be sent or
+       --   code to ensure the new state is evaluated).
+    -> m L.ByteString
+changeHubWithSender hi secret act = do
+  mrsp <- changeHubWithSecretE hi secret act
+  case mrsp of
+    Right rsp -> return rsp
+    Left emsg -> do
+              dbg ("Unable to find a client with secret=" ++ show secret)
+              -- TODO: should this be rawError or errorResponse?
+              return (rawError emsg)
+
+
+changeHubWithSecretE ::
+    MonadIO m
+    => HubInfo
+    -> ClientSecret
+    -> (HubInfoState -> ClientData -> IO (HubInfoState, a, IO ()))
+       -- ^ The action is performed within a @modifyMVar@ call.
+       --   The return value is the new hub state, the return
+       --   value, and an IO action to run after setting the
+       --   new hub state (e.g. any broadcast message to be sent or
+       --   code to ensure the new state is evaluated).
+    -> m (Either String a)
+changeHubWithSecretE hi secret act = do
+  let mvar = hiState hi
+      doit ohub = do
+        let clMap = hiClients ohub
+        case M.lookup secret clMap of
+          Just client -> do
+                    (nhub, rsp, sact) <- act ohub client
+                    return (nhub, (Right rsp, sact))
+                
+          _ -> let emsg = "Invalid client secret"
+               in return (ohub, (Left emsg, return ()))
+                   
+  (rsp, sact) <- liftIO (modifyMVar mvar doit)
+  liftIO sact
+  return rsp
+
+         
 -- | Process a message from a client that you can send a message to
 --   (a restricted variant of 'withSender')
 --
@@ -880,23 +958,21 @@ hubReceiveCall ::
     -> IO (Maybe (RString, SAMPValue))
     -- ^ The hub name and the message id (as a SAMPValue)
 hubReceiveCall hi mtag sendName msg = do
-  let mvar = hiState hi
-             
-  ohub <- takeMVar mvar
-  let ogen = hiRandomGen ohub
-      (s, ngen) = makeSecret ogen
-      nhub = ohub { hiRandomGen = ngen}
-      -- note: unlike clients, do not include a counter in the
-      --       message identifier
-      mid = toMessageId s
+  sval <- changeHub hi $ \ohub -> 
+      let ogen = hiRandomGen ohub
+          (s, ngen) = makeSecret ogen
+          nhub = ohub { hiRandomGen = ngen}
+          -- note: unlike clients, do not include a counter in the
+          --       message identifier
+          mid = toMessageId s
 
-  putMVar mvar nhub
+      in return (nhub, toSValue mid)
+  
   -- NOTE: we do not actually use the mid argument in sendToHub!
   _ <- forkIO (sendToHub hi mtag sendName msg)
+  return (Just (hiName (hiReader hi), sval))
+         
   
-  return (Just (hiName (hiReader hi), toSValue mid))
-
-
 -- | The hub has been sent a message as a SAMP client. It is
 --   therefore one of the messages that the hub is subscribed
 --   to.
@@ -1903,19 +1979,19 @@ addClientToHub ::
     HubInfo
     -> IO (ClientName, ClientSecret)
 addClientToHub hi = do
-    let hir = hiReader hi
-        mvar = hiState hi
-    ohub <- takeMVar mvar
-    let (client, secret, nhub) = addClient hir ohub
-    putMVar mvar nhub
-    -- try to enforce strict semantics for the changes in addClient,
-    -- which is ugly and prone to my mis-understandings of things
-    hiRandomGen nhub `seq`
-      hiClients nhub `seq`
-      hiNextClient nhub `seq`
-      secret `seq`
-      return ()
-    return (client, secret)
+  (ans, sact) <- changeHub hi $ \ohub -> do
+      let (client, secret, nhub) = addClient (hiReader hi) ohub
+          -- try to enforce strict semantics for the changes in addClient,
+          -- which is ugly and prone to my mis-understandings of things
+          sact = hiRandomGen nhub `seq` 
+                 hiClients nhub `seq`
+                 hiNextClient nhub `seq`
+                 secret `seq` return ()
+
+      return (nhub, ((client, secret), sact))
+
+  sact
+  return ans
 
 -- TODO: in the broadcast code; should we identify problematic
 -- clients (i.e. those that don't respond) so that they can be
@@ -1970,7 +2046,8 @@ broadcastRemovedClient hi name =
         params = [("id", toSValue name)]
     in broadcastMType hi hubName msg
 
-       
+
+{-       
 broadcastNewMetadata ::
   HubInfo
   -> ClientName  -- ^ the client that has new metadata
@@ -1983,20 +2060,7 @@ broadcastNewMetadata hi name mdata =
         params = [ ("id", toSValue name)
                  , ("metadata", SAMPMap kvs)]
     in broadcastMType hi hubName msg
-                                                  
-broadcastNewSubscriptions ::
-  HubInfo
-  -> ClientName  -- ^ the client that has new subscriptions
-  -> SubscriptionMap -- ^ the new subscriptions
-  -> IO ()
-broadcastNewSubscriptions hi name subs =
-    let hubName = toClientName (hiName (hiReader hi))
-        conv (mt, xs) = (fromMTypeRS mt, SAMPMap xs)
-        kvs = map conv (fromSubMap subs)
-        msg = toSAMPMessageMT "samp.hub.event.subscriptions" params []
-        params = [ ("id", toSValue name)
-                 , ("subscriptions", SAMPMap kvs)]
-    in broadcastMType hi hubName msg
+-}
 
 {-
 The response to a message - i.e. sending the notifications - can
@@ -2029,231 +2093,137 @@ register hi = do
 errorResponse :: String -> L.ByteString
 errorResponse msg = renderSAMPResponse (SAMPFault msg)
 
-{-                    
--- | The client can not be found.                
-noClient :: ClientName -> ActionM L.ByteString
-noClient = liftIO . noClientIO
--}
-
--- | The client can not be found.                
-noClientIO :: ClientName -> IO L.ByteString
-noClientIO clName = do
-  dbgIO ("Unable to find the requested client: " ++ show clName)
-  -- TODO: should this be rawError or errorResponse?
-  return (rawError "Invalid client id")
-                
--- | The client used an unknown secret.
---   
-noSecret :: ClientSecret -> ActionM L.ByteString
-noSecret = liftIO . noSecretIO
-
--- | The client used an unknown secret.
---   
-noSecretIO :: ClientSecret -> IO L.ByteString
-noSecretIO secret = do
-  dbgIO ("Unable to find a client with secret=" ++ show secret)
-  -- TODO: should this be rawError or errorResponse?
-  return (rawError "Invalid client secret")
-         
 unregister ::
     HubInfo
     -> ClientSecret
     -> ActionM ()
 unregister hi secret = do
-  let mvar = hiState hi
-  ohub <- liftIO (takeMVar mvar)
-  let oclientmap = hiClients ohub
-      mclient = M.lookup secret oclientmap
-      nclientmap = M.delete secret oclientmap
-      nhub = ohub { hiClients = nclientmap }
+  rsp <- changeHubWithSender hi secret $ \ohub sender -> do
+      let oclientmap = hiClients ohub
+          nclientmap = M.delete secret oclientmap
+          nhub = ohub { hiClients = nclientmap }
+          clName = cdName sender
+                   
+      dbg ("Removing client " ++ show clName)
 
-  rsp <- case mclient of
-           Just client -> do
-             let clName = cdName client            
-             dbg ("Removing client " ++ show clName)
-             liftIO (putMVar mvar nhub)
-             nclientmap `seq` nhub `seq` return ()
-             forkCall (broadcastRemovedClient hi clName)
+      let sact = nclientmap `seq` nhub `seq`
+                 forkCall (broadcastRemovedClient hi clName)
 
-             unless (M.null (cdInFlight client))
-                  (liftIO (putStrLn ("Non empty inFlightMap: " ++
-                                     show (M.keys (cdInFlight client)))))
+      unless (M.null (cdInFlight sender))
+                 (warn ("Non empty inFlightMap: " ++
+                        show (M.keys (cdInFlight sender))))
              
-             return HC.emptyResponse
+      return (nhub, HC.emptyResponse, sact)
                     
-           _ -> do
-             liftIO (putMVar mvar ohub)
-             noSecret secret
-
   respond "unregister" rsp
 
 
-setMetadata ::
-    HubInfo
-    -> ClientSecret
-    -> MetadataMap
-    -> IO L.ByteString
-setMetadata hi secret mdata = do
-  let mvar = hiState hi
-  ohub <- takeMVar mvar
-  let oclientmap = hiClients ohub
-  let mclient = M.lookup secret oclientmap
-  case mclient of
-    Nothing -> putMVar mvar ohub
-               >> noSecretIO secret
-
-    Just clinfo -> let nclinfo = clinfo { cdMetadata = mdata }
-                       nclientmap = M.insert secret nclinfo oclientmap
-                       nhub = ohub { hiClients = nclientmap }
-                   in dbgIO ("Registering new metadata for client " ++
-                             show (cdName clinfo))
-                      >> putMVar mvar nhub
-                      >> (mdata `seq` nclinfo `seq` nclientmap `seq`
-                          nhub `seq` return ())
-                      >> return HC.emptyResponse
-                         
 declareMetadata ::
     HubInfo
     -> ClientSecret
     -> [SAMPKeyValue]
     -> ActionM ()
 declareMetadata hi secret kvs = do
-  let mdata = M.fromList kvs
+  rsp <- changeHubWithSender hi secret $ \ohub sender -> do
+      let mdata = M.fromList kvs
+          nsender = sender { cdMetadata = mdata }
+          oclientmap = hiClients ohub
+          nclientmap = M.insert secret nsender oclientmap
+          nhub = ohub { hiClients = nclientmap }
+                 
+      dbg ("Registering new metadata for client " ++
+           show (cdName sender))
 
-  respondToClient "set/metadata" (setMetadata hi secret mdata)
-
-  -- this is wasteful: perhaps need to re-organize
-  mcd <- liftIO (findClient hi secret)
-  case mcd of
-    Just cd -> forkCall (broadcastNewMetadata hi (cdName cd) mdata)
-    _ -> return ()
-
-
--- | Return the client data associated with the secret.
-findClient :: HubInfo -> ClientSecret -> IO (Maybe ClientData)
-findClient hi secret = do
-  clMap <- getClientMap hi
-  return (M.lookup secret clMap)
-
--- | Return the clients, labelled by their secrets.
-getClientMap :: HubInfo -> IO ClientMap
-getClientMap hi = do
-  hub <- readMVar (hiState hi)
-  return (hiClients hub)
-
+      let hubName = toClientName (hiName (hiReader hi))
+          params = [ ("id", toSValue (cdName sender))
+                   , ("metadata", SAMPMap kvs)]
+          msg = toSAMPMessageMT "samp.hub.event.metadata" params []
          
-setCallback ::
-    HubInfo
-    -> ClientSecret
-    -> String         -- ^ the URL   
-    -> IO L.ByteString
-setCallback his secret url = do
-  let mvar = hiState his
+      -- QUS: does this fully evaluate everything?
+      let sact = mdata `seq` nsender `seq` nclientmap `seq`
+                 nhub `seq` 
+                 forkCall (broadcastMType hi hubName msg)
+      return (nhub, HC.emptyResponse, sact)
+                                  
+  respond "set/metadata" rsp
 
-      -- the only reason for IO here is the logging and trying 
-      -- a strict insert
-      act ohub =
-        let oclientmap = hiClients ohub
-            mclient = M.lookup secret oclientmap
-        in case mclient of
-             Nothing -> do
-               dbgIO ("Unable to find a client with secret=" ++ show secret)
-               -- TODO: is errorResponse correct here, or noClient
-               return (ohub, (errorResponse "Invalid client id", Nothing))
 
-             Just clinfo ->
-                 let nclinfo = clinfo { cdCallback = Just url }
-                     nclientmap = M.insert secret nclinfo oclientmap
-                     nhub = ohub { hiClients = nclientmap }
-                 in do
-                   dbgIO ("Registering Callback for client " ++
-                          show (cdName clinfo))
-                   return (nhub, (HC.emptyResponse,
-                                  Just (nclinfo `seq` nclientmap `seq`
-                                        nhub)))
-             
-  (rsp, ms) <- modifyMVar mvar act
-  case ms of
-    Just s -> s `seq` return () -- perhaps should just use a strict MVar
-    _ -> return ()
-  return rsp
-
-         
 setXmlrpcCallback ::
     HubInfo
     -> ClientSecret
     -> RString        -- ^ the URL for the callback   
     -> ActionM ()
-setXmlrpcCallback hi secret url =
-    let urls = fromRString url
-        act = case parseURI urls of
-                Just _ -> liftIO (setCallback hi secret urls)
-                Nothing -> return (errorResponse "Invalid url")
-    in respondToClient "set/callback" act
+setXmlrpcCallback hi secret urlR = do
+  let url = fromRString urlR
+      act = case parseURI url of
+              Just _ -> doit
+              -- TODO: is this the correct error?
+              Nothing -> return (errorResponse "Invalid url")
+ 
+      doit = changeHubWithSender hi secret $ \ohub sender -> do
+           let nsender = sender { cdCallback = Just url }
+               oclientmap = hiClients ohub
+               nclientmap = M.insert secret nsender oclientmap
+               nhub = ohub { hiClients = nclientmap }
+                 
+           dbg ("Registering Callback for client " ++
+                show (cdName sender) ++ " : " ++ url)
+           let sact = nsender `seq` nclientmap `seq` nhub `seq` return ()
+           return (nhub, HC.emptyResponse, sact)
+                   
+  rsp <- act
+  respond "set/callback" rsp
 
           
-setSubscriptions ::
-    HubInfo
-    -> ClientSecret
-    -> SubscriptionMap
-    -> IO L.ByteString
-setSubscriptions hi secret subs = do
-  let mvar = hiState hi
-  ohub <- takeMVar mvar
-  let oclientmap = hiClients ohub
-      mclient = M.lookup secret oclientmap
-  case mclient of
-    Nothing -> putMVar mvar ohub
-               >> noSecretIO secret
-
-    Just clinfo -> do
-        let nclinfo = clinfo { cdSubscribed = subs }
-            nclientmap = M.insert secret nclinfo oclientmap
-            nhub = ohub { hiClients = nclientmap }
-
-        dbgIO ("Registering new subscriptions for client " ++
-               show (cdName clinfo))
-        putMVar mvar nhub
-        -- QUS: does this fully evaluate everything?
-        subs `seq` nclinfo `seq` nclientmap `seq` nhub `seq` return ()
-        return HC.emptyResponse
-
-                    
 declareSubscriptions ::
     HubInfo
     -> ClientSecret
     -> SubscriptionMap
     -> ActionM ()
 declareSubscriptions hi secret subs = do
-  respondToClient "set/subs" (setSubscriptions hi secret subs)
+  rsp <- changeHubWithSender hi secret $ \ohub sender -> do
+      let nsender = sender { cdSubscribed = subs }
+          oclientmap = hiClients ohub
+          -- replace sender by nsender in the map
+          nclientmap = M.insert secret nsender oclientmap
+          nhub = ohub { hiClients = nclientmap }
 
-  -- this is wasteful: perhaps need to re-organize
-  mcd <- liftIO (findClient hi secret)
-  case mcd of
-    Just cd -> forkCall (broadcastNewSubscriptions hi (cdName cd) subs)
-    _ -> return ()
+      dbg ("Registering new subscriptions for client " ++
+           show (cdName sender))
+      
+      let hubName = toClientName (hiName (hiReader hi))
+          conv (mt, xs) = (fromMTypeRS mt, SAMPMap xs)
+          kvs = map conv (fromSubMap subs)
+          params = [ ("id", toSValue (cdName sender))
+                   , ("subscriptions", SAMPMap kvs) ]
+          msg = toSAMPMessageMT "samp.hub.event.subscriptions" params []
 
+      -- QUS: does this fully evaluate everything?
+      let sact = subs `seq` nsender `seq` nclientmap `seq` nhub `seq`
+                 forkCall (broadcastMType hi hubName msg)
+                          
+      return (nhub, HC.emptyResponse, sact)
+
+  respond "set/subs" rsp
+    
 
 getRegisteredClients ::
     HubInfo
     -> ClientSecret
     -> IO L.ByteString
-getRegisteredClients hi secret = do
-  clientMap <- getClientMap hi
-  case M.lookup secret clientMap of
-    Nothing -> noSecretIO secret
+getRegisteredClients hi secret =
+    withSender hi secret $ \hub sender -> do
+      let clMap = hiClients hub
+          hubNames = hiName (hiReader hi)
+          clNames = mapMaybe selClient (M.elems clMap)
+          clients = SAMPList (map SAMPString (hubNames : clNames))
+          selClient cd = if cdSecret cd == secret
+                         then Nothing
+                         else Just (fromClientName (cdName cd))
 
-    Just clinfo ->
-        let clients = SAMPList (map SAMPString (hiName (hiReader hi) :
-                                                mapMaybe selClient (M.elems clientMap)))
-
-            selClient cd = if cdSecret cd == secret
-                           then Nothing
-                           else Just (fromClientName (cdName cd))
-        in do
-          dbgIO ("Found registered clients other than client " ++
-                 show (cdName clinfo))
-          return (renderSAMPResponse (SAMPReturn clients))
+      dbgIO ("Found registered clients other than client " ++
+             show (cdName sender))
+      return (renderSAMPResponse (SAMPReturn clients))
 
 
 getSubscribedClients ::
@@ -2261,46 +2231,42 @@ getSubscribedClients ::
     -> ClientSecret
     -> MType         -- ^ does not include a wildcard
     -> IO L.ByteString
-getSubscribedClients hi secret msg = do
-  clientMap <- getClientMap hi
+getSubscribedClients hi secret msg =
+    withSender hi secret $ \hub sender -> do
+      let clMap = hiClients hub
 
-  let procSubs clSubs = 
-        let matches = lookupSubMap msg clSubs
-            -- if there are multiple matches, pick the most-specific
-            -- match, which is taken to be the one with the
-            -- longest mtype (this seems unlikely to happen,
-            -- and the SAMP 1.3 standard doesn't say what should
-            -- happen here).
-            getLen = length . fromMType
-            lenMatches = map (first getLen) matches
-            invCompare = flip compare
-            ordMatches = sortBy (invCompare `on` fst) lenMatches
-        in case ordMatches of
-             [] -> Nothing
-             ((_, kvs) : _) -> return (SAMPMap kvs)
+          procSubs clSubs = 
+            let matches = lookupSubMap msg clSubs
+                -- if there are multiple matches, pick the most-specific
+                -- match, which is taken to be the one with the
+                -- longest mtype (this seems unlikely to happen,
+                -- and the SAMP 1.3 standard doesn't say what should
+                -- happen here).
+                getLen = length . fromMType
+                lenMatches = map (first getLen) matches
+                invCompare = flip compare
+                ordMatches = sortBy (invCompare `on` fst) lenMatches
+            in case ordMatches of
+                 [] -> Nothing
+                 ((_, kvs) : _) -> return (SAMPMap kvs)
+                   
+          getSubs cd = do
+            guard (cdSecret cd /= secret)
+            matchSubs <- procSubs (cdSubscribed cd)
+            return (fromClientName (cdName cd), matchSubs)
+    
+          -- the hub isn't going to be making this request, so
+          -- do not need to include a name check here
+          getHubSubs = do
+            let hir = hiReader hi
+            matchSubs <- procSubs (hiSubscribed hir)
+            return (hiName hir, matchSubs)
+            
+          subs = catMaybes (getHubSubs : map getSubs (M.elems clMap))
                
-      getSubs cd = do
-        guard (cdSecret cd /= secret)
-        matchSubs <- procSubs (cdSubscribed cd)
-        return (fromClientName (cdName cd), matchSubs)
-
-      -- the hub isn't going to be making this request, so
-      -- do not need to include a name check here
-      getHubSubs = do
-        let hir = hiReader hi
-        matchSubs <- procSubs (hiSubscribed hir)
-        return (hiName hir, matchSubs)
-        
-      subs = catMaybes (getHubSubs : map getSubs (M.elems clientMap))
-               
-  case M.lookup secret clientMap of
-    Nothing -> noSecretIO secret
-
-    Just clinfo -> do
       dbgIO ("Found subscribed clients other than client " ++
-             show (cdName clinfo))
+             show (cdName sender))
       return (HC.makeResponse subs)
-
 
 extractData ::
     HubInfo
@@ -2324,8 +2290,11 @@ extractData hi name secret hubQuery clQuery act =
           case mquery of
             (query:_) -> act query
 
-            _ -> noClientIO name
-             
+            _ -> do
+              dbg ("Unable to find the requested client: " ++ show name)
+              -- TODO: should this be rawError or errorResponse?
+              return (rawError "Invalid client id")
+
     in withSender hi secret doit
 
        
@@ -2375,26 +2344,24 @@ jsonGetClients hi = do
 jsonGetMetadata ::
     HubInfo
     -> IO (M.Map String (M.Map String (M.Map String SAMPValue)))
-jsonGetMetadata hi = do
-  let hir = hiReader hi
-      mvar = hiState hi
-  hub <- readMVar mvar
+jsonGetMetadata hi =
+    withHub hi $ \hub -> 
+      let hir = hiReader hi
+          clMap = hiClients hub
 
-  let clMap = hiClients hub
+          -- Leaving the return as MetadataMap rather than Map String SAMPValue
+          -- seemed ot lead to it being treated as [SAMPValue] instead - i.e.
+          -- the keys wer elost (or I was doing something very stupid)
+          mapKey = M.mapKeys fromRString
+          conv cd = (fromClientName (cdName cd),
+                     mapKey (cdMetadata cd))
 
-      -- Leaving the return as MetadataMap rather than Map String SAMPValue
-      -- seemed ot lead to it being treated as [SAMPValue] instead - i.e.
-      -- the keys wer elost (or I was doing something very stupid)
-      mapKey = M.mapKeys fromRString
-      conv cd = (fromClientName (cdName cd),
-                 mapKey (cdMetadata cd))
+          mdata = (hiName hir, mapKey (hiMetadata hir)) :
+                         map conv (M.elems clMap)
 
-      mdata = (hiName hir, mapKey (hiMetadata hir)) :
-              map conv (M.elems clMap)
-
-      converted = map (first fromRString) mdata
+          converted = map (first fromRString) mdata
                   
-  return (M.fromList [("metadata", M.fromList converted)])
+      in return (M.fromList [("metadata", M.fromList converted)])
 
 -- | Return the subscriptions. The outer map has the key
 --   "subscriptions". Its value is a map with the client
@@ -2409,24 +2376,23 @@ jsonGetSubscriptions ::
        --   which lists the messages being subscribed to, with the value
        --   being the (as-yet-unspecified) object associated with the
        --   subscription.
-jsonGetSubscriptions hi = do
-  let hir = hiReader hi
-      mvar = hiState hi
-  hub <- readMVar mvar
-  let clMap = hiClients hub
+jsonGetSubscriptions hi =
+    withHub hi $ \hub -> 
+      let hir = hiReader hi
+          clMap = hiClients hub
 
-      conv (mtype, minfo) = (fromMType mtype,
-                             M.fromList (map c minfo))
-          where
-            c (k, vs) = (fromRString k, J.toJSON vs)
-      convSubs smap = M.fromList (map conv (fromSubMap smap))
+          conv (mtype, minfo) = (fromMType mtype,
+                                 M.fromList (map c minfo))
+              where
+                c (k, vs) = (fromRString k, J.toJSON vs)
+          convSubs smap = M.fromList (map conv (fromSubMap smap))
+    
+          hubSubs = (hiName hir, convSubs (hiSubscribed hir))
+          toSub cd = (fromClientName (cdName cd), convSubs (cdSubscribed cd))
+          out = hubSubs : map toSub (M.elems clMap)
+          subs = M.fromList (map (first fromRString) out)
 
-      hubSubs = (hiName hir, convSubs (hiSubscribed hir))
-      toSub cd = (fromClientName (cdName cd), convSubs (cdSubscribed cd))
-      out = hubSubs : map toSub (M.elems clMap)
-      subs = M.fromList (map (first fromRString) out)
-
-  return (M.fromList [("subscriptions", subs)])
+      in return (M.fromList [("subscriptions", subs)])
          
          
 -- | Return the callback endpoints of those clients which have
@@ -2438,20 +2404,19 @@ jsonGetCallbacks ::
        -- ^ The returned object has the key \"callbacks\". The
        --   contents are labelled with the client name, each of
        --   which gives the URI, including the hub.
-jsonGetCallbacks hi = do
-  let hir = hiReader hi
-      mvar = hiState hi
-  hub <- readMVar mvar
-  let clMap = hiClients hub
+jsonGetCallbacks hi =
+    withHub hi $ \hub ->
+      let hir = hiReader hi
+          clMap = hiClients hub
 
-      fromName = fromRString . fromClientName
-      conv cd = do
-        cback <- cdCallback cd
-        return (fromName (cdName cd), cback)
+          fromName = fromRString . fromClientName
+          conv cd = do
+            cback <- cdCallback cd
+            return (fromName (cdName cd), cback)
 
-      hubInfo = (fromRString (hiName hir), hiCallback hir)
+          hubInfo = (fromRString (hiName hir), hiCallback hir)
                
-      out = hubInfo : mapMaybe conv (M.elems clMap)
-      cbs = M.fromList out
+          out = hubInfo : mapMaybe conv (M.elems clMap)
+          cbs = M.fromList out
 
-  return (M.fromList [("callbacks", cbs)])
+      in return (M.fromList [("callbacks", cbs)])
