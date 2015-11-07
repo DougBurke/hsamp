@@ -144,7 +144,7 @@ import Data.Time.Clock (UTCTime, getCurrentTime)
 
 import Network.SAMP.Standard (MType, RString, SAMPKeyValue
                              , MessageId, toMessageId
-                             , MessageTag, fromMessageTag, toMessageTag
+                             , MessageTag, toMessageTag
                              , SAMPResponse, SAMPMethodCall(..)
                              , SAMPMethodResponse(..)
                              , SAMPValue(..)
@@ -154,7 +154,7 @@ import Network.SAMP.Standard (MType, RString, SAMPKeyValue
                              , ClientName, ClientSecret
                              , HubSecret
                              , toClientName, fromClientName
-                             , toClientSecret, fromClientSecret
+                             , toClientSecret
                              , toHubSecret, fromHubSecret
                              , fromSValue, toSValue
                              , fromRString, toRString
@@ -344,12 +344,14 @@ makeSecret = randomAlphaNumRString 16
 --
 newMessageId ::
     HubInfo
-    -> ClientSecret -- ^ the client which will be sent the message Id
-    -> (MessageTag, ClientData, Maybe (MVar L.ByteString)) -- ^ the source of the message
+    -> ClientSecret
+    -- ^ the client which will be sent the message Id
+    -> (MessageTag, ClientData, Maybe (MVar L.ByteString))
+    -- ^ the source of the message
     -> IO (Either String MessageId)
-       -- ^ in case the client can not be found
+    -- ^ in case the client can not be found
 newMessageId hi secret (tag, sender, mmvar) = 
-  changeHubWithSecretE hi secret $ \ohub orec -> do
+  changeHubWithClientE hi secret $ \ohub orec -> do
       
       cTime <- getCurrentTime
                
@@ -373,10 +375,6 @@ newMessageId hi secret (tag, sender, mmvar) =
 
           rstr = fromJust (toRString (show onum))
           mid = toMessageId ("mid" ++ rstr ++ ":" ++ s)
-          {-
-          mid = toMessageId (fromJust (toRString ("mid" ++ show onum ++
-                                                  ":" ++ fromRString s)))
-          -}
                 
           nflight = M.insert mid ifd oflight
           nrec = orec { cdInFlight = nflight
@@ -392,7 +390,6 @@ newMessageId hi secret (tag, sender, mmvar) =
       return (nhub, mid, sact)
             
  
--- TODO: clean up repeated code
 removeMessageId ::
     HubInfo
     -> MessageId     -- ^ message to remove
@@ -404,7 +401,7 @@ removeMessageId ::
 removeMessageId hi mid secret =
     -- could check the return value to display a warning about
     -- "invalid" secret
-    void $ changeHubWithSecretE hi secret $ \ohub oclient -> do
+    void $ changeHubWithClientE hi secret $ \ohub oclient -> do
         let oclMap = hiClients ohub
             oflMap = cdInFlight oclient
             nflMap = M.delete mid oflMap
@@ -503,9 +500,9 @@ broadcastShutDown hi = do
 --       the secret is a client who sent a message.
 --
                  
--- TODO: as many uses of withSender are of the form
+-- TODO: as many uses of withClient are of the form
 --
---          withSender ... act >>= respond lbl
+--          withClient ... act >>= respond lbl
 --
 --      could use something like respondToClient but
 --      with a different type?
@@ -537,12 +534,12 @@ changeHub hi act =
   in liftIO (modifyMVar mvar act)
                  
 -- | Run an action with a copy of the Hub's state. See
---   'changeHubWithSender' for an alternative.
+--   'changeHubWithClient' for an alternative.
 --
 --   This is similar to 'withHub' but ensures that the client secret
 --   is valid.
 --
-withSender ::
+withClient ::
     MonadIO m
     => HubInfo
     -> ClientSecret
@@ -553,7 +550,7 @@ withSender ::
        --   message is processed (but may become out of date at any
        --   time)
     -> m L.ByteString
-withSender hi secret act =
+withClient hi secret act =
     withHub hi $ \hub ->
       case M.lookup secret (hiClients hub) of
         Just sender -> act hub sender
@@ -564,7 +561,7 @@ withSender hi secret act =
 -- | Run an action - checking that the client is valid -
 --   and copy the hub state.
 --
-changeHubWithSender ::
+changeHubWithClient ::
     MonadIO m
     => HubInfo
     -> ClientSecret
@@ -575,8 +572,8 @@ changeHubWithSender ::
        --   new hub state (e.g. any broadcast message to be sent or
        --   code to ensure the new state is evaluated).
     -> m L.ByteString
-changeHubWithSender hi secret act = do
-  mrsp <- changeHubWithSecretE hi secret act
+changeHubWithClient hi secret act = do
+  mrsp <- changeHubWithClientE hi secret act
   case mrsp of
     Right rsp -> return rsp
     Left emsg -> do
@@ -585,7 +582,7 @@ changeHubWithSender hi secret act = do
               return (rawError emsg)
 
 
-changeHubWithSecretE ::
+changeHubWithClientE ::
     MonadIO m
     => HubInfo
     -> ClientSecret
@@ -596,7 +593,7 @@ changeHubWithSecretE ::
        --   new hub state (e.g. any broadcast message to be sent or
        --   code to ensure the new state is evaluated).
     -> m (Either String a)
-changeHubWithSecretE hi secret act = do
+changeHubWithClientE hi secret act = do
   let mvar = hiState hi
       doit ohub = do
         let clMap = hiClients ohub
@@ -614,9 +611,9 @@ changeHubWithSecretE hi secret act = do
 
          
 -- | Process a message from a client that you can send a message to
---   (a restricted variant of 'withSender')
+--   (a restricted variant of 'withClient')
 --
-withCallableSender ::
+withCallableClient ::
     MonadIO m
     => HubInfo
     -> ClientSecret
@@ -626,8 +623,8 @@ withCallableSender ::
        --   the action, and the HubInfoState is valid at the time the message
        --   is processed (but may become out of date at any time)
     -> m L.ByteString
-withCallableSender hi secret act =
-    withSender hi secret $ \hub sender ->
+withCallableClient hi secret act =
+    withClient hi secret $ \hub sender ->
         if isJust (cdCallback sender)
           then act hub sender
           else let emsg = "Client " ++ show (cdName sender) ++
@@ -684,7 +681,7 @@ notify ::
     -> SAMPMessage    -- ^ the message to send
     -> ActionM ()
 notify hi secret recName msg = do
-  rsp <- withSender hi secret $ \hub sender -> do
+  rsp <- withClient hi secret $ \hub sender -> do
       let mtype = getSAMPMessageType msg
           clMap = hiClients hub
           sendName = fromClientName (cdName sender)
@@ -720,7 +717,7 @@ notifyAll ::
     -> SAMPMessage    -- ^ the message to send
     -> ActionM ()
 notifyAll hi secret msg = do
-  rsp <- withSender hi secret $ \hub sender -> do
+  rsp <- withClient hi secret $ \hub sender -> do
       let mtype = getSAMPMessageType msg
           clMap = hiClients hub
           sendName = fromClientName (cdName sender)
@@ -822,7 +819,7 @@ isHubSubscribed hi msg sendName =
 --
 --   TODO: does this need to cope with the receiver being the hub?
 --
---     use withSender rather than findCallabelClient ...
+--     use withClient rather than findCallabelClient ...
 --
 sendToClient ::
     HubInfo
@@ -833,7 +830,7 @@ sendToClient ::
     -> ActionM ()
 sendToClient hi secret recName tag msg = do
 
-  rsp <- withCallableSender hi secret $ \hub sender -> do
+  rsp <- withCallableClient hi secret $ \hub sender -> do
       let clMap = hiClients hub
           mtype = getSAMPMessageType msg
               
@@ -905,7 +902,7 @@ sendToAll ::
     -> ActionM ()
 sendToAll hi secret tag msg = do
 
-  rsp <- withCallableSender hi secret $ \hub sender -> do
+  rsp <- withCallableClient hi secret $ \hub sender -> do
                                 
     let clMap = hiClients hub
         mtype = getSAMPMessageType msg
@@ -972,7 +969,33 @@ hubReceiveCall hi mtag sendName msg = do
   _ <- forkIO (sendToHub hi mtag sendName msg)
   return (Just (hiName (hiReader hi), sval))
          
-  
+
+sendReceiveResponse ::
+    String
+    -> ClientSecret
+    -> ClientName
+    -> MessageTag
+    -> SAMPResponse
+    -> IO ()
+sendReceiveResponse url secret name tag replyData = do
+  let arglist = [ toSValue secret
+                , toSValue name
+                , toSValue tag
+                , toSValue replyData ]
+      nargs = map XI.toValue arglist
+
+      act = void (HC.call url "samp.client.receiveResponse" nargs)
+      hdl e = dbgIO ("Error in sending reply to the original client at " ++
+                     url ++ " - " ++ e)
+
+      ignoreError :: CE.SomeException -> IO ()
+      ignoreError e = do
+        hPutStrLn stderr "*** Error notifying original client"
+        hPutStrLn stderr ("*** " ++ show e)
+
+  dbgIO ("Sending receiveResponse from " ++ show name)
+  handleError hdl act `CE.catch` ignoreError
+
 -- | The hub has been sent a message as a SAMP client. It is
 --   therefore one of the messages that the hub is subscribed
 --   to.
@@ -1004,27 +1027,11 @@ sendToHub hi mtag sendName msg = do
       replyData <- hubProcessMessage hi msg
       let url = fromJust (cdCallback sender)
           secret = cdSecret sender
-          
-          rmap = toSValue replyData
-          arglist = [ toSValue secret
-                    , toSValue (hiName (hiReader hi))
-                    , toSValue mtag
-                    , rmap ]
-          nargs = map XI.toValue arglist
+          name = toClientName (hiName (hiReader hi))
+                 
+      sendReceiveResponse url secret name mtag replyData
 
-          act = void (HC.call url "samp.client.receiveResponse" nargs)
-          hdl e = dbgIO ("Error in sending reply to the original client at " ++
-                         url ++ " - " ++ e)
-
-          ignoreError :: CE.SomeException -> IO ()
-          ignoreError e = do
-            hPutStrLn stderr "*** Error notifying original client"
-            hPutStrLn stderr ("*** " ++ show e)
-
-      dbgIO "Sending receiveResponse from hub"
-      handleError hdl act
-                  `CE.catch` ignoreError
-
+                
     Nothing -> do
       dbgIO "--> looks like the client has closed down; hub no-op."
       return ()
@@ -1137,7 +1144,7 @@ callAndWait ::
 callAndWait hi secret recName waitTime msg = do
 
   -- NOTE: for callAndWait the client does not need to be callable!
-  rsp <- withSender hi secret $ \hub sender -> do
+  rsp <- withClient hi secret $ \hub sender -> do
                                                
       -- lots of repeated code with sendToClient
       let mtype = getSAMPMessageType msg
@@ -1210,7 +1217,7 @@ reply ::
     -> ActionM ()
 reply hi secret msgId replyData = do
 
-  rsp <- withSender hi secret $ \hub _ -> do
+  rsp <- withClient hi secret $ \hub _ -> do
                                     
       -- lots of repeated code
   
@@ -1253,41 +1260,21 @@ reply hi secret msgId replyData = do
 --   calls, where the response should be placed in the MVar rather
 --   then sent directly.
 --
+--   TODO: a lot of repeated code with sendToHub
 replyToOrigin ::
     ClientName       -- ^ name of the client making the response
     -> InFlightData
     -> SAMPResponse
     -> IO ()
-replyToOrigin clName ifd replyData =
-    let url = ifdUrl ifd
-        secret = ifdSecret ifd
-        tag = ifdTag ifd
-
-        rmap = toSValue replyData
-        arglist = [ SAMPString (fromClientSecret secret)
-                  , SAMPString (fromClientName clName)
-                  , SAMPString (fromMessageTag tag)
-                  , rmap ]
-        nargs = map XI.toValue arglist
-
-        act = void (HC.call url "samp.client.receiveResponse" nargs)
-        hdl e = dbgIO ("Error in sending reply to the original client at " ++
-                       url ++ " - " ++ e)
-
-        ignoreError :: CE.SomeException -> IO ()
-        ignoreError e = do
-          hPutStrLn stderr "*** Error notifying original client"
-          hPutStrLn stderr ("*** " ++ show e)
-
-        rsp = renderSAMPResponse (SAMPReturn rmap)
-                    
-    in case ifdMVar ifd of
-         Just mvar -> putMVar mvar rsp
-         _ -> do
-           dbgIO ("Sending receiveResponse from " ++ show clName)
-           handleError hdl act
-              `CE.catch` ignoreError
-
+replyToOrigin clName ifd replyData = do
+  let url = ifdUrl ifd
+      secret = ifdSecret ifd
+      tag = ifdTag ifd
+      rsp = renderSAMPResponse (SAMPReturn (toSValue replyData))
+            
+  case ifdMVar ifd of
+    Just mvar -> putMVar mvar rsp
+    _ -> sendReceiveResponse url secret clName tag replyData
 
 -- | Notify a client about a message.
 --
@@ -2098,7 +2085,7 @@ unregister ::
     -> ClientSecret
     -> ActionM ()
 unregister hi secret = do
-  rsp <- changeHubWithSender hi secret $ \ohub sender -> do
+  rsp <- changeHubWithClient hi secret $ \ohub sender -> do
       let oclientmap = hiClients ohub
           nclientmap = M.delete secret oclientmap
           nhub = ohub { hiClients = nclientmap }
@@ -2124,7 +2111,7 @@ declareMetadata ::
     -> [SAMPKeyValue]
     -> ActionM ()
 declareMetadata hi secret kvs = do
-  rsp <- changeHubWithSender hi secret $ \ohub sender -> do
+  rsp <- changeHubWithClient hi secret $ \ohub sender -> do
       let mdata = M.fromList kvs
           nsender = sender { cdMetadata = mdata }
           oclientmap = hiClients ohub
@@ -2160,7 +2147,7 @@ setXmlrpcCallback hi secret urlR = do
               -- TODO: is this the correct error?
               Nothing -> return (errorResponse "Invalid url")
  
-      doit = changeHubWithSender hi secret $ \ohub sender -> do
+      doit = changeHubWithClient hi secret $ \ohub sender -> do
            let nsender = sender { cdCallback = Just url }
                oclientmap = hiClients ohub
                nclientmap = M.insert secret nsender oclientmap
@@ -2181,7 +2168,7 @@ declareSubscriptions ::
     -> SubscriptionMap
     -> ActionM ()
 declareSubscriptions hi secret subs = do
-  rsp <- changeHubWithSender hi secret $ \ohub sender -> do
+  rsp <- changeHubWithClient hi secret $ \ohub sender -> do
       let nsender = sender { cdSubscribed = subs }
           oclientmap = hiClients ohub
           -- replace sender by nsender in the map
@@ -2212,7 +2199,7 @@ getRegisteredClients ::
     -> ClientSecret
     -> IO L.ByteString
 getRegisteredClients hi secret =
-    withSender hi secret $ \hub sender -> do
+    withClient hi secret $ \hub sender -> do
       let clMap = hiClients hub
           hubNames = hiName (hiReader hi)
           clNames = mapMaybe selClient (M.elems clMap)
@@ -2232,7 +2219,7 @@ getSubscribedClients ::
     -> MType         -- ^ does not include a wildcard
     -> IO L.ByteString
 getSubscribedClients hi secret msg =
-    withSender hi secret $ \hub sender -> do
+    withClient hi secret $ \hub sender -> do
       let clMap = hiClients hub
 
           procSubs clSubs = 
@@ -2295,7 +2282,7 @@ extractData hi name secret hubQuery clQuery act =
               -- TODO: should this be rawError or errorResponse?
               return (rawError "Invalid client id")
 
-    in withSender hi secret doit
+    in withClient hi secret doit
 
        
 getMetadata ::
