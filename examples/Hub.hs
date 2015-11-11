@@ -496,13 +496,9 @@ broadcastShutDown hi = do
   broadcastMType hi name (toSAMPMessageMT "samp.hub.event.shutdown" [] [])
 
 
--- TODO: change the name withSender to withSecret as it is not guaranteed that
---       the secret is a client who sent a message.
+-- TODO: as many uses of the withHub variants are of the form
 --
-                 
--- TODO: as many uses of withClient are of the form
---
---          withClient ... act >>= respond lbl
+--          withHub ... act >>= respond lbl
 --
 --      could use something like respondToClient but
 --      with a different type?
@@ -537,7 +533,11 @@ changeHub hi act =
 --   'changeHubWithClient' for an alternative.
 --
 --   This is similar to 'withHub' but ensures that the client secret
---   is valid.
+--   is valid. Ideally it would not return a 'ByteString' but
+--   an XML-RPC return type, but for now - to support ds9 7.3.2 -
+--   a bytestring is used (to save a little bit of time checking the
+--   response to see if it needs to be set to the hard-coded
+--   emptyResponse value).
 --
 withClient ::
     MonadIO m
@@ -665,6 +665,27 @@ notifyHub sendName msg = do
         show sendName)
   return HC.emptyResponse
 
+
+findClientsToNotify ::
+    HubInfoReader
+    -> HubInfoState
+    -> SAMPMessage
+    -> ClientData
+    -- ^ The client sending the message
+    -> (Bool, [ClientData])
+    -- ^ The first element indicates whether the hub is to be
+    --   notified, the second the list of clients to notify
+findClientsToNotify hir hub msg sender =
+    let mtype = getSAMPMessageType msg
+        clMap = hiClients hub
+        name = cdName sender
+               
+        hubMatch = isHubSubscribed hir mtype name
+        receivers = findOtherSubscribedClients clMap name mtype
+                  
+    in (hubMatch, receivers)
+
+       
 -- | A client wants to send a message to another client via the notify
 --   system.
 --
@@ -680,6 +701,34 @@ notify ::
     -> ClientName     -- ^ the client to send the message to
     -> SAMPMessage    -- ^ the message to send
     -> ActionM ()
+notify hi secret recName msg = do
+  rsp <- withClient hi secret $ \hub sender -> do
+      let sendName = fromClientName (cdName sender)
+          hir = hiReader hi
+          mtype = getSAMPMessageType msg
+
+          (mHubMatch, receivers) = findClientsToNotify hir hub msg sender
+
+          find cd = cdName cd == recName
+          mreceivers = filter find receivers
+
+          hubMatch = mHubMatch && hiName hir == fromClientName recName
+                      
+          noReceiver = do
+            info "No match to the notify message"
+            let emsg = "The receiver is not callable or not subscribed to " ++
+                       fromMType mtype
+            return (errorResponse emsg)
+
+      if hubMatch
+        then notifyHub sendName msg
+        else case mreceivers of
+               (receiver:_) -> notifyClient sendName msg receiver
+               [] -> noReceiver
+               
+  respond "notify" rsp
+
+{-       
 notify hi secret recName msg = do
   rsp <- withClient hi secret $ \hub sender -> do
       let mtype = getSAMPMessageType msg
@@ -706,6 +755,7 @@ notify hi secret recName msg = do
                Nothing -> noReceiver
                
   respond "notify" rsp
+-}
 
 
 -- | A client wants to send a message to all the interested clients
@@ -716,6 +766,24 @@ notifyAll ::
     -> ClientSecret   -- ^ the client sending the message
     -> SAMPMessage    -- ^ the message to send
     -> ActionM ()
+notifyAll hi secret msg = do
+  rsp <- withClient hi secret $ \hub sender -> do
+      let sendName = fromClientName (cdName sender)
+          hir = hiReader hi
+          (hubMatch, receivers) = findClientsToNotify hir hub msg sender
+                                  
+      forM_ receivers (notifyClient sendName msg)
+      when hubMatch (void (notifyHub sendName msg))
+                   
+      let rNames = map (toSValue . cdName) receivers
+          hName = SAMPString (hiName hir)
+          names = if hubMatch then hName : rNames else rNames
+          rval = SAMPReturn (SAMPList names)
+      return (renderSAMPResponse rval)
+
+  respond "notifyAll" rsp
+
+{-       
 notifyAll hi secret msg = do
   rsp <- withClient hi secret $ \hub sender -> do
       let mtype = getSAMPMessageType msg
@@ -739,6 +807,7 @@ notifyAll hi secret msg = do
       return (renderSAMPResponse rval)
 
   respond "notifyAll" rsp
+-}
 
 
 {-
@@ -807,11 +876,10 @@ findSubscribedClientE clMap msg clName =
        
 -- Check if the hub is subscribed to the message and is not the
 -- sender
-isHubSubscribed :: HubInfo -> MType -> ClientName -> Bool
-isHubSubscribed hi msg sendName =
-    let hir = hiReader hi
-    in hiName hir /= fromClientName sendName &&
-       memberSubMap msg (hiSubscribed hir)
+isHubSubscribed :: HubInfoReader -> MType -> ClientName -> Bool
+isHubSubscribed hir mtype sendName =
+    hiName hir /= fromClientName sendName &&
+    memberSubMap mtype (hiSubscribed hir)
 
            
 -- | A client wants to send a message to another client via the
@@ -909,7 +977,7 @@ sendToAll hi secret tag msg = do
         sendName = cdName sender
         receivers = findOtherSubscribedClients clMap sendName mtype
         recNames = unwords (map (show . cdName) receivers)
-        isHub = isHubSubscribed hi mtype sendName
+        isHub = isHubSubscribed (hiReader hi) mtype sendName
                 
     dbg ("sendToAll with sendName= " ++ show sendName ++
          " recNames=" ++ recNames)
