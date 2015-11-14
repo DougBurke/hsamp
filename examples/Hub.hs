@@ -700,7 +700,7 @@ notify ::
     -> ClientSecret   -- ^ the client sending the message
     -> ClientName     -- ^ the client to send the message to
     -> SAMPMessage    -- ^ the message to send
-    -> ActionM ()
+    -> IO (String, L.ByteString)
 notify hi secret recName msg = do
   rsp <- withClient hi secret $ \hub sender -> do
       let sendName = fromClientName (cdName sender)
@@ -726,7 +726,7 @@ notify hi secret recName msg = do
                (receiver:_) -> notifyClient sendName msg receiver
                [] -> noReceiver
                
-  respond "notify" rsp
+  return ("notify", rsp)
 
 {-       
 notify hi secret recName msg = do
@@ -765,7 +765,7 @@ notifyAll ::
     HubInfo
     -> ClientSecret   -- ^ the client sending the message
     -> SAMPMessage    -- ^ the message to send
-    -> ActionM ()
+    -> IO (String, L.ByteString)
 notifyAll hi secret msg = do
   rsp <- withClient hi secret $ \hub sender -> do
       let sendName = fromClientName (cdName sender)
@@ -781,7 +781,7 @@ notifyAll hi secret msg = do
           rval = SAMPReturn (SAMPList names)
       return (renderSAMPResponse rval)
 
-  respond "notifyAll" rsp
+  return ("notifyAll", rsp)
 
 {-       
 notifyAll hi secret msg = do
@@ -895,7 +895,7 @@ sendToClient ::
     -> ClientName     -- ^ the client to send the message to
     -> MessageTag
     -> SAMPMessage    -- ^ the message to send
-    -> ActionM ()
+    -> IO (String, L.ByteString)
 sendToClient hi secret recName tag msg = do
 
   rsp <- withCallableClient hi secret $ \hub sender -> do
@@ -926,7 +926,7 @@ sendToClient hi secret recName tag msg = do
         Just rcd -> sendTo rcd
         _ -> noReceiver
                     
-  respond "call" rsp
+  return ("call", rsp)
 
 
 {-
@@ -967,7 +967,7 @@ sendToAll ::
     -> ClientSecret   -- ^ the client sending the message
     -> MessageTag
     -> SAMPMessage    -- ^ the message to send
-    -> ActionM ()
+    -> IO (String, L.ByteString)
 sendToAll hi secret tag msg = do
 
   rsp <- withCallableClient hi secret $ \hub sender -> do
@@ -1008,7 +1008,7 @@ sendToAll hi secret tag msg = do
     let kvs = catMaybes (hubAns : mkvs)
     return (renderSAMPResponse (SAMPReturn (SAMPMap kvs)))
                        
-  respond "callAll" rsp
+  return ("callAll", rsp)
 
 
 -- | The hub has been contacted with a request for data. If got
@@ -1185,6 +1185,7 @@ hubSentQueryByMeta hi msg = do
     Right (key, value) -> getMatches key value
     Left emsg -> return (errRsp emsg)
 
+                 
 toDuration :: Int -> Integer
 toDuration = toInteger . (1000000 *)
 
@@ -1196,7 +1197,8 @@ sleep t | t <= 0    = return ()
                 go n | n <= 0    = threadDelay (fromInteger left)
                      | otherwise = threadDelay sleepMax >> go (n-1)
             in go niter
-      
+
+               
 -- | A client wants to send a message to another client via the
 --   call system, waiting for the response.
 --
@@ -1208,7 +1210,7 @@ callAndWait ::
     -> ClientName     -- ^ the client to send the message to
     -> Int            -- ^ the timeout (in seconds)
     -> SAMPMessage    -- ^ the message to send
-    -> ActionM ()
+    -> IO (String, L.ByteString)
 callAndWait hi secret recName waitTime msg = do
 
   -- NOTE: for callAndWait the client does not need to be callable!
@@ -1270,7 +1272,7 @@ callAndWait hi secret recName waitTime msg = do
                Right rcd -> sendTo rcd
                Left emsg -> noReceiver emsg
                    
-  respond "callAndWait" rsp
+  return ("callAndWait", rsp)
              
 
 -- | A client is replying to a message from another client.
@@ -1282,7 +1284,7 @@ reply ::
     -> ClientSecret   -- ^ the client sending the message
     -> MessageId
     -> SAMPResponse    -- ^ response to the message
-    -> ActionM ()
+    -> IO (String, L.ByteString)
 reply hi secret msgId replyData = do
 
   rsp <- withClient hi secret $ \hub _ -> do
@@ -1320,7 +1322,7 @@ reply hi secret msgId replyData = do
           dbg ("No recepient for message-id: " ++ show msgId)
           return (errorResponse "Originating client no-longer exists")
                     
-  respond "reply" rsp
+  return ("reply", rsp)
 
 
 -- | Send a message back to the client that started the call/response
@@ -1566,34 +1568,46 @@ handleSAMP hi secret (SAMPMethodCall name args) = do
   dbg ("Server called with method: " ++ mname)
   dbg ("  args: " ++ show args)
 
-  case lookupMType hi name of
-    Just f -> f hi secret args
-    _ -> respondError ("Unsupported message: " ++ mname)
+  -- To avoid an Ord constraint on MType, use a HashMap rather than
+  -- Map.
+  case HM.lookup name (hiHubHandlers (hiReader hi)) of
+    Just f -> do
+      (lbl, rsp) <- liftIO (f hi secret args)
+      respondXmlRpc lbl rsp
+                    
+    _ -> let emsg = "Unsupported message: " ++ mname
+         in respondXmlRpc "Unknown message" (rawError emsg)
 
 -- The XML-RPC standard mandates that both the Content-Type and
 -- Content-Length headers are included in the response. This is
 -- probably handled by haxr's server code, but I am not using that here.
-respond :: String -> L.ByteString -> ActionM ()
-respond lbl rsp = do
+
+respondXmlRpc :: String -> L.ByteString -> ActionM ()
+respondXmlRpc lbl rsp = do
   dbg ("Response [" ++ lbl ++ "] " ++ L.unpack rsp)
   setHeader cType "text/xml"
   setHeader cLength (toLen rsp)
   raw rsp
 
-respondToClient :: String -> IO L.ByteString -> ActionM ()
-respondToClient lbl act = liftIO act >>= respond lbl
-      
+respondToClient :: String -> IO L.ByteString -> IO (String, L.ByteString)
+respondToClient = respond
+                  
+-- A helper function whilst converting code; this is meant to be
+-- a stop-gap function, to be removed at a later date
+respond :: String -> IO L.ByteString -> IO (String, L.ByteString)
+respond lbl act = (\a -> (lbl, a)) <$> act
+                  
 -- An empty response
 respondOkay :: HubFunc
-respondOkay _ _ _ = respond "okay" (toReturnValue emptySAMPResponse)
+respondOkay _ _ _ = return ("okay", toReturnValue emptySAMPResponse)
 
 -- Errors can be returned as a SAMP Response - e.g.
 --     toSAMPResponseError msg []
 -- but it looks like most (hopefully all) cases that respondError
 -- is used should return an XML-RPC fault.
 --
-respondError :: String -> ActionM ()
-respondError = respond "error" . rawError
+respondError :: String -> IO (String, L.ByteString)
+respondError = respond "error" . return . rawError
 
 -- The integer value is not specified/used by SAMP, so set it to 1
 rawError :: String -> L.ByteString
@@ -1860,7 +1874,7 @@ type HubFunc =
     HubInfo
     -> HubSecret
     -> [SAMPValue]
-    -> ActionM ()
+    -> IO (String, L.ByteString)
 
        
 makeHubSubscriptions :: [(MType, HubHandlerFunc)] -> SubscriptionMap
@@ -1870,11 +1884,6 @@ makeHubSubscriptions hdlrs =
     in toSubMap kvs
 
 
--- To avoid an Ord constraint on MType, use a HashMap rather than
--- Map.
-lookupMType :: HubInfo -> MType -> Maybe HubFunc
-lookupMType hi mtype = HM.lookup mtype (hiHubHandlers (hiReader hi))
-                       
 defaultHubHandlers :: HM.HashMap MType HubFunc
 defaultHubHandlers =
     HM.fromList [
@@ -2131,7 +2140,7 @@ forkCall act = liftIO (void (forkIO (void act)))
                          
 register ::
     HubInfo
-    -> ActionM ()
+    -> IO (String, L.ByteString)
 register hi = do
   let hubName = hiName (hiReader hi)
   (clName, clKey) <- liftIO (addClientToHub hi)
@@ -2140,8 +2149,8 @@ register hi = do
             , ("samp.self-id", toSValue clName)
             , ("samp.hub-id", toSValue hubName) ]
 
-  respond "register" (HC.makeResponse kvs)
   forkCall (broadcastNewClient hi clName)
+  return ("register", HC.makeResponse kvs)
 
            
 -- | Indicate an error. Not sure how often this should be used
@@ -2153,7 +2162,7 @@ errorResponse msg = renderSAMPResponse (SAMPFault msg)
 unregister ::
     HubInfo
     -> ClientSecret
-    -> ActionM ()
+    -> IO (String, L.ByteString)
 unregister hi secret = do
   rsp <- changeHubWithClient hi secret $ \ohub sender -> do
       let oclientmap = hiClients ohub
@@ -2171,15 +2180,15 @@ unregister hi secret = do
                         show (M.keys (cdInFlight sender))))
              
       return (nhub, HC.emptyResponse, sact)
-                    
-  respond "unregister" rsp
+
+  return ("unregister", rsp)
 
 
 declareMetadata ::
     HubInfo
     -> ClientSecret
     -> [SAMPKeyValue]
-    -> ActionM ()
+    -> IO (String, L.ByteString)
 declareMetadata hi secret kvs = do
   rsp <- changeHubWithClient hi secret $ \ohub sender -> do
       let mdata = M.fromList kvs
@@ -2201,21 +2210,17 @@ declareMetadata hi secret kvs = do
                  nhub `seq` 
                  forkCall (broadcastMType hi hubName msg)
       return (nhub, HC.emptyResponse, sact)
-                                  
-  respond "set/metadata" rsp
+
+  return ("set/metadata", rsp)
 
 
 setXmlrpcCallback ::
     HubInfo
     -> ClientSecret
     -> RString        -- ^ the URL for the callback   
-    -> ActionM ()
+    -> IO (String, L.ByteString)
 setXmlrpcCallback hi secret urlR = do
   let url = fromRString urlR
-      act = case parseURI url of
-              Just _ -> doit
-              -- TODO: is this the correct error?
-              Nothing -> return (errorResponse "Invalid url")
  
       doit = changeHubWithClient hi secret $ \ohub sender -> do
            let nsender = sender { cdCallback = Just url }
@@ -2228,15 +2233,19 @@ setXmlrpcCallback hi secret urlR = do
            let sact = nsender `seq` nclientmap `seq` nhub `seq` return ()
            return (nhub, HC.emptyResponse, sact)
                    
-  rsp <- act
-  respond "set/callback" rsp
+  rsp <- case parseURI url of
+           Just _ -> doit
+           -- TODO: is this the correct error?
+           Nothing -> return (errorResponse "Invalid url")
+
+  return ("set/callback", rsp)
 
           
 declareSubscriptions ::
     HubInfo
     -> ClientSecret
     -> SubscriptionMap
-    -> ActionM ()
+    -> IO (String, L.ByteString)
 declareSubscriptions hi secret subs = do
   rsp <- changeHubWithClient hi secret $ \ohub sender -> do
       let nsender = sender { cdSubscribed = subs }
@@ -2261,7 +2270,7 @@ declareSubscriptions hi secret subs = do
                           
       return (nhub, HC.emptyResponse, sact)
 
-  respond "set/subs" rsp
+  return ("set/subs", rsp)
     
 
 getRegisteredClients ::
