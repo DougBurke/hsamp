@@ -1562,11 +1562,11 @@ handleSAMP ::
     -> ActionM ()
 handleSAMP hi secret (SAMPMethodCall name args) = do
   liftIO (dumpHub hi)
-  let mname = fromRString name
+  let mname = fromMType name
   dbg ("Server called with method: " ++ mname)
   dbg ("  args: " ++ show args)
 
-  case lookupMType hi mname of
+  case lookupMType hi name of
     Just f -> f hi secret args
     _ -> respondError ("Unsupported message: " ++ mname)
 
@@ -1870,12 +1870,14 @@ makeHubSubscriptions hdlrs =
     in toSubMap kvs
 
 
-lookupMType :: HubInfo -> String -> Maybe HubFunc
-lookupMType hi mtype = M.lookup mtype (hiHubHandlers (hiReader hi))
+-- To avoid an Ord constraint on MType, use a HashMap rather than
+-- Map.
+lookupMType :: HubInfo -> MType -> Maybe HubFunc
+lookupMType hi mtype = HM.lookup mtype (hiHubHandlers (hiReader hi))
                        
-defaultHubHandlers :: M.Map String HubFunc
+defaultHubHandlers :: HM.HashMap MType HubFunc
 defaultHubHandlers =
-    M.fromList [
+    HM.fromList [
           ("samp.hub.ping", respondOkay)
          , ("samp.hub.register", handleRegister)
          , ("samp.hub.unregister", handleUnregister)
@@ -1907,7 +1909,7 @@ data HubInfoReader =
     , hiSubscribed :: SubscriptionMap
     -- note: two sets of handlers
     , hiHandlers :: [(MType, HubHandlerFunc)]
-    , hiHubHandlers :: M.Map String HubFunc
+    , hiHubHandlers :: HM.HashMap MType HubFunc
     , hiCallback :: String  -- URL for the hub; need to think about this
     } -- deriving Show
 

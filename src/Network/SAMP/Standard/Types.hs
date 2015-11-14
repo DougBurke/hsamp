@@ -1189,7 +1189,7 @@ instance XmlRpcType SAMPMessage where
 A SAMP method call. Consists of a method name and a list of  
 parameters.
 -}
-data SAMPMethodCall = SAMPMethodCall RString [SAMPValue]
+data SAMPMethodCall = SAMPMethodCall MType [SAMPValue]
      deriving (Eq, Show)
 
 {-
@@ -1207,11 +1207,13 @@ data SAMPMethodResponse =
 
 toSMC :: (Monad m) => MethodCall -> Err m SAMPMethodCall
 toSMC (MethodCall n vs) = do
-    ns <- maybeToM ("Unable to convert SAMP method name: " ++ n) (toRString n)
-    SAMPMethodCall ns `liftM` mapM fromValue vs
+  -- TODO: maybe just use toMTypeE here, so that the invalid characters
+  --       are displayed?
+  ns <- maybeToM ("Unable to convert SAMP method name: " ++ n) (toMType n)
+  SAMPMethodCall ns `liftM` mapM fromValue vs
 
 fromSMC :: SAMPMethodCall -> MethodCall
-fromSMC (SAMPMethodCall n vs) = MethodCall (fromRString n) (map toValue vs)
+fromSMC (SAMPMethodCall n vs) = MethodCall (fromMType n) (map toValue vs)
 
 toSMR :: (Monad m) => MethodResponse -> Err m SAMPMethodResponse
 toSMR (Return vs) = SAMPReturn `liftM` fromValue vs

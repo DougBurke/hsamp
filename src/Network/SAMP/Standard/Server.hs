@@ -76,7 +76,7 @@ import Network.SAMP.Standard.Types (SAMPValue(..), SAMPType(..),
                                     RString, MType, SAMPKeyValue,
                                     ClientSecret, ClientName,
                                     MessageTag, MessageId,
-                                    fromRString,
+                                    fromMType,
                                     parseSAMPCall,
                                     getSAMPMessageType,
                                     getSAMPMessageParams,
@@ -282,7 +282,7 @@ receiveResponse f secret receiverid msgTag rsp = do
 A map from SAMP method name to Haskell routine used to process
 the message.
 -}
-type SAMPMethodMap = [(RString -> Bool, SAMPMethod)]
+type SAMPMethodMap = [(MType -> Bool, SAMPMethod)]
 
 -- find the relevant entry in the input "map"
 
@@ -300,8 +300,8 @@ logger (at present only debug-level information).
 -}
 clientMethods :: SAMPMethodMap -> SAMPMethodCall -> SAMPServerResult
 clientMethods xs c@(SAMPMethodCall name _) = do
-    let mname = fromRString name
-    dbgE $ "Executing SAMP method: " ++ mname
+    let mname = fromMType name
+    dbgE ("Executing SAMP method: " ++ mname)
     method <- maybeToM ("Unknown SAMP method: " ++ mname) (find name xs)
     method c
 
