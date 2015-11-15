@@ -554,7 +554,7 @@ withClient hi secret act =
         Just sender -> act hub sender
         _ -> do
           info ("Unable to find a client with secret=" ++ show secret)
-          return (errorResponse "Invalid client id")
+          return (rawError "Invalid client id")
 
 
 -- | Run an action - checking that the client is valid -
@@ -574,10 +574,7 @@ changeHubWithClient hi secret act = do
   mrsp <- changeHubWithClientE hi secret act
   case mrsp of
     Right rsp -> return rsp
-    Left emsg -> do
-              dbg ("Unable to find a client with secret=" ++ show secret)
-              -- TODO: should this be rawError or errorResponse?
-              return (rawError emsg)
+    Left emsg -> reportError emsg
 
 
 changeHubWithClientE ::
@@ -625,7 +622,7 @@ withCallableClient hi secret act =
           then act hub sender
           else let emsg = "Client " ++ show (cdName sender) ++
                           " is not callable"
-               in return (errorResponse emsg)
+               in reportError emsg
                 
          
 -- pulling out common code for handling notify messages;
@@ -642,7 +639,7 @@ notifyClient sendName msg receiver = do
       recName = cdName receiver
   info ("Sending " ++ fromMType mtype ++ " from " ++
         fromRString sendName ++ " to " ++ show recName)
-  forkCall (notifyRecipient sendName receiver msg)
+  forkCall (notifyRecipient sendName msg receiver)
   return emptyResponse
 
 -- The receiver is the hub, so do not need to send a message,
@@ -699,11 +696,10 @@ findClientToNotify hi recName msg hub sender =
 
         hubMatch = mHubMatch && hiName hir == fromClientName recName
     
-        noReceiver = do
-          info "No match to the notify message"
+        noReceiver = 
           let emsg = "The receiver is not callable or not subscribed to " ++
                      fromMType mtype
-          return (errorResponse emsg)
+          in reportError emsg
                  
     in if hubMatch
        then notifyHub sendName msg
@@ -852,28 +848,13 @@ sendToClient hi secret recName tag msg = do
       let clMap = hiClients hub
           mtype = getSAMPMessageType msg
               
-          noReceiver = do
-            info "Receiver is not subscribed to the message (or is unknown)"
-            return (errorResponse ("receiver is unknown, not callable, " ++
-                                   "or not subscribed to " ++ fromMType mtype))
-
-          sendTo receiver = do
-            let rSecret = cdSecret receiver
-            emid <- newMessageId hi rSecret (tag,sender,Nothing)
-            case emid of
-              Right mid -> do
-                let sendName = cdName sender
-                info ("Sending " ++ fromMType mtype ++ " from " ++
-                      show sendName ++ " to " ++ show recName)
-                forkCall (clientReceiveCall sendName receiver mid msg)
-                return (SAMPReturn (toSValue mid))
-    
-              Left _ -> do
-                info "*** Looks like the receiver has disappeared ***"
-                return (errorResponse "receiver is no longer available")
+          noReceiver =
+            let emsg = "receiver is unknown, not callable, " ++
+                       "or not subscribed to " ++ show mtype
+            in reportError emsg
 
       case findSubscribedClient clMap mtype recName of
-        Just rcd -> sendTo rcd
+        Just rcd -> sendToC hi sender tag msg rcd
         _ -> noReceiver
                     
   return ("call", rsp)
@@ -988,6 +969,18 @@ hubReceiveCall hi mtag sendName msg = do
   return (Just (hiName (hiReader hi), sval))
          
 
+ignoreError :: String -> CE.SomeException -> IO ()
+ignoreError lbl e = do
+  hPutStrLn stderr ("*** Error " ++ show lbl)
+  hPutStrLn stderr ("*** " ++ show e)
+
+
+ignoreNotifyError :: ClientName -> MType -> CE.SomeException -> IO ()
+ignoreNotifyError name mtype =
+  let emsg = "notifying client" ++ show name ++ " about " ++ show mtype
+  in ignoreError emsg
+  
+    
 sendReceiveResponse ::
     String
     -> ClientSecret
@@ -1006,13 +999,8 @@ sendReceiveResponse url secret name tag replyData = do
       hdl e = dbgIO ("Error in sending reply to the original client at " ++
                      url ++ " - " ++ e)
 
-      ignoreError :: CE.SomeException -> IO ()
-      ignoreError e = do
-        hPutStrLn stderr "*** Error notifying original client"
-        hPutStrLn stderr ("*** " ++ show e)
-
   dbgIO ("Sending receiveResponse from " ++ show name)
-  handleError hdl act `CE.catch` ignoreError
+  handleError hdl act `CE.catch` ignoreError "notifying original client"
 
 
 -- | The hub has been sent a message as a SAMP client. It is
@@ -1144,12 +1132,83 @@ sleep :: Integer -> IO ()
 sleep t | t <= 0    = return ()
         | otherwise =
             let sleepMax = maxBound :: Int
-                (niter, left) = t `quotRem` (toInteger sleepMax)
+                (niter, left) = t `quotRem` toInteger sleepMax
                 go n | n <= 0    = threadDelay (fromInteger left)
                      | otherwise = threadDelay sleepMax >> go (n-1)
             in go niter
 
-               
+
+-- TODO: need to clean up sendToCW/sendToC
+
+sendToCW ::
+    HubInfo
+    -> ClientData
+    -> Int
+    -> SAMPMessage
+    -> ClientData
+    -> IO SAMPMethodResponse
+sendToCW hi sender waitTime msg receiver = do
+  rspmvar <- newEmptyMVar
+  let arg = (dummyTag, sender, Just rspmvar)
+      rSecret = cdSecret receiver
+      recName = cdName receiver
+      mtype = getSAMPMessageType msg
+      
+  emid <- newMessageId hi rSecret arg
+  case emid of
+    Right mid -> do
+      let sendName = cdName sender
+          errorRsp = rawError "Timeout"
+                     
+      dbg ("Sending " ++ fromMType mtype ++ " from " ++
+           show sendName ++ " to " ++ show recName)
+
+      -- Note: the timer starts at receipt of the message
+      --       to the client, not from when the 
+      --       samp.client.receiveCall is made
+      forkCall (clientReceiveCall sendName receiver mid msg)
+
+      let tVal = toDuration waitTime
+      when (tVal > 0) (
+          forkCall (sleep tVal
+                    >> putMVar rspmvar errorRsp
+                    >> removeMessageId hi mid rSecret)
+          )
+
+      takeMVar rspmvar
+
+    Left _ -> do
+      dbg "*** Looks like the receiver has disappeared ***"
+      return (rawError "receiver is no longer available")
+
+
+sendToC ::
+    HubInfo
+    -> ClientData
+    -> MessageTag
+    -> SAMPMessage
+    -> ClientData
+    -> IO SAMPMethodResponse
+sendToC hi sender tag msg receiver = do
+    let rSecret = cdSecret receiver
+        recName = cdName receiver
+        sendName = cdName sender
+        mtype = getSAMPMessageType msg
+        
+    emid <- newMessageId hi rSecret (tag,sender,Nothing)
+    case emid of
+      Right mid -> do
+        info ("Sending " ++ fromMType mtype ++ " from " ++
+              show sendName ++ " to " ++ show recName)
+        forkCall (clientReceiveCall sendName receiver mid msg)
+        return (SAMPReturn (toSValue mid))
+  
+      Left _ -> do
+        info "*** Looks like the receiver has disappeared ***"
+        return (rawError "receiver is no longer available")
+
+
+
 -- | A client wants to send a message to another client via the
 --   call system, waiting for the response.
 --
@@ -1170,46 +1229,11 @@ callAndWait hi secret recName waitTime msg = do
       -- lots of repeated code with sendToClient
       let mtype = getSAMPMessageType msg
 
-          sendTo receiver = do
-            let rSecret = cdSecret receiver
-            rspmvar <- newEmptyMVar
-            let arg = (dummyTag, sender, Just rspmvar)
-            emid <- newMessageId hi rSecret arg
-            case emid of
-              Right mid -> do
-                let sendName = cdName sender
-                    errorRsp = rawError "Timeout"
-                               
-                dbg ("Sending " ++ fromMType mtype ++ " from " ++
-                     show sendName ++ " to " ++ show recName)
-    
-                -- Note: the timer starts at receipt of the message
-                --       to the client, not from when the 
-                --       samp.client.receiveCall is made
-                forkCall (clientReceiveCall sendName receiver mid msg)
-    
-                let tVal = toDuration waitTime
-                when (tVal > 0) (
-                    forkCall (sleep tVal
-                              >> putMVar rspmvar errorRsp
-                              >> removeMessageId hi mid rSecret)
-                    )
-    
-                takeMVar rspmvar
-    
-              Left _ -> do
-                dbg "*** Looks like the receiver has disappeared ***"
-                return (rawError "receiver is no longer available")
-
           sendHub = do
             -- no timeout for hub connections!
             replyData <- hubProcessMessage hi msg
             return (SAMPReturn (toSValue replyData))
       
-          noReceiver emsg = do
-            dbg emsg
-            return (rawError emsg)
-
           clMap = hiClients hub
           mRec = findSubscribedClientE clMap mtype recName
       
@@ -1219,11 +1243,11 @@ callAndWait hi secret recName waitTime msg = do
       if fromClientName recName == hiName (hiReader hi)
         then sendHub
         else case mRec of
-        Right rcd -> sendTo rcd
-        Left emsg -> noReceiver emsg
+          Right rcd -> sendToCW hi sender waitTime msg rcd
+          Left emsg -> reportError emsg
                    
   return ("callAndWait", rsp)
-             
+
 
 -- | A client is replying to a message from another client.
 --
@@ -1270,7 +1294,7 @@ reply hi secret msgId replyData = do
         _ -> do
           -- is this considered an error?
           dbg ("No recepient for message-id: " ++ show msgId)
-          return (errorResponse "Originating client no-longer exists")
+          return (rawError "Originating client no-longer exists")
                     
   return ("reply", rsp)
 
@@ -1306,42 +1330,36 @@ replyToOrigin clName ifd replyData = do
 --         name/secret/url (and if not callable it's a nop)
 --
 notifyRecipient ::
-    RString   -- ^ the name of the client sending the notification
-    -> ClientData -- ^ the recipient; if it is not callable then this
-                  --   does nothing.
-    -> SAMPMessage    -- ^ the message to notify recipient about
+    RString
+    -- ^ the name of the client sending the notification
+    -> SAMPMessage
+    -- ^ the message to notify recipient about
+    -> ClientData
+    -- ^ the recipient; if it is not callable then this does nothing.
     -> IO ()
-       -- ^ any error from the call is logged (debug level)
-       --   but otherwise ignored
-notifyRecipient sendName receiver msg = do
-    let recName = fromRString (fromClientName (cdName receiver))
+    -- ^ any error from the call is logged (debug level)
+    --   but otherwise ignored
+notifyRecipient sendName msg receiver = do
+    let recName = cdName receiver
         recSecret = cdSecret receiver
         mtype = getSAMPMessageType msg
                     
-        arglist = [ toSValue recSecret
-                  , SAMPString sendName
-                  , toSValue msg ]
+        arglist = [toSValue recSecret, SAMPString sendName, toSValue msg]
         nargs = map XI.toValue arglist
         act url = void (HC.call url "samp.client.receiveNotification" nargs)
         hdl url e = dbgIO ("Error in sending " ++ show mtype ++ " to " ++
                            url ++ " - " ++ e)
 
-        ignoreError :: CE.SomeException -> IO ()
-        ignoreError e = do
-          hPutStrLn stderr ("** Error notifying client " ++ recName ++
-                            " about message " ++ fromMType mtype)
-          hPutStrLn stderr ("** " ++ show e)
-
     case cdCallback receiver of
       Just url -> do
         dbgIO ("Sending notify of " ++ fromMType mtype ++ " to client " ++
-               recName)
+               show recName)
         handleError (hdl url) (act url)
-                        `CE.catch` ignoreError
+                        `CE.catch` ignoreNotifyError recName mtype
 
       Nothing -> return ()
 
-                 
+
 -- | Notify a client about a message using the call protocal.
 --
 --   TODO: should this note down problematic clients so that they
@@ -1363,7 +1381,7 @@ clientReceiveCall ::
        --   but otherwise ignored
 clientReceiveCall sendName receiver msgId msg = 
     let rSecret = cdSecret receiver
-        rName = fromRString (fromClientName (cdName receiver))
+        rName = cdName receiver
         mtype = getSAMPMessageType msg
                 
         msgMap = toSValue msg
@@ -1375,20 +1393,14 @@ clientReceiveCall sendName receiver msgId msg =
         hdl url e = dbgIO ("Error in sending " ++ show mtype ++ " to " ++
                            url ++ " - " ++ e)
 
-        ignoreError :: CE.SomeException -> IO ()
-        ignoreError e = do
-          hPutStrLn stderr ("** Error notifying client " ++ rName ++
-                            " about message " ++ fromMType mtype)
-          hPutStrLn stderr ("** " ++ show e)
-
         act url = void (HC.call url "samp.client.receiveCall" nargs)
 
     in case cdCallback receiver of
          Just url -> do
            dbgIO ("Sending call of " ++ fromMType mtype ++ " to client " ++
-                  rName)
+                  show rName)
            handleError (hdl url) (act url)
-                           `CE.catch` ignoreError
+                           `CE.catch` ignoreNotifyError rName mtype
 
          _ -> return ()
 
@@ -1560,18 +1572,17 @@ respondOkay _ _ _ = return ("okay", emptyResponse)
 -- but it looks like most (hopefully all) cases that respondError
 -- is used should return an XML-RPC fault.
 --
+-- TODO: clean up the naming
 respondError :: String -> IO (String, SAMPMethodResponse)
 respondError = respond "error" . return . rawError
 
--- The integer value is not specified/used by SAMP, so set it to 1
---
-{-
-rawError :: String -> L.ByteString
-rawError = XI.renderResponse . XI.Fault 1
--}
-
 rawError :: String -> SAMPMethodResponse
 rawError = SAMPFault
+
+reportError :: String -> IO SAMPMethodResponse
+reportError emsg = do
+    dbg emsg
+    return (rawError emsg)
 
            
 handleRegister :: HubFunc
@@ -2055,7 +2066,7 @@ broadcastMType hi name msg =
         clients = findOtherSubscribedClients (hiClients hub) name mtype
         hir = hiReader hi
 
-    forM_ clients (\cd -> notifyRecipient sendName cd msg)
+    forM_ clients (notifyRecipient sendName msg)
         
     -- TODO: do I need to fix hub handling of the message or is this okay?
     --       
@@ -2120,15 +2131,6 @@ register hi = do
   dbg ("Added client: " ++ show clName ++ " secret=" ++ show clKey)
   forkCall (broadcastNewClient hi clName)
   return ("register", makeResponse kvs)
-
-
--- | Indicate an error. Not sure how often this should be used
---   as opposed to respondError or rawError, which use the
---   XML-RPC fault mechanism.
---
---   TODO: fix this, as is just rawError now
-errorResponse :: String -> SAMPMethodResponse
-errorResponse = rawError
 
 
 unregister ::
@@ -2209,7 +2211,7 @@ setXmlrpcCallback hi secret urlR = do
   rsp <- case parseURI url of
            Just _ -> changeHubWithClient hi secret act
            -- TODO: is this the correct error?
-           Nothing -> return (errorResponse "Invalid url")
+           Nothing -> return (rawError "Invalid url")
 
   return ("set/callback", rsp)
 
@@ -2330,10 +2332,7 @@ extractData hi name secret hubQuery clQuery act =
           case mquery of
             (query:_) -> act query
 
-            _ -> do
-              dbg ("Unable to find the requested client: " ++ show name)
-              -- TODO: should this be rawError or errorResponse?
-              return (rawError "Invalid client id")
+            _ -> reportError ("Invalid client id: " ++ show name)
 
     in withClient hi secret doit
 
