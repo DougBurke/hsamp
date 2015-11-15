@@ -17,7 +17,7 @@ present it only does this for struct and some value elements).
 
 -}
 
-module HubCall (call, emptyResponse, makeResponse, fromSAMPMethodResponse) where
+module HubCall (call, fromSAMPMethodResponse) where
 
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as L
@@ -25,10 +25,7 @@ import qualified Data.ByteString.Lazy.UTF8  as U
 
 import qualified Network.XmlRpc.Internals as XI
 
-import Network.SAMP.Standard (SAMPValue(SAMPMap)
-                             , SAMPMethodResponse(SAMPReturn)
-                             , SAMPKeyValue
-                             , renderSAMPResponse)
+import Network.SAMP.Standard (SAMPMethodResponse, renderSAMPResponse)
                                        
 import qualified System.IO.Streams as Streams
 import qualified Network.Http.Client as HC
@@ -136,42 +133,6 @@ maybeFail msg = maybe (fail msg) return
                 
 -- end of code from haxr
 
-
-
--- | The \"empty\" return value. Note that this does not return a
---   valid SAMP value (as far as I understand it), since it
---   reurns <param><value/></param>.
---
---   At present this hard codes the response since I am having trouble
---   with ds9 7.3.2, since I guess it doesn't like
---     <param><value><string></string></value></param>
---
---   My reading of http://xmlrpc.scripting.com/spec.html is that
---     <value/> and <value><string/></value>
---   are equivalent, since "If no type is indicated, the type is string."
---
-emptyResponse :: L.ByteString
--- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value/></param></params></methodResponse>"
-  -- ds9 7.4b8 fails with "Unrecognized response from server"
-
-emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value></value></param></params></methodResponse>"
-  -- ds9 7.4b8 is okay
-
--- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value><string></string></value></param></params></methodResponse>"
-   -- ds9 7.4b8 is okay
-
--- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value><string/></value></param></params></methodResponse>"
-   -- ds9 7.4b8 fails with "Invalid close of value tag"
-
--- emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value></value></param></params></methodResponse>"
--- emptyResponse = XI.renderResponse (XI.Return (XI.ValueString "")) -- ValueUnwrapped?
--- emptyResponse = renderSAMPResponse (SAMPReturn "")
-   -- the response here is
-   -- <methodResponse><params><param><value><string></string></value></param></params></methodResponse>
-   -- ds9 7.4b8 fails with "Invalid close of value tag"
-
--- | Return a SAMP map.
---
 --   It appears that ds9 7.3.2 has problems parsing empty
 --   XML elements, in that it seems to only accept <a></a>
 --   and not <a/>. This is a problem, since the XML writer
@@ -180,10 +141,6 @@ emptyResponse = "<?xml version='1.0' ?>\n<methodResponse><params><param><value><
 --   This is a band-aid, since there may be other tags that
 --   need this change.
 --
-makeResponse :: [SAMPKeyValue] -> L.ByteString
-makeResponse kvs =
-    let orig = renderSAMPResponse (SAMPReturn (SAMPMap kvs))
-    in replaceEmptyStruct orig
        
 replaceEmptyStruct :: L.ByteString -> L.ByteString
 replaceEmptyStruct = replace "<struct/>" "<struct></struct>"

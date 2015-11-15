@@ -13,16 +13,14 @@ module is just a wrapper around the haxr call.
 
 -}
 
-module HubCall (call, emptyResponse, makeResponse, fromSAMPMethodResponse) where
+module HubCall (call, fromSAMPMethodResponse) where
 
 import qualified Data.ByteString.Lazy.Char8 as L
 
 import qualified Network.XmlRpc.Client as XC
 import qualified Network.XmlRpc.Internals as XI
 
-import Network.SAMP.Standard (SAMPValue(SAMPMap, SAMPString)
-                             , SAMPMethodResponse(SAMPReturn)
-                             , SAMPKeyValue
+import Network.SAMP.Standard (SAMPMethodResponse
                              , renderSAMPResponse)
     
 call :: String
@@ -30,12 +28,6 @@ call :: String
      -> [XI.Value]
      -> XI.Err IO XI.Value
 call = XC.call
-
-makeResponse :: [SAMPKeyValue] -> L.ByteString
-makeResponse kvs = renderSAMPResponse (SAMPReturn (SAMPMap kvs))
-
-emptyResponse :: L.ByteString
-emptyResponse = renderSAMPResponse (SAMPReturn (SAMPString []))
 
 -- | This is the default conversion to XML format for a SAMP
 --   method response.

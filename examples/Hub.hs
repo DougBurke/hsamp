@@ -161,7 +161,7 @@ import Network.SAMP.Standard (MType, RString, SAMPKeyValue
                              , fromMType, fromMTypeRS
                              , toMType, toMTypeE, isMTWildCard
                              , randomAlphaNumRString
-                             , renderSAMPResponse, toSAMPResponse
+                             , toSAMPResponse
                              , toSAMPResponseError
                              , toSAMPMessageMT
                              , getSAMPMessageType
@@ -346,7 +346,7 @@ newMessageId ::
     HubInfo
     -> ClientSecret
     -- ^ the client which will be sent the message Id
-    -> (MessageTag, ClientData, Maybe (MVar L.ByteString))
+    -> (MessageTag, ClientData, Maybe (MVar SAMPMethodResponse))
     -- ^ the source of the message
     -> IO (Either String MessageId)
     -- ^ in case the client can not be found
@@ -538,13 +538,13 @@ changeHub hi = modifyMVar (hiState hi)
 withClient ::
     HubInfo
     -> ClientSecret
-    -> (HubInfoState -> ClientData -> IO L.ByteString)
+    -> (HubInfoState -> ClientData -> IO SAMPMethodResponse)
        -- ^ Action to perform if the secret matches a client. The
        --   client data represents the client that has initiatied the
        --   action, and the HubInfoState is valid at the time the
        --   message is processed (but may become out of date at any
        --   time)
-    -> IO L.ByteString
+    -> IO SAMPMethodResponse
 withClient hi secret act =
     withHub hi $ \hub ->
       case M.lookup secret (hiClients hub) of
@@ -559,13 +559,13 @@ withClient hi secret act =
 changeHubWithClient ::
     HubInfo
     -> ClientSecret
-    -> (HubInfoState -> ClientData -> IO (HubInfoState, L.ByteString, IO ()))
+    -> (HubInfoState -> ClientData -> IO (HubInfoState, SAMPMethodResponse, IO ()))
        -- ^ The action is performed within a @modifyMVar@ call.
        --   The return value is the new hub state, the return
        --   value, and an IO action to run after setting the
        --   new hub state (e.g. any broadcast message to be sent or
        --   code to ensure the new state is evaluated).
-    -> IO L.ByteString
+    -> IO SAMPMethodResponse
 changeHubWithClient hi secret act = do
   mrsp <- changeHubWithClientE hi secret act
   case mrsp of
@@ -609,12 +609,12 @@ changeHubWithClientE hi secret act = do
 withCallableClient ::
     HubInfo
     -> ClientSecret
-    -> (HubInfoState -> ClientData -> IO L.ByteString)
+    -> (HubInfoState -> ClientData -> IO SAMPMethodResponse)
        -- ^ Action to perform if the secret matches a client and the client is
        --   callable. The client data represents the client that has initiatied
        --   the action, and the HubInfoState is valid at the time the message
        --   is processed (but may become out of date at any time)
-    -> IO L.ByteString
+    -> IO SAMPMethodResponse
 withCallableClient hi secret act =
     withClient hi secret $ \hub sender ->
         if isJust (cdCallback sender)
@@ -632,14 +632,14 @@ notifyClient ::
     RString
     -> SAMPMessage
     -> ClientData
-    -> IO L.ByteString
+    -> IO SAMPMethodResponse
 notifyClient sendName msg receiver = do
   let mtype = getSAMPMessageType msg
       recName = cdName receiver
   info ("Sending " ++ fromMType mtype ++ " from " ++
         fromRString sendName ++ " to " ++ show recName)
   forkCall (notifyRecipient sendName receiver msg)
-  return HC.emptyResponse
+  return emptyResponse
 
 -- The receiver is the hub, so do not need to send a message,
 -- but do we need to do something? At this point we know the
@@ -648,12 +648,12 @@ notifyClient sendName msg receiver = do
 notifyHub ::
     RString
     -> SAMPMessage
-    -> IO L.ByteString
+    -> IO SAMPMethodResponse
 notifyHub sendName msg = do
   let mtype = getSAMPMessageType msg
   info ("Hub has been notified about " ++ show mtype ++ " from " ++
         show sendName)
-  return HC.emptyResponse
+  return emptyResponse
 
 
 findClientsToNotify ::
@@ -690,7 +690,7 @@ notify ::
     -> ClientSecret   -- ^ the client sending the message
     -> ClientName     -- ^ the client to send the message to
     -> SAMPMessage    -- ^ the message to send
-    -> IO (String, L.ByteString)
+    -> IO (String, SAMPMethodResponse)
 notify hi secret recName msg = do
   rsp <- withClient hi secret $ \hub sender -> do
       let sendName = fromClientName (cdName sender)
@@ -726,7 +726,7 @@ notifyAll ::
     HubInfo
     -> ClientSecret   -- ^ the client sending the message
     -> SAMPMessage    -- ^ the message to send
-    -> IO (String, L.ByteString)
+    -> IO (String, SAMPMethodResponse)
 notifyAll hi secret msg = do
   rsp <- withClient hi secret $ \hub sender -> do
       let sendName = fromClientName (cdName sender)
@@ -740,7 +740,7 @@ notifyAll hi secret msg = do
           hName = SAMPString (hiName hir)
           names = if hubMatch then hName : rNames else rNames
           rval = SAMPReturn (SAMPList names)
-      return (renderSAMPResponse rval)
+      return rval
 
   return ("notifyAll", rsp)
 
@@ -832,7 +832,7 @@ sendToClient ::
     -> ClientName     -- ^ the client to send the message to
     -> MessageTag
     -> SAMPMessage    -- ^ the message to send
-    -> IO (String, L.ByteString)
+    -> IO (String, SAMPMethodResponse)
 sendToClient hi secret recName tag msg = do
 
   rsp <- withCallableClient hi secret $ \hub sender -> do
@@ -853,7 +853,7 @@ sendToClient hi secret recName tag msg = do
                 info ("Sending " ++ fromMType mtype ++ " from " ++
                       show sendName ++ " to " ++ show recName)
                 forkCall (clientReceiveCall sendName receiver mid msg)
-                return (renderSAMPResponse (SAMPReturn (toSValue mid)))
+                return (SAMPReturn (toSValue mid))
     
               Left _ -> do
                 info "*** Looks like the receiver has disappeared ***"
@@ -904,7 +904,7 @@ sendToAll ::
     -> ClientSecret   -- ^ the client sending the message
     -> MessageTag
     -> SAMPMessage    -- ^ the message to send
-    -> IO (String, L.ByteString)
+    -> IO (String, SAMPMethodResponse)
 sendToAll hi secret tag msg = do
 
   rsp <- withCallableClient hi secret $ \hub sender -> do
@@ -943,7 +943,7 @@ sendToAll hi secret tag msg = do
               else return Nothing
                     
     let kvs = catMaybes (hubAns : mkvs)
-    return (renderSAMPResponse (SAMPReturn (SAMPMap kvs)))
+    return (SAMPReturn (SAMPMap kvs))
                        
   return ("callAll", rsp)
 
@@ -1058,8 +1058,16 @@ hubProcessMessage hi msg = do
     Just f -> f hi msg
     _ -> return (toSAMPResponseError emsg [] otherArgs)
 
-        
--- | An empty SAMP Response -- TODO: in the process of changing
+
+-- | Used when a return is needed, but it carries no extra information.
+emptyResponse :: SAMPMethodResponse
+emptyResponse = SAMPReturn (SAMPString "")
+
+                
+-- | An empty SAMP Response.
+--
+--   TODO: audit any users, as they should probably be using
+--   'emptyResponse'
 emptySAMPResponse :: SAMPResponse
 emptySAMPResponse = toSAMPResponse [] []
 
@@ -1149,7 +1157,7 @@ callAndWait ::
     -> ClientName     -- ^ the client to send the message to
     -> Int            -- ^ the timeout (in seconds)
     -> SAMPMessage    -- ^ the message to send
-    -> IO (String, L.ByteString)
+    -> IO (String, SAMPMethodResponse)
 callAndWait hi secret recName waitTime msg = do
 
   -- NOTE: for callAndWait the client does not need to be callable!
@@ -1201,8 +1209,7 @@ callAndWait hi secret recName waitTime msg = do
           -- no timeout for hub connections!
           replyData <- liftIO (hubProcessMessage hi msg)
           let rmap = toSValue replyData
-              rsp = renderSAMPResponse (SAMPReturn rmap)
-          return rsp
+          return (SAMPReturn rmap)
           
         else do
           let clMap = hiClients hub
@@ -1223,7 +1230,7 @@ reply ::
     -> ClientSecret   -- ^ the client sending the message
     -> MessageId
     -> SAMPResponse    -- ^ response to the message
-    -> IO (String, L.ByteString)
+    -> IO (String, SAMPMethodResponse)
 reply hi secret msgId replyData = do
 
   rsp <- withClient hi secret $ \hub _ -> do
@@ -1254,7 +1261,7 @@ reply hi secret msgId replyData = do
                  show (ifdSecret ifd))
             forkCall (replyToOrigin (cdName cd) ifd replyData)
             liftIO (removeMessageId hi msgId (cdSecret cd))
-            return HC.emptyResponse
+            return emptyResponse
                   
         _ -> do
           -- is this considered an error?
@@ -1279,7 +1286,7 @@ replyToOrigin clName ifd replyData = do
   let url = ifdUrl ifd
       secret = ifdSecret ifd
       tag = ifdTag ifd
-      rsp = renderSAMPResponse (SAMPReturn (toSValue replyData))
+      rsp = SAMPReturn (toSValue replyData)
             
   case ifdMVar ifd of
     Just mvar -> putMVar mvar rsp
@@ -1521,29 +1528,27 @@ handleSAMP hi secret (SAMPMethodCall name args) = do
 -- Content-Length headers are included in the response. This is
 -- probably handled by haxr's server code, but I am not using that here.
 
-respondXmlRpc :: String -> L.ByteString -> ActionM ()
-respondXmlRpc lbl rsp = do
+respondXmlRpc :: String -> SAMPMethodResponse -> ActionM ()
+respondXmlRpc lbl srsp = do
+  let rsp = HC.fromSAMPMethodResponse srsp
   dbg ("Response [" ++ lbl ++ "] " ++ L.unpack rsp)
   setHeader cType "text/xml"
   setHeader cLength (toLen rsp)
   raw rsp
 
 
-respondToClient :: String -> IO L.ByteString -> IO (String, L.ByteString)
+respondToClient :: String -> IO SAMPMethodResponse -> IO (String, SAMPMethodResponse)
 respondToClient = respond
                   
 -- A helper function whilst converting code; this is meant to be
 -- a stop-gap function, to be removed at a later date
-respond :: String -> IO L.ByteString -> IO (String, L.ByteString)
+respond :: String -> IO SAMPMethodResponse -> IO (String, SAMPMethodResponse)
 respond lbl act = (\a -> (lbl, a)) <$> act
 
                   
 -- An empty response
 respondOkay :: HubFunc
-respondOkay _ _ _ =
-  let empty = SAMPReturn (SAMPString "")
-      rsp = renderSAMPResponse empty
-  in return ("okay", rsp)
+respondOkay _ _ _ = return ("okay", emptyResponse)
 
 
 -- Errors can be returned as a SAMP Response - e.g.
@@ -1551,12 +1556,18 @@ respondOkay _ _ _ =
 -- but it looks like most (hopefully all) cases that respondError
 -- is used should return an XML-RPC fault.
 --
-respondError :: String -> IO (String, L.ByteString)
+respondError :: String -> IO (String, SAMPMethodResponse)
 respondError = respond "error" . return . rawError
 
 -- The integer value is not specified/used by SAMP, so set it to 1
+--
+{-
 rawError :: String -> L.ByteString
 rawError = XI.renderResponse . XI.Fault 1
+-}
+
+rawError :: String -> SAMPMethodResponse
+rawError = SAMPFault
 
            
 handleRegister :: HubFunc
@@ -1750,7 +1761,7 @@ data InFlightData =
     IFD { ifdSecret :: ClientSecret
         , ifdUrl :: String
         , ifdTag :: MessageTag
-        , ifdMVar :: Maybe (MVar L.ByteString)
+        , ifdMVar :: Maybe (MVar SAMPMethodResponse)
         , ifdTime :: UTCTime
         -- ^ the approximate time the response was sent
         }
@@ -1834,7 +1845,7 @@ type HubFunc =
     HubInfo
     -> HubSecret
     -> [SAMPValue]
-    -> IO (String, L.ByteString)
+    -> IO (String, SAMPMethodResponse)
 
        
 makeHubSubscriptions :: [(MType, HubHandlerFunc)] -> SubscriptionMap
@@ -2080,6 +2091,10 @@ forkCall :: IO a -> IO ()
 forkCall act = void (forkIO (void act))
 
 
+makeResponse :: [SAMPKeyValue] -> SAMPMethodResponse
+makeResponse = SAMPReturn . SAMPMap
+
+               
 {-
 The response to a message - i.e. sending the notifications - can
 be done in a separate thread. Depending on what gets sent to the
@@ -2090,7 +2105,7 @@ but worry about that later.
 
 register ::
     HubInfo
-    -> IO (String, L.ByteString)
+    -> IO (String, SAMPMethodResponse)
 register hi = do
   let hubName = hiName (hiReader hi)
   (clName, clKey) <- liftIO (addClientToHub hi)
@@ -2100,20 +2115,26 @@ register hi = do
             , ("samp.hub-id", toSValue hubName) ]
 
   forkCall (broadcastNewClient hi clName)
-  return ("register", HC.makeResponse kvs)
+  return ("register", makeResponse kvs)
 
-           
+
 -- | Indicate an error. Not sure how often this should be used
 --   as opposed to respondError or rawError, which use the
 --   XML-RPC fault mechanism.
+--
+--   TODO: fix this, as is just rawError now
+errorResponse :: String -> SAMPMethodResponse
+errorResponse = rawError
+
+{-
 errorResponse :: String -> L.ByteString
 errorResponse msg = renderSAMPResponse (SAMPFault msg)
-
+-}
 
 unregister ::
     HubInfo
     -> ClientSecret
-    -> IO (String, L.ByteString)
+    -> IO (String, SAMPMethodResponse)
 unregister hi secret = do
   rsp <- changeHubWithClient hi secret $ \ohub sender -> do
       let oclientmap = hiClients ohub
@@ -2130,7 +2151,7 @@ unregister hi secret = do
                  (warn ("Non empty inFlightMap: " ++
                         show (M.keys (cdInFlight sender))))
              
-      return (nhub, HC.emptyResponse, sact)
+      return (nhub, emptyResponse, sact)
 
   return ("unregister", rsp)
 
@@ -2139,7 +2160,7 @@ declareMetadata ::
     HubInfo
     -> ClientSecret
     -> [SAMPKeyValue]
-    -> IO (String, L.ByteString)
+    -> IO (String, SAMPMethodResponse)
 declareMetadata hi secret kvs = do
   rsp <- changeHubWithClient hi secret $ \ohub sender -> do
       let mdata = M.fromList kvs
@@ -2160,7 +2181,7 @@ declareMetadata hi secret kvs = do
       let sact = mdata `seq` nsender `seq` nclientmap `seq`
                  nhub `seq` 
                  forkCall (broadcastMType hi hubName msg)
-      return (nhub, HC.emptyResponse, sact)
+      return (nhub, emptyResponse, sact)
 
   return ("set/metadata", rsp)
 
@@ -2169,7 +2190,7 @@ setXmlrpcCallback ::
     HubInfo
     -> ClientSecret
     -> RString        -- ^ the URL for the callback   
-    -> IO (String, L.ByteString)
+    -> IO (String, SAMPMethodResponse)
 setXmlrpcCallback hi secret urlR = do
   let url = fromRString urlR
  
@@ -2182,7 +2203,7 @@ setXmlrpcCallback hi secret urlR = do
            dbg ("Registering Callback for client " ++
                 show (cdName sender) ++ " : " ++ url)
            let sact = nsender `seq` nclientmap `seq` nhub `seq` return ()
-           return (nhub, HC.emptyResponse, sact)
+           return (nhub, emptyResponse, sact)
                    
   rsp <- case parseURI url of
            Just _ -> doit
@@ -2196,7 +2217,7 @@ declareSubscriptions ::
     HubInfo
     -> ClientSecret
     -> SubscriptionMap
-    -> IO (String, L.ByteString)
+    -> IO (String, SAMPMethodResponse)
 declareSubscriptions hi secret subs = do
   rsp <- changeHubWithClient hi secret $ \ohub sender -> do
       let nsender = sender { cdSubscribed = subs }
@@ -2219,7 +2240,7 @@ declareSubscriptions hi secret subs = do
       let sact = subs `seq` nsender `seq` nclientmap `seq` nhub `seq`
                  forkCall (broadcastMType hi hubName msg)
                           
-      return (nhub, HC.emptyResponse, sact)
+      return (nhub, emptyResponse, sact)
 
   return ("set/subs", rsp)
     
@@ -2227,7 +2248,7 @@ declareSubscriptions hi secret subs = do
 getRegisteredClients ::
     HubInfo
     -> ClientSecret
-    -> IO L.ByteString
+    -> IO SAMPMethodResponse
 getRegisteredClients hi secret =
     withClient hi secret $ \hub sender -> do
       let clMap = hiClients hub
@@ -2240,14 +2261,14 @@ getRegisteredClients hi secret =
 
       dbgIO ("Found registered clients other than client " ++
              show (cdName sender))
-      return (renderSAMPResponse (SAMPReturn clients))
+      return (SAMPReturn clients)
 
 
 getSubscribedClients ::
     HubInfo
     -> ClientSecret
     -> MType         -- ^ does not include a wildcard
-    -> IO L.ByteString
+    -> IO SAMPMethodResponse
 getSubscribedClients hi secret msg =
     withClient hi secret $ \hub sender -> do
       let clMap = hiClients hub
@@ -2283,7 +2304,7 @@ getSubscribedClients hi secret msg =
                
       dbgIO ("Found subscribed clients other than client " ++
              show (cdName sender))
-      return (HC.makeResponse subs)
+      return (makeResponse subs)
 
 
 extractData ::
@@ -2292,10 +2313,10 @@ extractData ::
     -> ClientSecret
     -> (HubInfoReader -> a)
     -> (ClientData -> a)
-    -> (a -> IO L.ByteString)
+    -> (a -> IO SAMPMethodResponse)
        -- ^ this is applied to the first match form the hub or list of
        --   clients
-    -> IO L.ByteString
+    -> IO SAMPMethodResponse
 extractData hi name secret hubQuery clQuery act =
     let doit hub _ = do
           let clientmap = hiClients hub
@@ -2320,25 +2341,25 @@ getMetadata ::
     HubInfo
     -> ClientSecret
     -> ClientName    -- ^ the client whose metadata is being requested
-    -> IO L.ByteString
+    -> IO SAMPMethodResponse
 getMetadata hi secret clName =
     let act query = let kvs = M.assocs query
                     in do
                       dbgIO ("Found a match for client: " ++ show clName)
-                      return (HC.makeResponse kvs)
+                      return (makeResponse kvs)
     in extractData hi clName secret hiMetadata cdMetadata act
        
 getSubscriptions ::
     HubInfo
     -> ClientSecret
     -> ClientName    -- ^ the client whose subscriptions is being requested
-    -> IO L.ByteString
+    -> IO SAMPMethodResponse
 getSubscriptions hi secret clName = 
     let act query = let svals = fromSubMap query
                         conv (k, kvs) = (fromMTypeRS k, SAMPMap kvs)
                     in do
                       dbgIO ("Found a match for client: " ++ show clName)
-                      return (HC.makeResponse (map conv svals))
+                      return (makeResponse (map conv svals))
     in extractData hi clName secret hiSubscribed cdSubscribed act
 
 
