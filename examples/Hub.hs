@@ -394,9 +394,7 @@ removeMessageId ::
     HubInfo
     -> MessageId     -- ^ message to remove
     -> ClientSecret  -- ^ secret of client that uses the message
-                     --   (i.e. the one that uses this id); this is not
-                     --   needed, but it looks like we have it so can
-                     --   avoid some work here
+                     --   (i.e. the one that uses this id)
     -> IO ()
 removeMessageId hi mid secret =
     -- could check the return value to display a warning about
@@ -515,16 +513,24 @@ withHub ::
     -> IO a
 withHub hi act = readMVar (hiState hi) >>= act
 
+withHubP ::
+    HubInfo
+    -> (HubInfoState -> a)
+    -> IO a
+withHubP hi act = do
+  hub <- readMVar (hiState hi)
+  return (act hub)
+
 -- | Run an action and change the hub state.
 --
-changeHub ::
+changeHubP ::
     HubInfo
-    -> (HubInfoState -> IO (HubInfoState, a))
+    -> (HubInfoState -> (HubInfoState, a))
        -- ^ The action is performed with a @modifyMVar@ call.
        --   The return value is the new hub state.
     -> IO a
-changeHub hi = modifyMVar (hiState hi)
-                 
+changeHubP hi act = modifyMVar (hiState hi) (return . act)
+               
 -- | Run an action with a copy of the Hub's state. See
 --   'changeHubWithClient' for an alternative.
 --
@@ -675,7 +681,7 @@ findClientsToNotify hir hub msg sender =
                   
     in (hubMatch, receivers)
 
-       
+
 -- | A client wants to send a message to another client via the notify
 --   system.
 --
@@ -939,7 +945,7 @@ sendToAll hi secret tag msg = do
               return Nothing
 
     hubAns <- if isHub
-              then liftIO (hubReceiveCall hi tag sendName msg)
+              then hubReceiveCall hi tag sendName msg
               else return Nothing
                     
     let kvs = catMaybes (hubAns : mkvs)
@@ -960,7 +966,7 @@ hubReceiveCall ::
     -> IO (Maybe (RString, SAMPValue))
     -- ^ The hub name and the message id (as a SAMPValue)
 hubReceiveCall hi mtag sendName msg = do
-  sval <- changeHub hi $ \ohub -> 
+  sval <- changeHubP hi $ \ohub -> 
       let ogen = hiRandomGen ohub
           (s, ngen) = makeSecret ogen
           nhub = ohub { hiRandomGen = ngen}
@@ -968,7 +974,7 @@ hubReceiveCall hi mtag sendName msg = do
           --       message identifier
           mid = toMessageId s
 
-      in return (nhub, toSValue mid)
+      in (nhub, toSValue mid)
   
   -- NOTE: we do not actually use the mid argument in sendToHub!
   _ <- forkIO (sendToHub hi mtag sendName msg)
@@ -1037,7 +1043,6 @@ sendToHub hi mtag sendName msg = do
                  
       sendReceiveResponse url secret name mtag replyData
 
-                
     Nothing -> do
       dbgIO "--> looks like the client has closed down; hub no-op."
       return ()
@@ -1064,14 +1069,6 @@ emptyResponse :: SAMPMethodResponse
 emptyResponse = SAMPReturn (SAMPString "")
 
                 
--- | An empty SAMP Response.
---
---   TODO: audit any users, as they should probably be using
---   'emptyResponse'
-emptySAMPResponse :: SAMPResponse
-emptySAMPResponse = toSAMPResponse [] []
-
-                    
 -- | Process the samp.app.ping message sent to the hub
 hubSentPing :: HubHandlerFunc
 hubSentPing _ msg = do
@@ -1080,7 +1077,8 @@ hubSentPing _ msg = do
   infoIO "Hub has been sent samp.app.ping"
   infoIO ("params = " ++ show args)
   infoIO (" extra = " ++ show extra)
-  return emptySAMPResponse -- return extra?
+  return (toSAMPResponse [] []) -- return extra?
+
 
 -- | Process the [x-]samp.query.by-meta message sent to the hub.
 hubSentQueryByMeta :: HubHandlerFunc                 
@@ -2018,7 +2016,7 @@ addClientToHub ::
     HubInfo
     -> IO (ClientName, ClientSecret)
 addClientToHub hi = do
-  (ans, sact) <- changeHub hi $ \ohub -> do
+  (ans, sact) <- changeHubP hi $ \ohub -> 
       let (client, secret, nhub) = addClient (hiReader hi) ohub
           -- try to enforce strict semantics for the changes in addClient,
           -- which is ugly and prone to my mis-understandings of things
@@ -2027,7 +2025,7 @@ addClientToHub hi = do
                  hiNextClient nhub `seq`
                  secret `seq` return ()
 
-      return (nhub, ((client, secret), sact))
+      in (nhub, ((client, secret), sact))
 
   sact
   return ans
@@ -2384,7 +2382,7 @@ jsonGetMetadata ::
     HubInfo
     -> IO (M.Map String (M.Map String (M.Map String SAMPValue)))
 jsonGetMetadata hi =
-    withHub hi $ \hub -> 
+    withHubP hi $ \hub -> 
       let hir = hiReader hi
           clMap = hiClients hub
 
@@ -2400,7 +2398,7 @@ jsonGetMetadata hi =
 
           converted = map (first fromRString) mdata
                   
-      in return (M.fromList [("metadata", M.fromList converted)])
+      in M.fromList [("metadata", M.fromList converted)]
 
 -- | Return the subscriptions. The outer map has the key
 --   "subscriptions". Its value is a map with the client
@@ -2416,7 +2414,7 @@ jsonGetSubscriptions ::
        --   being the (as-yet-unspecified) object associated with the
        --   subscription.
 jsonGetSubscriptions hi =
-    withHub hi $ \hub -> 
+    withHubP hi $ \hub -> 
       let hir = hiReader hi
           clMap = hiClients hub
 
@@ -2431,7 +2429,7 @@ jsonGetSubscriptions hi =
           out = hubSubs : map toSub (M.elems clMap)
           subs = M.fromList (map (first fromRString) out)
 
-      in return (M.fromList [("subscriptions", subs)])
+      in M.fromList [("subscriptions", subs)]
          
          
 -- | Return the callback endpoints of those clients which have
@@ -2444,7 +2442,7 @@ jsonGetCallbacks ::
        --   contents are labelled with the client name, each of
        --   which gives the URI, including the hub.
 jsonGetCallbacks hi =
-    withHub hi $ \hub ->
+    withHubP hi $ \hub ->
       let hir = hiReader hi
           clMap = hiClients hub
 
@@ -2458,4 +2456,4 @@ jsonGetCallbacks hi =
           out = hubInfo : mapMaybe conv (M.elems clMap)
           cbs = M.fromList out
 
-      in return (M.fromList [("callbacks", cbs)])
+      in M.fromList [("callbacks", cbs)]
