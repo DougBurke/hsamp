@@ -559,6 +559,7 @@ withClient hi secret act =
           info ("Unable to find a client with secret=" ++ show secret)
           return (errorResponse "Invalid client id")
 
+
 -- | Run an action - checking that the client is valid -
 --   and copy the hub state.
 --
@@ -682,6 +683,38 @@ findClientsToNotify hir hub msg sender =
     in (hubMatch, receivers)
 
 
+findClientToNotify ::
+    HubInfo
+    -> ClientName
+    -> SAMPMessage
+    -> HubInfoState
+    -> ClientData
+    -> IO SAMPMethodResponse
+findClientToNotify hi recName msg hub sender =
+    let sendName = fromClientName (cdName sender)
+        hir = hiReader hi
+        mtype = getSAMPMessageType msg
+
+        (mHubMatch, receivers) = findClientsToNotify hir hub msg sender
+
+        find cd = cdName cd == recName
+        mreceivers = filter find receivers
+
+        hubMatch = mHubMatch && hiName hir == fromClientName recName
+    
+        noReceiver = do
+          info "No match to the notify message"
+          let emsg = "The receiver is not callable or not subscribed to " ++
+                     fromMType mtype
+          return (errorResponse emsg)
+                 
+    in if hubMatch
+       then notifyHub sendName msg
+       else case mreceivers of
+               (receiver:_) -> notifyClient sendName msg receiver
+               [] -> noReceiver
+
+
 -- | A client wants to send a message to another client via the notify
 --   system.
 --
@@ -698,30 +731,7 @@ notify ::
     -> SAMPMessage    -- ^ the message to send
     -> IO (String, SAMPMethodResponse)
 notify hi secret recName msg = do
-  rsp <- withClient hi secret $ \hub sender -> do
-      let sendName = fromClientName (cdName sender)
-          hir = hiReader hi
-          mtype = getSAMPMessageType msg
-
-          (mHubMatch, receivers) = findClientsToNotify hir hub msg sender
-
-          find cd = cdName cd == recName
-          mreceivers = filter find receivers
-
-          hubMatch = mHubMatch && hiName hir == fromClientName recName
-                      
-          noReceiver = do
-            info "No match to the notify message"
-            let emsg = "The receiver is not callable or not subscribed to " ++
-                       fromMType mtype
-            return (errorResponse emsg)
-
-      if hubMatch
-        then notifyHub sendName msg
-        else case mreceivers of
-               (receiver:_) -> notifyClient sendName msg receiver
-               [] -> noReceiver
-               
+  rsp <- withClient hi secret (findClientToNotify hi recName msg)
   return ("notify", rsp)
 
 
