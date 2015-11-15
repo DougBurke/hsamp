@@ -13,7 +13,7 @@ module is just a wrapper around the haxr call.
 
 -}
 
-module HubCall (call, emptyResponse, makeResponse) where
+module HubCall (call, emptyResponse, makeResponse, fromSAMPMethodResponse) where
 
 import qualified Data.ByteString.Lazy.Char8 as L
 
@@ -36,3 +36,8 @@ makeResponse kvs = renderSAMPResponse (SAMPReturn (SAMPMap kvs))
 
 emptyResponse :: L.ByteString
 emptyResponse = renderSAMPResponse (SAMPReturn (SAMPString []))
+
+-- | This is the default conversion to XML format for a SAMP
+--   method response.
+fromSAMPMethodResponse :: SAMPMethodResponse -> L.ByteString
+fromSAMPMethodResponse = renderSAMPResponse

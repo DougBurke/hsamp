@@ -17,7 +17,7 @@ present it only does this for struct and some value elements).
 
 -}
 
-module HubCall (call, emptyResponse, makeResponse) where
+module HubCall (call, emptyResponse, makeResponse, fromSAMPMethodResponse) where
 
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as L
@@ -187,6 +187,16 @@ makeResponse kvs =
        
 replaceEmptyStruct :: L.ByteString -> L.ByteString
 replaceEmptyStruct = replace "<struct/>" "<struct></struct>"
+
+-- | Convert to bytestring, including any conversion needed
+--   to support problematic clients.
+fromSAMPMethodResponse :: SAMPMethodResponse -> L.ByteString
+fromSAMPMethodResponse srsp =
+  let orig = renderSAMPResponse srsp
+      v1 = replaceEmptyStruct orig
+      v2 = replace "<value/>" "<value></value>" v1
+      v3 = replace "<string/>" "<string></string>" v2
+  in v3
 
 replace :: B.ByteString -> B.ByteString -> L.ByteString -> L.ByteString
 replace find new orig = L.fromStrict (mconcat (reverse (go origB [])))

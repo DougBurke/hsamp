@@ -1219,9 +1219,11 @@ toSMR :: (Monad m) => MethodResponse -> Err m SAMPMethodResponse
 toSMR (Return vs) = SAMPReturn `liftM` fromValue vs
 toSMR (Fault _ msg) = return (SAMPFault msg)
 
+-- | The integer fault value is not specified in the SAMP document, so use a
+--   value of 1.
 fromSMR :: SAMPMethodResponse -> MethodResponse
 fromSMR (SAMPReturn vs) = Return (toValue vs)
-fromSMR (SAMPFault msg) = Fault 0 msg -- the integer value is not specified
+fromSMR (SAMPFault msg) = Fault 1 msg
 
 -- | Parses a SAMP method call from the XmlRpc input.
 parseSAMPCall ::
