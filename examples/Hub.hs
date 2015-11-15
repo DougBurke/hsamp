@@ -1059,7 +1059,7 @@ hubProcessMessage hi msg = do
     _ -> return (toSAMPResponseError emsg [] otherArgs)
 
         
--- | An empty SAMP Response
+-- | An empty SAMP Response -- TODO: in the process of changing
 emptySAMPResponse :: SAMPResponse
 emptySAMPResponse = toSAMPResponse [] []
 
@@ -1495,12 +1495,6 @@ callFromClient hi secret = do
       text "Invalid SAMP call"
 
         
--- For now, there's no way to indicate a failure, which is not ideal.
--- Probably want to re-work the code
-toReturnValue :: SAMPResponse -> L.ByteString
-toReturnValue = XI.renderResponse . XI.Return . XI.toValue
-
-
 handleSAMP ::
     HubInfo
     -> HubSecret
@@ -1546,7 +1540,10 @@ respond lbl act = (\a -> (lbl, a)) <$> act
                   
 -- An empty response
 respondOkay :: HubFunc
-respondOkay _ _ _ = return ("okay", toReturnValue emptySAMPResponse)
+respondOkay _ _ _ =
+  let empty = SAMPReturn (SAMPString "")
+      rsp = renderSAMPResponse empty
+  in return ("okay", rsp)
 
 
 -- Errors can be returned as a SAMP Response - e.g.
