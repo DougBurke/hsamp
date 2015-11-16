@@ -669,10 +669,10 @@ findClientsToNotify ::
 findClientsToNotify hir hub msg sender =
     let mtype = getSAMPMessageType msg
         clMap = hiClients hub
-        name = cdName sender
+        sendName = cdName sender
                
-        hubMatch = isHubSubscribed hir mtype name
-        receivers = findOtherSubscribedClients clMap name mtype
+        hubMatch = isHubSubscribed hir mtype sendName
+        receivers = findOtherSubscribedClients clMap sendName mtype
                   
     in (hubMatch, receivers)
 
@@ -760,19 +760,6 @@ used for all cases. Could attach a timer thread to it, that will
 "cancel" the MVar so can identify problematic systems?
 -}
 
--- TODO: findSubscribedClients to include the hub?
-
--- | Return the callables clients that are subscribed to this message.
-findSubscribedClients ::
-    ClientMap
-    -> MType
-    -> [ClientData]
-findSubscribedClients clMap msg =
-    let find cd = isJust (cdCallback cd) &&
-                  memberSubMap msg (cdSubscribed cd)
-    in M.elems (M.filter find clMap)
-
-
 findOtherSubscribedClients ::
     ClientMap
     -> ClientName -- ^ client to exclude from the search
@@ -787,20 +774,6 @@ findOtherSubscribedClients clMap clName msg =
 
 -- | Return the client if it is callable and subscribed to the message.
 --
---   See also findSubscribedClientE.
-findSubscribedClient ::
-    ClientMap
-    -> MType
-    -> ClientName
-    -> Maybe ClientData
-findSubscribedClient clMap msg clName =
-    let isClient cd = cdName cd == clName
-    in listToMaybe (filter isClient (findSubscribedClients clMap msg))
-
-
--- | Return the client if it is callable and subscribed to the message.
---
---   See also findSubscribedClient.
 findSubscribedClientE ::
     ClientMap
     -> MType
@@ -833,8 +806,6 @@ isHubSubscribed hir mtype sendName =
 --
 --   TODO: does this need to cope with the receiver being the hub?
 --
---     use withClient rather than findCallabelClient ...
---
 sendToClient ::
     HubInfo
     -> ClientSecret   -- ^ the client sending the message
@@ -848,14 +819,9 @@ sendToClient hi secret recName tag msg = do
       let clMap = hiClients hub
           mtype = getSAMPMessageType msg
               
-          noReceiver =
-            let emsg = "receiver is unknown, not callable, " ++
-                       "or not subscribed to " ++ show mtype
-            in reportError emsg
-
-      case findSubscribedClient clMap mtype recName of
-        Just rcd -> sendToC hi sender tag msg rcd
-        _ -> noReceiver
+      case findSubscribedClientE clMap mtype recName of
+        Right rcd -> sendToC hi sender tag msg rcd
+        Left emsg -> reportError emsg
                     
   return ("call", rsp)
 
@@ -909,7 +875,11 @@ sendToAll hi secret tag msg = do
         receivers = findOtherSubscribedClients clMap sendName mtype
         recNames = unwords (map (show . cdName) receivers)
         isHub = isHubSubscribed (hiReader hi) mtype sendName
-                
+
+    -- TODO: would it make sense to create all the ids in
+    --       one go (i.e. only one changeHub call, rather
+    --       than one per receiver)
+    --
     dbg ("sendToAll with sendName= " ++ show sendName ++
          " recNames=" ++ recNames)
     mkvs <- forM receivers $ \rcd -> do
@@ -2066,7 +2036,7 @@ broadcastMType hi name msg =
         clients = findOtherSubscribedClients (hiClients hub) name mtype
         hir = hiReader hi
 
-    forM_ clients (notifyRecipient sendName msg)
+    forM_ clients (forkCall . notifyRecipient sendName msg)
         
     -- TODO: do I need to fix hub handling of the message or is this okay?
     --       
@@ -2129,7 +2099,10 @@ register hi = do
             , ("samp.hub-id", toSValue hubName) ]
 
   dbg ("Added client: " ++ show clName ++ " secret=" ++ show clKey)
-  forkCall (broadcastNewClient hi clName)
+  -- forkCall (broadcastNewClient hi clName)
+  -- As broadcastMType includes forkCall statements, do not fork
+  -- here (which may slow down the response a bit)
+  broadcastNewClient hi clName
   return ("register", makeResponse kvs)
 
 
@@ -2150,7 +2123,8 @@ unregister hi secret = do
           unless (M.null (cdInFlight sender))
             (warn ("Non empty inFlightMap: " ++
                    show (M.keys (cdInFlight sender))))
-          forkCall (broadcastRemovedClient hi clName)
+          broadcastRemovedClient hi clName
+          -- forkCall (broadcastRemovedClient hi clName)
 
       in (nhub, emptyResponse, sact)
 
@@ -2180,7 +2154,8 @@ declareMetadata hi secret kvs = do
           dbg ("Registering new metadata for client " ++
                show (cdName sender))
           mdata `seq` nsender `seq` nclientmap `seq` nhub `seq` return ()
-          forkCall (broadcastMType hi hubName msg)
+          broadcastMType hi hubName msg
+          -- forkCall (broadcastMType hi hubName msg)
 
       in (nhub, emptyResponse, sact)
 
@@ -2241,7 +2216,8 @@ declareSubscriptions hi secret subs = do
           dbg ("Registering new subscriptions for client " ++
                show (cdName sender))
           subs `seq` nsender `seq` nclientmap `seq` nhub `seq` return ()
-          forkCall (broadcastMType hi hubName msg)
+          broadcastMType hi hubName msg
+          -- forkCall (broadcastMType hi hubName msg)
                           
     in (nhub, emptyResponse, sact)
 
