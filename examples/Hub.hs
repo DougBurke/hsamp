@@ -127,7 +127,7 @@ import Control.Concurrent (forkIO, threadDelay)
 import Control.Concurrent.MVar (MVar, modifyMVar, newEmptyMVar, newMVar,
                                 putMVar, readMVar, takeMVar)
 import Control.Monad.IO.Class (MonadIO)
-import Control.Monad (forM, forM_, guard, unless, void, when)
+import Control.Monad (forM_, guard, unless, void, when)
 import Control.Monad.Trans (liftIO)
 
 import Data.Bits ((.|.))
@@ -136,8 +136,7 @@ import Data.Default.Class (def)
 import Data.Either (partitionEithers)
 import Data.Function (on)
 import Data.List (intercalate, sortBy)
-import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust,
-                   listToMaybe, mapMaybe)
+import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, mapMaybe)
 import Data.Time.Clock (UTCTime, getCurrentTime)
     
 -- import Data.Version (showVersion)
@@ -389,7 +388,7 @@ newMessageId hi secret (tag, sender, mmvar) = do
 
     in (nhub, mid, sact)
             
- 
+
 removeMessageId ::
     HubInfo
     -> MessageId     -- ^ message to remove
@@ -765,11 +764,21 @@ findOtherSubscribedClients ::
     -> ClientName -- ^ client to exclude from the search
     -> MType
     -> [ClientData]
-findOtherSubscribedClients clMap clName msg =
-    let find cd = cdName cd /= clName &&
-                  isJust (cdCallback cd) &&
-                  memberSubMap msg (cdSubscribed cd)
+findOtherSubscribedClients clMap clName mtype =
+    let find = isClientSubscribed clName mtype
     in M.elems (M.filter find clMap)
+
+
+isClientSubscribed ::
+  ClientName
+  -- ^ The client sending the message (i.e. not included in the check)
+  -> MType
+  -> ClientData
+  -> Bool
+isClientSubscribed sendName mtype cd =
+    cdName cd /= sendName &&
+    isJust (cdCallback cd) &&
+    memberSubMap mtype (cdSubscribed cd)
 
 
 -- | Return the client if it is callable and subscribed to the message.
@@ -867,77 +876,108 @@ sendToAll ::
     -> IO (String, SAMPMethodResponse)
 sendToAll hi secret tag msg = do
 
-  rsp <- withCallableClient hi secret $ \hub sender -> do
-                                
-    let clMap = hiClients hub
-        mtype = getSAMPMessageType msg
-        sendName = cdName sender
-        receivers = findOtherSubscribedClients clMap sendName mtype
-        recNames = unwords (map (show . cdName) receivers)
-        isHub = isHubSubscribed (hiReader hi) mtype sendName
+  -- get the time before waiting for the hub lock (at present the time
+  -- is not used, so it does not really matter)
+  cTime <- getCurrentTime
 
-    -- TODO: would it make sense to create all the ids in
-    --       one go (i.e. only one changeHub call, rather
-    --       than one per receiver)
-    --
-    dbg ("sendToAll with sendName= " ++ show sendName ++
-         " recNames=" ++ recNames)
-    mkvs <- forM receivers $ \rcd -> do
-                            
-        let rSecret = cdSecret rcd
-            rName = cdName rcd
-
-        dbg (" - sendToAll to " ++ show rName)
-                    
-        emid <- newMessageId hi rSecret (tag,sender,Nothing)
-        case emid of
-          Right mid -> do
-              dbg ("Sending " ++ fromMType mtype ++ " from " ++
-                   show sendName)
-
-              forkCall (clientReceiveCall sendName rcd mid msg)
-              return (Just (fromClientName rName, toSValue mid))
-
-          Left _ -> do
-              dbg ("Unable to create message for " ++ show rName)
-              return Nothing
-
-    hubAns <- if isHub
-              then hubReceiveCall hi tag sendName msg
-              else return Nothing
-                    
-    let kvs = catMaybes (hubAns : mkvs)
-    return (SAMPReturn (SAMPMap kvs))
-                       
+  {-
+  could use changeHubWithClientE so that can return a non-SAMPResponse,
+  which could mean less work in sendToAll2/no need to send in hi
+  -}
+  let act = sendToAll2 cTime hi tag msg
+  rsp <- changeHubWithClient hi secret act
   return ("callAll", rsp)
 
 
--- | The hub has been contacted with a request for data. If got
---   this far then the hub is subscribed (this check could be moved
---   within this routine), and I assume that the client is callable.
+-- The idea is to iterate through the hub, changing the client data
+-- of the subscribed clients, and build up the IO actions to notify
+-- these clients. This action is then run *outside* the modifyMVar
+-- call.
 --
-hubReceiveCall ::
-    HubInfo
-    -> MessageTag    -- ^ tag from the client
-    -> ClientName    -- ^ client making the request
-    -> SAMPMessage   -- ^ the message from the sender
-    -> IO (Maybe (RString, SAMPValue))
-    -- ^ The hub name and the message id (as a SAMPValue)
-hubReceiveCall hi mtag sendName msg = do
-  sval <- changeHub hi $ \ohub -> 
-      let ogen = hiRandomGen ohub
-          (s, ngen) = makeSecret ogen
-          nhub = ohub { hiRandomGen = ngen}
-          -- note: unlike clients, do not include a counter in the
-          --       message identifier
-          mid = toMessageId s
+sendToAll2 ::
+  UTCTime
+  -> HubInfo -- wanted to send in HubInfoReader, but need hub
+  -> MessageTag
+  -> SAMPMessage  -- ^ The message to send
+  -> HubInfoState
+  -> ClientData -- ^ The sender of the message
+  -> (HubInfoState, SAMPMethodResponse, IO ())
+sendToAll2 cTime hi tag msg ohub sender =
+  let hir = hiReader hi
+      mtype = getSAMPMessageType msg
+      sendName = cdName sender
 
-      in (nhub, toSValue mid)
+      ifd = IFD { ifdSecret = cdSecret sender
+                  -- if get to here the sender must have a callback
+                , ifdUrl = fromJust (cdCallback sender)
+                , ifdTag = tag
+                , ifdMVar = Nothing
+                , ifdTime = cTime }
+
+      isHub = isHubSubscribed hir mtype sendName
+
+      oClMap = hiClients ohub
+
+      -- Update the client, if necessary
+      --
+      update oacc@(ogen, orvals, oacts) ocd =
+        if isClientSubscribed sendName mtype ocd
+        then
+          let (s, ngen) = makeSecret ogen
   
-  -- NOTE: we do not actually use the mid argument in sendToHub!
-  _ <- forkIO (sendToHub hi mtag sendName msg)
-  return (Just (hiName (hiReader hi), sval))
-         
+              oflight = cdInFlight ocd
+              onum = cdNextInFlight ocd
+              
+              nnum = succ onum
+              
+              rstr = fromJust (toRString (show onum))
+              mid = toMessageId ("mid" ++ rstr ++ ":" ++ s)
+  
+              nflight = M.insert mid ifd oflight
+              ncd = ocd { cdInFlight = nflight
+                        , cdNextInFlight = nnum }
+  
+              act = do
+                mid `seq` nnum `seq` nflight `seq` ncd `seq` return ()
+                dbgIO ("Inserted messageId=" ++ show mid ++
+                       " for receiver=" ++ show (cdName ocd))
+                forkCall (clientReceiveCall sendName ncd mid msg)
+  
+              nrvals = (fromClientName (cdName ocd), toSValue mid) : orvals
+              nacts = oacts >> act
+              
+          in ((ngen, nrvals, nacts), ncd)
+        else (oacc, ocd)
+             
+      -- mapAccum :: (a -> b -> (a, c)) -> a -> Map k b -> (a, Map k c)
+      (acc1, nClMap) = M.mapAccum update
+                       (hiRandomGen ohub, [], return ())
+                       oClMap
+      (ngen1, rvals1, acts1) = acc1
+
+      (hgen, hvals, hacts) =
+        if isHub
+        then
+          let (s, gen) = makeSecret ngen1
+              -- unlike the clients, do not include a counter here
+              mid = toMessageId s
+
+              hval = (hiName hir, toSValue mid)
+
+              hact = do
+                mid `seq` hgen `seq` return () -- how useful is this?
+                void (forkIO (sendToHub hi tag sender msg))
+              
+          in (gen, hval : rvals1, hact >> acts1)
+             
+        else acc1
+
+      nhub = ohub { hiClients = nClMap
+                  , hiRandomGen = hgen
+                  }
+
+  in (nhub, SAMPReturn (SAMPMap hvals), hacts)
+
 
 ignoreError :: String -> CE.SomeException -> IO ()
 ignoreError lbl e = do
@@ -980,37 +1020,21 @@ sendReceiveResponse url secret name tag replyData = do
 sendToHub ::
     HubInfo
     -> MessageTag
-    -> ClientName  -- perhaps the secret should be sent instead?
+    -> ClientData
+    -- ^ The client sending the message (it is possible that this client
+    --   has since disconnected).
     -> SAMPMessage
     -> IO ()
-sendToHub hi mtag sendName msg = do
-  let mvar = hiState hi
-      mtype = getSAMPMessageType msg
-             
-  ohub <- readMVar mvar
-  let clMap = hiClients ohub
-
-      -- add in callable check, even though it should be guaranteed
-      -- at this point.
-      find cd = cdName cd == sendName && isJust (cdCallback cd)
-      msender = listToMaybe (M.elems (M.filter find clMap))
-
+sendToHub hi mtag sender msg = do
+  let mtype = getSAMPMessageType msg
+      sendName = cdName sender
+      url = fromJust (cdCallback sender)
+      secret = cdSecret sender
+      hubName = toClientName (hiName (hiReader hi))
+      
   dbgIO ("Hub sent " ++ fromMType mtype ++ " by " ++ show sendName)
-  case msender of
-    Just sender -> do
-      -- hub has to send a message back to the sender using the
-      -- message tag
-      --
-      replyData <- hubProcessMessage hi msg
-      let url = fromJust (cdCallback sender)
-          secret = cdSecret sender
-          name = toClientName (hiName (hiReader hi))
-                 
-      sendReceiveResponse url secret name mtag replyData
-
-    Nothing -> do
-      dbgIO "--> looks like the client has closed down; hub no-op."
-      return ()
+  replyData <- hubProcessMessage hi msg
+  sendReceiveResponse url secret hubName mtag replyData
 
 
 -- | The hub has been sent a message it is subscribed to.
@@ -1322,6 +1346,10 @@ notifyRecipient sendName msg receiver = do
 
     case cdCallback receiver of
       Just url -> do
+        {-
+        putStrLn ("*** " ++ show mtype ++ " from " ++ show sendName ++
+                  " to " ++ show recName)  -- DBG
+        -}
         dbgIO ("Sending notify of " ++ fromMType mtype ++ " to client " ++
                show recName)
         handleError (hdl url) (act url)
