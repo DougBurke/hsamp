@@ -70,6 +70,14 @@ possible.
 
 TODO:
 
+  - switch to async (if it makes sense; at present most of the concurrent
+    calls do not have a useful return value). Here's my original
+    todo item:
+
+      could run connections to clients using async, storing the
+      thread ids, so that they can be stopped if the client shut
+      downs (or hub or ...)
+
   - add web profile
 
   - work out what's going on with ds9 connections
@@ -77,10 +85,6 @@ TODO:
       that I get from handling responses from ds9 (content-length header
       is being set incorrectly by ds9)
     - todo: validate that ds9 supports <x/> form of tags
-
-  - could run connections to clients using async, storing the
-    thread ids, so that they can be stopped if the client shut
-    downs (or hub or ...)
 
   - removal of problematic clients
 
@@ -576,6 +580,26 @@ changeHubWithClient hi secret act = do
     Left emsg -> reportError emsg
 
 
+-- | Run an action - checking that the client is valid *and* callable -
+--   and copy the hub state.
+--
+changeHubWithCallableClient ::
+    HubInfo
+    -> ClientSecret
+    -> (HubInfoState -> ClientData -> (HubInfoState, SAMPMethodResponse, IO ()))
+       -- ^ The action is performed within a @modifyMVar@ call.
+       --   The return value is the new hub state, the return
+       --   value, and an IO action to run after setting the
+       --   new hub state (e.g. any broadcast message to be sent or
+       --   code to ensure the new state is evaluated).
+    -> IO SAMPMethodResponse
+changeHubWithCallableClient hi secret act = do
+  mrsp <- changeHubWithCallableClientE hi secret act
+  case mrsp of
+    Right rsp -> return rsp
+    Left emsg -> reportError emsg
+
+
 changeHubWithClientE ::
     HubInfo
     -> ClientSecret
@@ -603,6 +627,24 @@ changeHubWithClientE hi secret act = do
   return rsp
 
          
+changeHubWithCallableClientE ::
+    HubInfo
+    -> ClientSecret
+    -> (HubInfoState -> ClientData -> (HubInfoState, SAMPMethodResponse, IO ()))
+       -- ^ The action is performed within a @modifyMVar@ call.
+       --   The return value is the new hub state, the return
+       --   value, and an IO action to run after setting the
+       --   new hub state (e.g. any broadcast message to be sent or
+       --   code to ensure the new state is evaluated).
+    -> IO (Either String SAMPMethodResponse)
+changeHubWithCallableClientE hi secret act = 
+  changeHubWithClientE hi secret $ \ohub client -> do
+    if isJust (cdCallback client)
+      then act ohub client
+      else let emsg = "Client " ++ show (cdName client) ++
+                      " is not callable"
+           in (ohub, rawError emsg, return ())
+
 -- | Process a message from a client that you can send a message to
 --   (a restricted variant of 'withClient')
 --
@@ -2218,14 +2260,14 @@ setXmlrpcCallback hi secret urlR = do
 
   return ("set/callback", rsp)
 
-          
+
 declareSubscriptions ::
     HubInfo
     -> ClientSecret
     -> SubscriptionMap
     -> IO (String, SAMPMethodResponse)
 declareSubscriptions hi secret subs = do
-  rsp <- changeHubWithClient hi secret $ \ohub sender ->
+  rsp <- changeHubWithCallableClient hi secret $ \ohub sender ->
     let nsender = sender { cdSubscribed = subs }
         oclientmap = hiClients ohub
         -- replace sender by nsender in the map

@@ -37,6 +37,7 @@ module Network.SAMP.Standard.Types (
        getSAMPInfoLocation,
        getSAMPInfoHubURL,
        getSAMPInfoHubSecret,
+       getSAMPInfoHubMetadata,
 
        -- * SAMP Types
 
@@ -169,6 +170,9 @@ getSAMPInfoHubURL = _siHubURL
     
 getSAMPInfoHubSecret :: SAMPInfo -> HubSecret
 getSAMPInfoHubSecret = _siSecret
+    
+getSAMPInfoHubMetadata :: SAMPInfo -> [(String, String)]
+getSAMPInfoHubMetadata = _siMetadata
     
 validRCharsAsInts :: [Int]
 validRCharsAsInts = [0x09, 0x0a, 0x0d] ++ [0x20 .. 0x7f]

@@ -364,7 +364,7 @@ getRegisteredClientsE cl =
     callHubE cl "samp.hub.getRegisteredClients" []
     >>= fromSValue
 
--- | Return a (key,value) list of all the clients that are subscibed to
+-- | Return a (key,value) list of all the clients that are subscribed to
 -- a given 'MType' (the return value is slightly different from the
 -- SAMP API which has the return being a map; here we extract the 
 -- contents of the map).
