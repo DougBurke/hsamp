@@ -18,12 +18,14 @@ setting currently error out. This behaviour /may/ be changed.
 
 module Network.SAMP.Standard.Server.Scotty
        (
-        runServer
+         runServer
+       , runServerSignal
        ) where
 
 import qualified Data.ByteString.Char8 as B
 import qualified Data.ByteString.Lazy.Char8 as L
 
+import Control.Concurrent.MVar (MVar, putMVar)
 import Control.Monad.Trans (liftIO)
 
 import Data.Default.Class (def)
@@ -61,8 +63,39 @@ runServer ::
   -- ^ The function is called with the body of the response, which is
   --   expected to be in XML format.
   -> IO ()
-runServer socket _ processCall = do
+runServer socket _ processCall = _server socket processCall Nothing
+
+{-
+As 'runServer', but indicates when the server is about to
+start (to allow callers that use forkIO to start the server
+can be told when the server is ready). This is not ideal
+(the MVar is filled before the server itself is actually
+started), and is likely to be removed.
+-}
+runServerSignal ::
+  Socket -- ^ the socket for the server
+  -> String -- ^ the URL of the server (currently unused)
+  -> (String -> IO ())
+  -- ^ The function is called with the body of the response, which is
+  --   expected to be in XML format.
+  -> MVar ()
+  -- ^ This is expected to be empty, as it is filled just before
+  --   the server is started
+  -> IO ()
+runServerSignal socket _ processCall mvar =
+  _server socket processCall (Just mvar)
+
+
+_server ::
+  Socket -> (String -> IO ()) -> Maybe (MVar ()) -> IO ()
+_server socket processCall mmvar = do
   mware <- logRequests
+
+  -- signal caller
+  case mmvar of
+    Just mvar -> putMVar mvar ()
+    _ -> return ()
+    
   scottySocket def socket $ do
     -- middleware logStdoutDev
     middleware mware
