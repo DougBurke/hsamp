@@ -641,8 +641,10 @@ changeHubWithCallableClientE hi secret act =
   changeHubWithClientE hi secret $ \ohub client -> do
     if isJust (cdCallback client)
       then act ohub client
-      else let emsg = "Client " ++ show (cdName client) ++
+      else let emsg = "Client " ++ show (cdName client) ++ " " ++
+                      getFullName client ++
                       " is not callable"
+
            in (ohub, rawError emsg, return ())
 
 -- | Process a message from a client that you can send a message to
@@ -661,8 +663,10 @@ withCallableClient hi secret act =
     withClient hi secret $ \hub sender ->
         if isJust (cdCallback sender)
           then act hub sender
-          else let emsg = "Client " ++ show (cdName sender) ++
+          else let emsg = "Client " ++ show (cdName sender) ++ " " ++
+                          getFullName sender ++
                           " is not callable"
+                          
                in reportError emsg
                 
          
@@ -838,9 +842,13 @@ findSubscribedClientE clMap msg clName =
          (cd:_) -> if isJust (cdCallback cd)
                    then if memberSubMap msg (cdSubscribed cd)
                         then Right cd
-                        else Left ("Client " ++ nameStr ++ " is not " ++
+                        else Left ("Client " ++ nameStr ++ " " ++
+                                   getFullName cd ++
+                                   " is not " ++
                                    "subscribed to " ++ show msg)
-                   else Left ("Client " ++ nameStr ++ " is not callable")
+                   else Left ("Client " ++ nameStr ++ " " ++
+                              getFullName cd ++
+                              " is not callable")
          _ -> Left ("There is no client called " ++ nameStr)
 
        
@@ -1878,6 +1886,14 @@ data ClientData =
     -- ^ This should only be used if the callback is set
     , cdNextInFlight :: Int
     } -- deriving (Eq, Show)
+
+
+-- Extract the samp.name metadata element if it exists
+getFullName :: ClientData -> String
+getFullName client = case M.lookup "samp.name" (cdMetadata client) of
+  Just (SAMPString fn) -> "(" ++ show fn ++ ")"
+  _ -> ""
+                      
 
 {-
 Might it also be useful to keep a map of clients registered
