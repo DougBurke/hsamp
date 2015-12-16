@@ -346,15 +346,22 @@ declareSubscriptionsSimpleE cl mtypes =
 
 -- | Get the message subscriptions of a client. The subscriptions are
 -- returned as a list of (key,value) pairs.
+--
 getSubscriptionsE ::
     SAMPConnection
     -> ClientName -- ^ the name of the client to query
-    -> Err IO [SAMPKeyValue]
-       -- ^ the (key,value) subscriptions of the queried client
-getSubscriptionsE cl clid = 
-    callHubE cl "samp.hub.getSubscriptions" [toSValue clid]
-    >>= fromSValue
+    -> Err IO [(MType, SAMPValue)]
+    -- ^ the subscriptions of the queried client
+getSubscriptionsE cl clid = do
+  subs <- callHubE cl "samp.hub.getSubscriptions" [toSValue clid]
+  let conv (k, v) = do
+        nk <- toMTypeE (fromRString k)
+        return (nk, v)
 
+  case subs of
+    SAMPMap ms -> mapM conv ms
+    x -> throwError ("Expected a SAMP map but sent " ++ show x)
+    
 -- | Return a list of all the registered clients of the hub - including
 -- itself - but excluding this client.
 getRegisteredClientsE ::
