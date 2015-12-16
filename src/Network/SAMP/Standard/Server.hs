@@ -18,10 +18,6 @@ Logging is provided using the @SAMP.StandardProfile.Server@
 'System.Log.Logger.Logger' instance. At present this is limited
 to debugging information only.
 
-TODO:
-
-  - look at adding a type synonym for message id\/tag\/secret
-    arguments to make it clearer what is expected
 -}
 
 {-
@@ -48,6 +44,7 @@ module Network.SAMP.Standard.Server (
        -- @MType -> Bool@) if it is found to be necessary.
        --
 
+       SAMPNotificationMap, SAMPCallMap,
        SAMPNotificationFunc, SAMPCallFunc, SAMPResponseFunc,
        simpleClientServer,
 
@@ -73,13 +70,12 @@ import Control.Monad.Trans (liftIO)
 import Network.SAMP.Standard.Types (SAMPValue(..), SAMPType(..),
                                     SAMPMethodCall(..), SAMPConnection,
                                     SAMPMessage, SAMPResponse,
-                                    RString, MType, SAMPKeyValue,
+                                    RString, MType,
                                     ClientSecret, ClientName,
                                     MessageTag, MessageId,
                                     fromMType,
                                     parseSAMPCall,
                                     getSAMPMessageType,
-                                    getSAMPMessageParams,
                                     toClientName,
                                     Err, handleError)
 import Network.SAMP.Standard.Client (callHubE, callHubE_, replyE)
@@ -210,15 +206,20 @@ Section 3.9.
 
 -- | A mapping from a 'MType' to the routine used to handle notification
 -- of the @samp.client.receiveNotification@ message.
-type SAMPNotificationFunc = (MType, MType -> ClientSecret -> ClientName -> [SAMPKeyValue] -> IO ())
+--
+type SAMPNotificationMap = [(MType, SAMPNotificationFunc)]
+
+type SAMPNotificationFunc =
+  ClientSecret -> ClientName -> SAMPMessage -> IO ()
 
 -- | A mapping from a 'MType' to the routine used to handle calls
 -- of the message @samp.client.receiveCall@. The response will be returned to the hub using the
 -- @samp.hub.reply@ message (using 'Network.SAMP.Standard.Client.replyE')
 -- when using 'simpleClientServer'.
+type SAMPCallMap = [(MType, SAMPCallFunc)]
+
 type SAMPCallFunc =
-    (MType,
-     MType -> ClientSecret -> ClientName -> MessageId -> [SAMPKeyValue] -> IO SAMPResponse)
+     ClientSecret -> ClientName -> MessageId -> SAMPMessage -> IO SAMPResponse
 
 -- | The handler for SAMP response messages (those received by a callable client
 -- via the @samp.client.receiveResponse@ message).
@@ -226,7 +227,7 @@ type SAMPResponseFunc =
     ClientSecret -> ClientName -> MessageTag -> SAMPResponse -> IO ()
 
 receiveNotification ::
-    [SAMPNotificationFunc]
+    SAMPNotificationMap
     -> ClientSecret
     -> ClientName
     -> SAMPMessage
@@ -234,17 +235,16 @@ receiveNotification ::
 receiveNotification funcs secret senderid sm = do
     dbg "In receiveNotification"                    
     let mtype = getSAMPMessageType sm
-        mparams = getSAMPMessageParams sm
-    dbg $ "Notification mtype=" ++ show mtype ++ " sender=" ++ show senderid
+    dbg ("Notification mtype=" ++ show mtype ++ " sender=" ++ show senderid)
     case lookup mtype funcs of
-      Just func -> func mtype secret senderid mparams
+      Just func -> func secret senderid sm
       _ -> do
              let emsg = "Unrecognized mtype for notification: " ++ show mtype
              dbg emsg
              fail emsg
 
 receiveCall ::
-    [SAMPCallFunc]
+    SAMPCallMap
     -> SAMPConnection
     -> ClientSecret
     -> ClientName
@@ -254,13 +254,12 @@ receiveCall ::
 receiveCall funcs ci secret senderid msgid sm = do
     dbg "In receiveCall"
     let mtype = getSAMPMessageType sm
-        mparams = getSAMPMessageParams sm
     dbg $ "Call mtype=" ++ show mtype ++ " sender=" ++ show senderid
     case lookup mtype funcs of
       Just func -> do
-                     rsp <- func mtype secret senderid msgid mparams
-                     dbg $ "Responding with " ++ show rsp
-                     rE $ replyE ci msgid rsp
+                     rsp <- func secret senderid msgid sm
+                     dbg ("Responding with " ++ show rsp)
+                     rE (replyE ci msgid rsp)
       _ -> do
              let emsg = "Unrecognized mtype for call: " ++ show mtype
              dbg emsg
@@ -311,8 +310,8 @@ extra messages beyond the SAMP Standard Profile.
 -}
 clientMethodMap ::
     SAMPConnection -- ^ the connection to use when replying to a message
-    -> [SAMPNotificationFunc] -- ^ routines for handling notifications (@samp.client.receiveNotification@)
-    -> [SAMPCallFunc] -- ^ routines for handling calls (@samp.client.receiveCall@)
+    -> SAMPNotificationMap -- ^ routines for handling notifications (@samp.client.receiveNotification@)
+    -> SAMPCallMap -- ^ routines for handling calls (@samp.client.receiveCall@)
     -> SAMPResponseFunc -- ^ routinr for handling responses (@samp.client.receiveResponse@)
     -> SAMPMethodMap -- ^ input for the 'clientMethods' routine
 clientMethodMap ci ns cs r =
@@ -343,11 +342,16 @@ handleSAMPCall f str = do
 -- | Handle the SAMP messages sent to a callable client. This processes a
 -- single call using the supplied handlers.
 simpleClientServer ::
-    SAMPConnection -- ^ the connection information for the hub
-    -> [SAMPNotificationFunc] -- ^ routines for handling notifications (@samp.client.receiveNotification@)
-    -> [SAMPCallFunc] -- ^ routines for handling calls (@samp.client.receiveCall@)
-    -> SAMPResponseFunc -- ^ routinr for handling responses (@samp.client.receiveResponse@)
-    -> String -- ^ the Xml-RPC input containing the SAMP details of the call
+    SAMPConnection
+    -- ^ the connection information for the hub
+    -> SAMPNotificationMap
+    -- ^ routines for handling notifications (@samp.client.receiveNotification@)
+    -> SAMPCallMap
+    -- ^ routines for handling calls (@samp.client.receiveCall@)
+    -> SAMPResponseFunc
+    -- ^ routine for handling responses (@samp.client.receiveResponse@)
+    -> String
+    -- ^ the Xml-RPC input containing the SAMP details of the call
     -> IO ()
 simpleClientServer ci ns cs r =
     handleSAMPCall (clientMethods (clientMethodMap ci ns cs r))

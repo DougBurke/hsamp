@@ -32,6 +32,7 @@ TODO:
 
   - better command-line handling
 
+  - allow sending of "extra" values
 -}
 
 module Main (main) where
@@ -341,17 +342,21 @@ processCall pchan mt chan conn tid =
 allMT :: MType
 allMT = "*"
 
-notifications :: PrintChannel -> ThreadId -> [SAMPNotificationFunc]
+notifications :: PrintChannel -> ThreadId -> SAMPNotificationMap
 notifications pchan _ =
      [(allMT, handleOther pchan)]
 
-calls :: [SAMPCallFunc]
+calls :: SAMPCallMap
 calls = []
 
-handleOther :: PrintChannel -> MType -> ClientSecret -> ClientName -> [SAMPKeyValue] -> IO ()
-handleOther pchan mtype _ name keys = syncPrint pchan $ 
+handleOther :: PrintChannel -> SAMPNotificationFunc
+handleOther pchan _ name msg =
+  let mtype = getSAMPMessageType msg
+      keys = getSAMPMessageParams msg
+      other = getSAMPMessageExtra msg
+  in syncPrint pchan $ 
     ("Notification of " ++ show mtype ++ " from " ++ show name) :
-    map displayKV keys ++ [""]
+    map displayKV keys ++ ["---"] ++ map displayKV other ++ [""]
 
 -- TODO: check that msgid is correct, which means it has to be sent in!
 
