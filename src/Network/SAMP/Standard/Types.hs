@@ -299,7 +299,7 @@ TODO:
 type RString = [RChar]
 
 {-|
-The conversion provided by this instance is unsafe since 
+The conversion provided by this instance is unsafe:
 'error' is called for those strings that contain invalid
 characters.
 -}
@@ -1303,6 +1303,14 @@ instance SAMPType MessageId where
 newtype ClientName = CN { _unCN :: RString }
     deriving (Eq, Ord)
 
+{-|
+The conversion provided by this instance is unsafe:
+'error' is called for those strings that contain invalid
+characters.
+-}
+instance IsString ClientName where
+  fromString = CN . toRS
+
 fromClientName :: ClientName -> RString
 fromClientName = _unCN
 
@@ -1320,6 +1328,10 @@ instance SAMPType ClientName where
 -- | The secret value for a client, which is created by the hub.
 --   It is used when communicating with the hub from the client,
 --   and should not be known by other agents.
+--
+--   Note that an `IsString` instance is not provided for this type,
+--   to make sure that potential conversion errors are handled.
+--
 newtype ClientSecret = CS { _unCS :: RString }
     deriving (Eq, Ord)
 
@@ -1338,6 +1350,10 @@ instance SAMPType ClientSecret where
 
 -- | The secret value for a hub.
 --   It is used by a client when registering with a hub.
+--
+--   Note that an `IsString` instance is not provided for this type,
+--   to make sure that potential conversion errors are handled.
+--
 newtype HubSecret = HS { _unHS :: RString }
     deriving Eq
 
