@@ -51,6 +51,7 @@ module Network.SAMP.Standard.Client (
 import qualified Control.Arrow as CA
 import qualified Control.Exception as CE
 
+import qualified Data.Map as M
 import qualified Data.Traversable as T
 
 import Control.Monad (ap, forM, liftM, forM, void)
@@ -175,7 +176,7 @@ callHubE_ conn msg args = void (callHubE conn msg args)
 --   way to register the client and process the return vaues.
 registerE ::
     SAMPInfo     -- ^ hub information
-    -> Err IO [SAMPKeyValue]
+    -> Err IO SAMPMapValue
        -- ^ Key/value pairs from the registration call.
 registerE si =
   let sKey = fromHubSecret (getSAMPInfoHubSecret si)
@@ -188,26 +189,24 @@ sPrivateKey = "samp.private-key"
 sHubId      = "samp.hub-id"
 sSelfId     = "samp.self-id"
 
--- lookup a RString value from a SAMPKeyValue list;
--- could use fromSValue to parse the response but
--- this should give a slightly-more-useful error
--- message (containing both key and value)
+-- The aim is to provide a specific error message when there is an
+-- error.
 --
-slookup :: (Monad m) => RString -> [SAMPKeyValue] -> Err m RString
+slookup :: (Monad m) => RString -> SAMPMapValue -> Err m RString
 slookup k a =
     let conv :: Monad m => SAMPValue -> Err m RString
         conv (SAMPString s) = return s
         conv x = throwError ("Expected a string for key=" ++ show k ++
                              " but found " ++ show x)
         noKey = throwError ("Unable to find key " ++ show k)
-    in maybe noKey conv (lookup k a)
+    in maybe noKey conv (M.lookup k a)
                                        
 -- | Create a 'SAMPConnection' record from the hub information and response
 -- from 'registerE'.
 getClientInfoE ::
     (Monad m)
     => SAMPInfo        -- ^ hub information
-    -> [SAMPKeyValue]  -- ^ response from 'registerE'
+    -> SAMPMapValue    -- ^ response from 'registerE'
     -> Err m SAMPConnection
 getClientInfoE si ks =
   let sKey = getSAMPInfoHubSecret si
@@ -255,11 +254,11 @@ toMetadata ::
     -- ^ The URL of an icon in png, gif or jpeg format (@samp.icon.url@)
     -> Maybe RString
     -- ^ The URL of a documentation web page (@samp.documentation.url@)
-    -> [SAMPKeyValue]
+    -> SAMPMapValue
 toMetadata m txt html icon doc =
     let f k = fmap $ (,) k . SAMPString
         ms = [f sTxt txt, f sHtml html, f sIcon icon, f sDoc doc]
-    in (sName, SAMPString m) : catMaybes ms
+    in M.fromList ((sName, SAMPString m) : catMaybes ms)
 
 -- | Create the key/value pairs used by 'declareMetadataE'
 -- for the common metadata settings. Also see 'toMetadata'.
@@ -275,28 +274,26 @@ toMetadataE ::
     -- ^ The URL of an icon in png, gif or jpeg format (@samp.icon.url@)
     -> Maybe String
     -- ^ The URL of a documentation web page (@samp.documentation.url@)
-    -> Err m [SAMPKeyValue]
+    -> Err m SAMPMapValue
 toMetadataE m txt html icon doc = 
     let f k (Just v) = toRStringE v >>=
                        \vs -> return (Just (k, SAMPString vs))
         f _ _ = return Nothing
         ms = [ f sName (Just m), f sTxt txt, f sHtml html
              , f sIcon icon, f sDoc doc]
-    in liftM catMaybes (sequence ms)
+    in liftM (M.fromList . catMaybes) (sequence ms)
 
-{-|
-Declare the metadata for the client. The metadata is provided as a
-list of (key,value) pairs (this is slightly different from the SAMP
-API which has the return being a map; here we extract the contents of
-the map). See 'toMetadata' and 'toMetadataE' for convenience routines
-for setting the common metadata fields.
-
-This overwrites the existing metadata stored in the hub for the
-client.
--}
+-- | Declare the metadata for the client. The metadata is provided as a
+--   list of (key,value) pairs as a map.  See 'toMetadata' and
+--  'toMetadataE' for convenience routines for setting the common metadata
+--  fields.
+--
+--  This overwrites the existing metadata stored in the hub for the
+--  client.
+--
 declareMetadataE ::
     SAMPConnection
-    -> [SAMPKeyValue] -- ^ the key/value pairs to declare 
+    -> SAMPMapValue -- ^ the key/value pairs to declare 
     -> Err IO ()
 declareMetadataE cl ks = 
     callHubE_ cl "samp.hub.declareMetadata" [SAMPMap ks]
@@ -306,7 +303,7 @@ declareMetadataE cl ks =
 getMetadataE ::
     SAMPConnection
     -> ClientName -- ^ The id of the SAMP client to query
-    -> Err IO [SAMPKeyValue]
+    -> Err IO SAMPMapValue
        -- ^ The metadata key/value pairs of the queried client
 getMetadataE conn clid =
     callHubE conn "samp.hub.getMetadata" [toSValue clid]
@@ -314,6 +311,9 @@ getMetadataE conn clid =
 
 mtToRS :: MType -> RString
 mtToRS = fromJust . toRString . fromMType
+
+-- A map is not used for the subscriptions since it would need
+-- to be a HashMap, not Map, since MType has no Ord instance.
 
 -- | Declare the subscriptions for this client. The subscriptions are
 -- given as a list of (key,value) pairs where the keys are the MTypes
@@ -330,7 +330,7 @@ declareSubscriptionsE ::
     -- ^ the messages (and associated metadata) the client is subscribing to
     -> Err IO ()
 declareSubscriptionsE cl subs =
-    let ks = map (CA.first mtToRS) subs
+    let ks = M.fromList (map (CA.first mtToRS) subs)
     in callHubE_ cl "samp.hub.declareSubscriptions" [SAMPMap ks]
 
 -- | Declare the subscriptions for this client. This can be used
@@ -341,12 +341,14 @@ declareSubscriptionsSimpleE ::
     -> [MType] -- ^ the messages the client is subscribing to
     -> Err IO ()
 declareSubscriptionsSimpleE cl mtypes =
-    let ks = map (\n -> (mtToRS n, SAMPMap [])) mtypes
+    let ks = M.fromList (map (\n -> (mtToRS n, empty)) mtypes)
+        empty = SAMPMap M.empty
     in callHubE_ cl "samp.hub.declareSubscriptions" [SAMPMap ks]
 
 -- | Get the message subscriptions of a client. The subscriptions are
--- returned as a list of (key,value) pairs.
+--   returned as a list of (key,value) pairs.
 --
+--   TODO: should this return a map?
 getSubscriptionsE ::
     SAMPConnection
     -> ClientName -- ^ the name of the client to query
@@ -359,7 +361,7 @@ getSubscriptionsE cl clid = do
         return (nk, v)
 
   case subs of
-    SAMPMap ms -> mapM conv ms
+    SAMPMap ms -> mapM conv (M.toList ms)
     x -> throwError ("Expected a SAMP map but sent " ++ show x)
     
 -- | Return a list of all the registered clients of the hub - including
@@ -384,11 +386,11 @@ getSubscribedClientsE ::
 getSubscribedClientsE cl mtype 
     | isMTWildCard mtype = throwError "MType can not contain a wild card when calling getSubscribedClients"
     | otherwise          =
-        let conv :: SAMPKeyValue -> (ClientName, SAMPValue)
+        let conv :: SAMPMapElement -> (ClientName, SAMPValue)
             conv = CA.first toClientName
 
             act = callHubE cl "samp.hub.getSubscribedClients" [toSValue mtype]
-        in map conv `liftM` (act >>= fromSValue)
+        in (map conv . M.toList) `liftM` (act >>= fromSValue)
 
 -- | Send a message to a given client of the hub and do not
 -- wait for a response.
@@ -489,5 +491,5 @@ getClientNameE ::
   -> Err IO (Maybe RString) -- ^ the @samp.name@ value for the client, if set
 getClientNameE conn clid = do
   md <- getMetadataE conn clid
-  T.sequence (fromSValue <$> lookup sName md)
+  T.sequence (fromSValue <$> M.lookup sName md)
 

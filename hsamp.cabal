@@ -64,6 +64,7 @@ library
    aeson,
    base >= 4.3.0,
    bytestring,
+   containers == 0.5.*,            
    data-default-class,
    fast-logger,
    hashable,
@@ -129,6 +130,7 @@ executable hsamp-basicclient
   if flag(examples)
     build-depends:
       base,
+      containers,
       hsamp,
       hslogger,
       mtl
@@ -167,6 +169,7 @@ executable hsamp-sender
     build-depends:
       base,
       bytestring,
+      containers,            
       hsamp,
       hslogger,
       network,
@@ -210,6 +213,7 @@ executable hsamp-hub
   if flag(examples)
     build-depends:
       aeson,
+      -- async,
       base,
       base64-bytestring,
       bytestring,

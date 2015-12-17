@@ -54,7 +54,9 @@ import qualified Data.Map.Strict as M
 
 import System.Log.Logger (Priority(DEBUG), setLevel, updateGlobalLogger)
 
-import Network.SAMP.Standard (RString, SAMPKeyValue, SAMPValue(..)
+import Network.SAMP.Standard (RString
+                             , SAMPValue(..)
+                             , SAMPMapValue
                              , SAMPResponseFunc
                              , MessageId
                              , ClientName, ClientSecret
@@ -298,24 +300,26 @@ handleShutdown tid _ _ _ = killThread tid
 -- Return the value of the key from the input list, along with the
 -- remaining key,value pairs.
 --
+-- TODO: use removeKeyE instead?
 getKeyVal ::
-    ([SAMPKeyValue] -> RString -> Maybe a)
-    -> [SAMPKeyValue]
+    (SAMPMapValue -> RString -> Maybe a)
+    -> SAMPMapValue
     -> RString
-    -> Maybe (a, [SAMPKeyValue])
-getKeyVal get kvs key = 
-    let f a = (a, filter ((/= key) . fst) kvs)
-    in fmap f (get kvs key)
-
+    -> Maybe (a, SAMPMapValue)
+getKeyVal get kvs key =
+  case get kvs key of
+    Just a -> Just (a, M.delete key kvs)
+    Nothing -> Nothing
+  
 -- Look for id field in the params and remove it. for specific mtypes
 -- we know the other required/suggested keys too.
 
 maybeWithLabel :: 
-  ([SAMPKeyValue] -> RString -> Maybe a) 
+  (SAMPMapValue -> RString -> Maybe a) 
   -> RString 
-  -> [SAMPKeyValue]
-  -> [SAMPKeyValue]
-  -> (a -> [SAMPKeyValue] -> [SAMPKeyValue] -> IO ()) 
+  -> SAMPMapValue
+  -> SAMPMapValue
+  -> (a -> SAMPMapValue -> SAMPMapValue -> IO ()) 
   -> IO () 
   -> IO ()
 maybeWithLabel get lbl keys extra hasLbl noLbl  =
@@ -327,7 +331,7 @@ maybeWithLabel get lbl keys extra hasLbl noLbl  =
 
 maybeWithId ::
     SAMPMessage
-    -> (ClientName -> [SAMPKeyValue] -> [SAMPKeyValue] -> IO ())
+    -> (ClientName -> SAMPMapValue -> SAMPMapValue -> IO ())
     -> IO ()
     -> IO ()
 maybeWithId msg =
@@ -341,15 +345,17 @@ maybeWithId msg =
 
 displayWithKeys ::
   [String]  -- ^ header
-  -> [SAMPKeyValue] -- ^ params
-  -> [SAMPKeyValue] -- ^ other params
+  -> SAMPMapValue -- ^ params
+  -> SAMPMapValue -- ^ other params
   -> [String] -- ^ footer
   -> [String]
 displayWithKeys hdr keys other footer =
-  let extra = if null other
+  let kvals = map displayKV (M.toList keys)
+      ovals = map displayKV (M.toList other)
+      extra = if null ovals
               then []
-              else "    extra:" : map displayKV other
-  in hdr ++ map displayKV keys ++ extra ++ footer ++ [""]
+              else "    extra:" : ovals
+  in hdr ++ kvals ++ extra ++ footer ++ [""]
 
 
 displayWithMsg ::
@@ -365,7 +371,7 @@ withId ::
     String
     -> PrintChannel
     -> SAMPMessage
-    -> (ClientName -> [SAMPKeyValue] -> [SAMPKeyValue] -> IO ())
+    -> (ClientName -> SAMPMapValue -> SAMPMapValue -> IO ())
     -> IO ()
 withId lbl pchan msg hasId = 
    let noId = syncPrint pchan $ displayWithMsg
@@ -398,6 +404,13 @@ handleUnregister pchan clvar _ name msg =
         syncPrint pchan $ displayWithKeys
             ["Client has removed itself from " ++ show name ++ ": " ++ clname] kvs extra []
 
+
+stringify :: String -> SAMPMapValue -> [String]
+stringify lbl kvs =
+  let s = map displayKV (M.toList kvs)
+  in if null s then [] else lbl : s
+                                        
+
 -- TODO: this needs a review because the changes made to support passing
 --       around the full message, rather than just a list of SAMPKeyValues
 --       has "interacted badly" with this code.
@@ -417,7 +430,7 @@ handleMetadata pchan clvar _ name msg =
                     syncPrint pchan $ displayWithKeys
                       ["Metadata notification from " ++
                        show name ++ " for " ++ clname]
-                      mds e2 (if null k2 then [] else " Other arguments:" : map displayKV k2)
+                      mds e2 (stringify " Other arguments:" k2)
 
                   _ -> syncPrint pchan $ displayWithKeys
                          ["Metadata notification from " ++ show name ++
@@ -429,7 +442,7 @@ handleMetadata pchan clvar _ name msg =
                         " for " ++ oclname,
                        "  ERROR missing metadata parameter"] kvs extra []
 
-        maybeWithLabel (flip lookup) "metadata" kvs extra doIt failIt
+        maybeWithLabel (flip M.lookup) "metadata" kvs extra doIt failIt
 
 handleSubscriptions ::
     PrintChannel
@@ -443,7 +456,7 @@ handleSubscriptions pchan clvar _ name msg =
                   SAMPMap sds -> syncPrint pchan $ displayWithKeys
                                      ["Subscriptions notification from " ++
                                       show name ++ " for " ++ clname]
-                                     sds e2 (if null k2 then [] else " Other arguments:" : map displayKV k2)
+                                     sds e2 (stringify " Other arguments:" k2)
 
                   _ -> syncPrint pchan $ displayWithKeys
                          ["Subscriptions notification from " ++ show name ++
@@ -455,7 +468,7 @@ handleSubscriptions pchan clvar _ name msg =
                         " for " ++ clname,
                        "  ERROR missing subscriptions parameter"] kvs extra []
 
-        maybeWithLabel (flip lookup) "subscriptions" kvs extra doIt failIt
+        maybeWithLabel (flip M.lookup) "subscriptions" kvs extra doIt failIt
 
 handleOther ::
     PrintChannel
@@ -489,7 +502,7 @@ handlePingCall pchan clvar secret name msgid msg = do
       ["hsamp-snooper was pinged by " ++ clname
       , displayMsgId msgid
       , displaySecret secret] msg []
-    return (toSAMPResponse [] [])
+    return (toSAMPResponse M.empty M.empty)
 
 -- Return a warning to point out that we are just logging this message
 -- (basically copying the behavior of Mark's snooper here).
@@ -505,7 +518,7 @@ handleOtherCall pchan clvar secret name msgid msg = do
       ["Call of " ++ show mtype ++ " by " ++ clname, displayMsgId msgid, displaySecret secret] msg []
     let emsg = fromJust (toRString ("The message " ++ show mtype ++
                                     " has only been logged, not acted on."))
-    return (toSAMPResponseWarning [] emsg [] [])
+    return (toSAMPResponseWarning M.empty emsg M.empty M.empty)
 
 -- TODO: handle warning case, although when is this ever called?
 

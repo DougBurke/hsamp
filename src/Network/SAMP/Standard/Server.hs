@@ -37,8 +37,8 @@ module Network.SAMP.Standard.Server (
 
        -- | These routines are used to define how to handle the
        -- SAMP messages from the hub. The match is supplied by the
-       -- 'MType' components of the  'SAMPNotificationFunc' and
-       -- 'SAMPCallFunc' types. These can include wildtypes
+       -- 'MType' components of the  'SAMPNotificationMap' and
+       -- 'SAMPCallMap' types. These can include wildtypes
        -- if you want a single handler for multiple messages.
        -- This /may/ change to supplying a comparator (e.g.
        -- @MType -> Bool@) if it is found to be necessary.
@@ -62,6 +62,8 @@ module Network.SAMP.Standard.Server (
        ) where
 
 import qualified Control.Exception as CE
+
+import qualified Data.Map as M
 
 import Control.Monad (void)
 import Control.Monad.Except (throwError)
@@ -176,7 +178,7 @@ callAllE conn msgtag msg = do
           return (toClientName k, mid)
     rsp <- callHubE conn "samp.hub.callAll" [toSValue msgtag, toSValue msg]
     kvals <- fromSValue rsp
-    mapM conv kvals
+    mapM conv (M.toList kvals)
     
 {-
 From SAMP 1.2 document, callable clients must support

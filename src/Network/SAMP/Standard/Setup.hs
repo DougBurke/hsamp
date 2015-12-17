@@ -23,6 +23,7 @@ import qualified Control.Arrow as CA
 import qualified Control.Exception as CE
 
 import qualified Data.ByteString.Lazy.Char8 as L
+import qualified Data.Map as M
 
 import qualified Network.HTTP.Conduit as NC
 
@@ -155,13 +156,12 @@ stripLines = filter (\x ->not (null x || head x == '#')) . splitLines
 
 -- | Given the contents of a SAMP lockfile, return
 --   a map containing all the assignments in the file.
---   We just use an association list for the return value
---   since the expected number of keys is small. The file
---   is assumed to be correctly formatted, so that any
---   errors in it will result in an exception.
 --
-processLockFile :: String -> [(String, String)]
-processLockFile = foldr step [] . stripLines
+--   The file is assumed to be correctly formatted, so that any errors
+--   in it will result in an exception.
+--
+processLockFile :: String -> M.Map String String
+processLockFile inStr = M.fromList (foldr step [] (stripLines inStr))
     where
         step = (:) . CA.second tail . break (== '=')
 
@@ -169,16 +169,15 @@ processLockFile = foldr step [] . stripLines
 --
 extractHubInfoE ::
     Monad m
-    => URI                  -- ^ Location of the lock file
-    -> [(String, String)]   -- ^ key,value pairs from the lock file
+    => URI                   -- ^ Location of the lock file
+    -> M.Map String String   -- ^ key,value pairs from the lock file
     -> Err m SAMPInfo
-extractHubInfoE fileLoc alist = do
-  (secretStr, xs1) <- removeKeyE "samp.secret" alist
+extractHubInfoE fileLoc ms = do
+  (secretStr, xs1) <- removeKeyE "samp.secret" ms
   (url, xs2) <- removeKeyE "samp.hub.xmlrpc.url" xs1
   secret <- toHubSecret <$> toRStringE secretStr
   return (toSAMPInfo fileLoc secret url xs2)
 
-         
 {-|
 Return information about the SAMP hub needed by 'registerE' and
 'registerClientE'. It also includes any extra key,value pairs

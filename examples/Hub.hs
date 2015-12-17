@@ -145,7 +145,9 @@ import Data.Time.Clock (UTCTime, getCurrentTime)
     
 -- import Data.Version (showVersion)
 
-import Network.SAMP.Standard (MType, RString, SAMPKeyValue
+import Network.SAMP.Standard (MType, RString
+                             , SAMPMapValue
+                             , SAMPMapElement
                              , MessageId, toMessageId
                              , MessageTag, toMessageTag
                              , SAMPResponse, SAMPMethodCall(..)
@@ -494,7 +496,8 @@ broadcastShutDown hi = do
   hub <- readMVar (hiState hi)
   forM_ (M.elems (hiClients hub))
         (broadcastRemovedClient hi . cdName)
-  broadcastMType hi name (toSAMPMessageMT "samp.hub.event.shutdown" [] [])
+  broadcastMType hi name
+    (toSAMPMessageMT "samp.hub.event.shutdown" M.empty M.empty)
 
 
 -- | Run an action with a copy of the Hub's state. It is possible that
@@ -1026,7 +1029,7 @@ sendToAll2 cTime hi tag msg ohub sender =
                   , hiRandomGen = hgen
                   }
 
-  in (nhub, SAMPReturn (SAMPMap hvals), hacts)
+  in (nhub, SAMPReturn (SAMPMap (M.fromList hvals)), hacts)
 
 
 ignoreError :: String -> CE.SomeException -> IO ()
@@ -1100,7 +1103,7 @@ hubProcessMessage hi msg = do
       otherArgs = getSAMPMessageExtra msg
   case lookup mtype funcs of
     Just f -> f hi msg
-    _ -> return (toSAMPResponseError emsg [] otherArgs)
+    _ -> return (toSAMPResponseError emsg M.empty otherArgs)
 
 
 -- | Used when a return is needed, but it carries no extra information.
@@ -1116,7 +1119,7 @@ hubSentPing _ msg = do
   infoIO "Hub has been sent samp.app.ping"
   infoIO ("params = " ++ show args)
   infoIO (" extra = " ++ show extra)
-  return (toSAMPResponse [] []) -- return extra?
+  return (toSAMPResponse M.empty M.empty) -- return extra?
 
 
 -- | Process the [x-]samp.query.by-meta message sent to the hub.
@@ -1140,9 +1143,9 @@ hubSentQueryByMeta hi msg = do
                               "of " ++ fromMTypeRS mtype)
                         
       evals = case toRString (show params) of
-                Just pstr -> [("samp.debugtxt", toSValue pstr)]
-                _ -> []
-      errRsp emsg = toSAMPResponseError emsg evals []
+                Just pstr -> M.singleton "samp.debugtxt" (toSValue pstr)
+                _ -> M.empty
+      errRsp emsg = toSAMPResponseError emsg evals M.empty
 
       getMatches kwant vwant =
         withHubP hi $ \hub ->
@@ -1161,7 +1164,8 @@ hubSentQueryByMeta hi msg = do
                   then hiName hir : clients
                   else clients
 
-        in toSAMPResponse [("ids", toSValue out)] extra
+            pvals = M.singleton "ids" (toSValue out)
+        in toSAMPResponse pvals extra
 
   infoIO ("Hub has been sent " ++ show mtype)
   case handleError conv act of
@@ -1667,15 +1671,15 @@ handleDeclareSubscriptions _ _ _ = respondError "Invalid arguments"
 
 
 -- do we need MType <-> SAMPString conversion routines?
-sampToSubMap :: [SAMPKeyValue] -> Either String SubscriptionMap
-sampToSubMap kvs = 
-    let conv :: SAMPKeyValue -> Either String (MType, [SAMPKeyValue])
-        conv (mmt, vals) = do
+sampToSubMap :: SAMPMapValue -> Either String SubscriptionMap
+sampToSubMap ms = 
+    let conv :: SAMPMapElement -> Either String (MType, SAMPMapValue)
+        conv (mmt, SAMPMap xs) = do
           mt <- handleError Left (toMTypeE (fromRString mmt))
-          case vals of
-            SAMPMap xs -> Right (mt, xs)
-            _ -> Left (fromRString mmt ++ " was not sent map")
+          Right (mt, xs)
+        conv (mmt, _) = Left (fromRString mmt ++ " was not sent map")
 
+        kvs = M.toList ms
         (bad, good) = partitionEithers (map conv kvs)
 
         badMsg = "Invalid subscription map: " ++
@@ -1810,9 +1814,8 @@ type MetadataMap = M.Map RString SAMPValue
 --   access routines provided, rather than use the HashMap
 --   API directly.
 --
-newtype SubscriptionMap = SM (HM.HashMap MType [SAMPKeyValue])
+newtype SubscriptionMap = SM (HM.HashMap MType SAMPMapValue)
     deriving (Eq, Show)
-
 
 emptySubMap :: SubscriptionMap
 emptySubMap = SM HM.empty
@@ -1853,17 +1856,17 @@ memberSubMap k m = not (null (lookupSubMap k m))
 lookupSubMap ::
     MType -- ^ it is an error for this to contain a wildcard
     -> SubscriptionMap
-    -> [(MType, [SAMPKeyValue])] -- ^ empty if there is no match
+    -> [(MType, SAMPMapValue)] -- ^ empty if there is no match
 lookupSubMap k (SM m) =
     if isMTWildCard k
     then -- ideally this would be an impossible condition
         error ("Internal error: sent a wildcard MType: " ++ fromMType k)
     else filter (\t -> fst t == k) (HM.toList m)
                         
-toSubMap :: [(MType, [SAMPKeyValue])] -> SubscriptionMap
+toSubMap :: [(MType, SAMPMapValue)] -> SubscriptionMap
 toSubMap = SM . HM.fromList
 
-fromSubMap :: SubscriptionMap -> [(MType, [SAMPKeyValue])]
+fromSubMap :: SubscriptionMap -> [(MType, SAMPMapValue)]
 fromSubMap (SM m) = HM.toList m
 
 {-
@@ -1921,7 +1924,7 @@ type HubFunc =
        
 makeHubSubscriptions :: [(MType, HubHandlerFunc)] -> SubscriptionMap
 makeHubSubscriptions hdlrs =
-    let emap = []
+    let emap = M.empty
         kvs = map (\(a,_) -> (a,emap)) hdlrs
     in toSubMap kvs
 
@@ -2142,8 +2145,8 @@ broadcastNewClient ::
   -> IO ()
 broadcastNewClient hi name =
     let hubName = toClientName (hiName (hiReader hi))
-        msg = toSAMPMessageMT  "samp.hub.event.register" params []
-        params = [("id", toSValue name)]
+        msg = toSAMPMessageMT  "samp.hub.event.register" params M.empty
+        params = M.singleton "id" (toSValue name)
     in broadcastMType hi hubName msg
            
 
@@ -2153,8 +2156,8 @@ broadcastRemovedClient ::
   -> IO ()
 broadcastRemovedClient hi name =
     let hubName = toClientName (hiName (hiReader hi))
-        msg = toSAMPMessageMT "samp.hub.event.unregister" params []
-        params = [("id", toSValue name)]
+        msg = toSAMPMessageMT "samp.hub.event.unregister" params M.empty
+        params = M.singleton "id" (toSValue name)
     in broadcastMType hi hubName msg
 
 
@@ -2162,7 +2165,7 @@ forkCall :: IO a -> IO ()
 forkCall act = void (forkIO (void act))
 
 
-makeResponse :: [SAMPKeyValue] -> SAMPMethodResponse
+makeResponse :: SAMPMapValue -> SAMPMethodResponse
 makeResponse = SAMPReturn . SAMPMap
 
                
@@ -2180,9 +2183,9 @@ register ::
 register hi = do
   let hubName = hiName (hiReader hi)
   (clName, clKey) <- addClientToHub hi
-  let kvs = [ ("samp.private-key", toSValue clKey)
-            , ("samp.self-id", toSValue clName)
-            , ("samp.hub-id", toSValue hubName) ]
+  let kvs = M.fromList [ ("samp.private-key", toSValue clKey)
+                       , ("samp.self-id", toSValue clName)
+                       , ("samp.hub-id", toSValue hubName) ]
 
   dbg ("Added client: " ++ show clName ++ " secret=" ++ show clKey)
   -- forkCall (broadcastNewClient hi clName)
@@ -2220,20 +2223,19 @@ unregister hi secret = do
 declareMetadata ::
     HubInfo
     -> ClientSecret
-    -> [SAMPKeyValue]
+    -> SAMPMapValue
     -> IO (String, SAMPMethodResponse)
-declareMetadata hi secret kvs = do
+declareMetadata hi secret mdata = do
   rsp <- changeHubWithClient hi secret $ \ohub sender ->
-    let mdata = M.fromList kvs
-        nsender = sender { cdMetadata = mdata }
+    let nsender = sender { cdMetadata = mdata }
         oclientmap = hiClients ohub
         nclientmap = M.insert secret nsender oclientmap
         nhub = ohub { hiClients = nclientmap }
                  
         hubName = toClientName (hiName (hiReader hi))
-        params = [ ("id", toSValue (cdName sender))
-                 , ("metadata", SAMPMap kvs)]
-        msg = toSAMPMessageMT "samp.hub.event.metadata" params []
+        params = M.fromList [ ("id", toSValue (cdName sender))
+                            , ("metadata", SAMPMap mdata)]
+        msg = toSAMPMessageMT "samp.hub.event.metadata" params M.empty
          
         -- QUS: does this fully evaluate everything?
         sact = do
@@ -2292,10 +2294,10 @@ declareSubscriptions hi secret subs = do
 
         hubName = toClientName (hiName (hiReader hi))
         conv (mt, xs) = (fromMTypeRS mt, SAMPMap xs)
-        kvs = map conv (fromSubMap subs)
-        params = [ ("id", toSValue (cdName sender))
-                 , ("subscriptions", SAMPMap kvs) ]
-        msg = toSAMPMessageMT "samp.hub.event.subscriptions" params []
+        kvs = M.fromList (map conv (fromSubMap subs))
+        params = M.fromList [ ("id", toSValue (cdName sender))
+                            , ("subscriptions", SAMPMap kvs) ]
+        msg = toSAMPMessageMT "samp.hub.event.subscriptions" params M.empty
 
         -- QUS: does this fully evaluate everything?
         sact = do
@@ -2364,8 +2366,9 @@ getSubscribedClients hi secret msg =
             let hir = hiReader hi
             matchSubs <- procSubs (hiSubscribed hir)
             return (hiName hir, matchSubs)
-            
-          subs = catMaybes (getHubSubs : map getSubs (M.elems clMap))
+
+          subList = catMaybes (getHubSubs : map getSubs (M.elems clMap))
+          subs = M.fromList subList
                
       dbgIO ("Found subscribed clients other than client " ++
              show (cdName sender))
@@ -2405,10 +2408,9 @@ getMetadata ::
     -> ClientName    -- ^ the client whose metadata is being requested
     -> IO SAMPMethodResponse
 getMetadata hi secret clName =
-    let act query = let kvs = M.assocs query
-                    in do
-                      dbgIO ("Found a match for client: " ++ show clName)
-                      return (makeResponse kvs)
+    let act query = do
+          dbgIO ("Found a match for client: " ++ show clName)
+          return (makeResponse query)
     in extractData hi clName secret hiMetadata cdMetadata act
 
        
@@ -2420,9 +2422,10 @@ getSubscriptions ::
 getSubscriptions hi secret clName = 
     let act query = let svals = fromSubMap query
                         conv (k, kvs) = (fromMTypeRS k, SAMPMap kvs)
+                        rmap = M.fromList (map conv svals)
                     in do
                       dbgIO ("Found a match for client: " ++ show clName)
-                      return (makeResponse (map conv svals))
+                      return (makeResponse rmap)
     in extractData hi clName secret hiSubscribed cdSubscribed act
 
 
@@ -2437,7 +2440,7 @@ jsonGetClients hi =
         getName = fromClientName . cdName
         out = hiName (hiReader hi) : map getName (M.elems clMap)
         names = map fromRString out
-    in M.fromList [("clients", names)]
+    in M.singleton "clients" names
 
 
 -- | Return the metadata. The outer map has the key
@@ -2463,7 +2466,7 @@ jsonGetMetadata hi =
 
           converted = map (first fromRString) mdata
                   
-      in M.fromList [("metadata", M.fromList converted)]
+      in M.singleton "metadata" (M.fromList converted)
 
 
 -- | Return the subscriptions. The outer map has the key
@@ -2484,10 +2487,11 @@ jsonGetSubscriptions hi =
       let hir = hiReader hi
           clMap = hiClients hub
 
-          conv (mtype, minfo) = (fromMType mtype,
-                                 M.fromList (map c minfo))
+          conv (mtype, ms) = (fromMType mtype, M.fromList (map c minfo))
               where
+                minfo = M.toList ms
                 c (k, vs) = (fromRString k, J.toJSON vs)
+
           convSubs smap = M.fromList (map conv (fromSubMap smap))
     
           hubSubs = (hiName hir, convSubs (hiSubscribed hir))
@@ -2495,9 +2499,8 @@ jsonGetSubscriptions hi =
           out = hubSubs : map toSub (M.elems clMap)
           subs = M.fromList (map (first fromRString) out)
 
-      in M.fromList [("subscriptions", subs)]
-         
-         
+      in M.singleton "subscriptions" subs
+
 -- | Return the callback endpoints of those clients which have
 --   called samp.hub.setXmlrpcCallback.
 --
@@ -2522,4 +2525,4 @@ jsonGetCallbacks hi =
           out = hubInfo : mapMaybe conv (M.elems clMap)
           cbs = M.fromList out
 
-      in M.fromList [("callbacks", cbs)]
+      in M.singleton "callbacks" cbs

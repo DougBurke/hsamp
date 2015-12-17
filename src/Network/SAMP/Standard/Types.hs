@@ -41,9 +41,9 @@ module Network.SAMP.Standard.Types (
 
        -- * SAMP Types
 
-       SAMPType(..), SAMPValue(..), SAMPKeyValue,
+       SAMPType(..), SAMPValue(..), SAMPMapValue, SAMPMapElement,
        showSAMPValue,
-       stringToKeyValE, stringFromKeyValE,
+       stringToMapElementE, stringFromMapElementE,
 
        RChar, toRChar, toRCharE, fromRChar,
        validRChars,
@@ -78,8 +78,12 @@ module Network.SAMP.Standard.Types (
        parseSAMPCall, parseSAMPResponse,
        renderSAMPCall, renderSAMPResponse,
 
-       getKey, removeKeyE, cleanKeys,
-                
+       getKey,
+       removeKeyE,
+       cleanKeys,
+
+       dumpSAMPValue,
+       
        -- * Error handling
 
        -- in part from haxr
@@ -89,8 +93,9 @@ module Network.SAMP.Standard.Types (
 
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Lazy.Char8 as L
-import qualified Data.Text as T
 import qualified Data.HashMap.Strict as HM
+import qualified Data.Map as M
+import qualified Data.Text as T
     
 import qualified Network.Socket as NS
 
@@ -98,7 +103,6 @@ import Control.Monad.Except (MonadError, throwError)
 import Control.Monad (liftM, ap)
 
 import Data.Char (chr, isAlphaNum, isDigit, ord)
-import Data.Either (partitionEithers)
 import Data.Hashable (Hashable)
 import Data.List (intercalate, isPrefixOf)
 import Data.List.Split (splitOn, splitOneOf)
@@ -146,14 +150,14 @@ data SAMPInfo = SI {
       _siLocation :: URI
     , _siSecret :: HubSecret
     , _siHubURL :: String
-    , _siMetadata :: [(String, String)] -- Should these be RString?
+    , _siMetadata :: M.Map String String -- Should these be RString?
     }
 
 toSAMPInfo ::
     URI        -- ^ location of the hub
     -> HubSecret -- ^ the secret for the hub
     -> String    -- ^ the URL of the hub
-    -> [(String, String)]  -- ^ extra metadata
+    -> M.Map String String  -- ^ extra metadata
     -> SAMPInfo
 toSAMPInfo loc secret url metadata =
     SI { _siLocation = loc
@@ -171,7 +175,7 @@ getSAMPInfoHubURL = _siHubURL
 getSAMPInfoHubSecret :: SAMPInfo -> HubSecret
 getSAMPInfoHubSecret = _siSecret
     
-getSAMPInfoHubMetadata :: SAMPInfo -> [(String, String)]
+getSAMPInfoHubMetadata :: SAMPInfo -> M.Map String String
 getSAMPInfoHubMetadata = _siMetadata
     
 validRCharsAsInts :: [Int]
@@ -204,8 +208,10 @@ use the full range of chacters (i.e. they include the four
 control characters @0x09@, @0x0a@, @0x0d@ and @0x7f@).
 -}
 
-newtype RChar = RC { _unRC :: Char } deriving (Eq, Ord)
+newtype RChar = RC { _unRC :: Char } deriving (Eq, Ord, Generic)
 
+instance Hashable RChar
+  
 -- We want to display RChar/RStrings as if they were normal
 -- Char/String elements
 
@@ -632,20 +638,17 @@ fromMTypeRS = fromJust . toRString . show  -- a valid MType is a valid RString
 isMTWildCard :: MType -> Bool
 isMTWildCard (MT _ f) = f
 
--- | This represents a key,value pair stored in a SAMP map.
--- Note that the key is stored as a 'RString'.
-type SAMPKeyValue = (RString, SAMPValue)
+type SAMPMapElement = (RString, SAMPValue)
+type SAMPMapValue = M.Map RString SAMPValue
 
 {-
 TODO: should there be a SAMPType instance of (MType, SAMPValue)
 for declareSubscriptionsE in Client?
 -}
 
--- We can not add a Show instance of SAMPKeyValue without
--- getting a lot of complaints from deriving instances
-
 {-|
-Convert a pair of strings into a 'SAMPKeyValue'.
+Convert a pair of strings into a 'SAMPMapElement'.
+
 The routine fails if either of the input strings can not be
 converted into 'RString' values.
 
@@ -657,21 +660,19 @@ and 'SAMPValue' to say
 
 rather than
 
->    kv <- stringToKeyValE "author.name" "foo@bar.com"
+>    kv <- stringToMapElementE "author.name" "foo@bar.com"
 
 -}
 
-stringToKeyValE ::
+stringToMapElementE ::
     (Monad m)
     => String -- ^ the key name
     -> String -- ^ the value
-    -> Err m SAMPKeyValue
-stringToKeyValE k v = do
+    -> Err m SAMPMapElement
+stringToMapElementE k v = do
     km <- toRStringE k
     vm <- toRStringE v
     return (km, toSValue vm)
-
--- stringToKeyValE k v = (,) `liftM` toRStringE k `ap` fmap toSValue (toRStringE v)
 
 
 {-
@@ -689,28 +690,19 @@ TODO
 and (<|) could be for conversion back to strings?
 -}
 
--- | Convert a 'SAMPKeyValue' into a pair of strings.
+-- | Convert a 'SAMPMapElement' into a pair of strings.
 -- This fails if the 'SAMPValue' stored in the pair is not
 -- a 'SAMPString'.
 
-{-
-
-TODO: is the following still a valid complaint?
-
-THIS SEEMS TO BE BEING USED INCORRECTLY, IN THAT I GET
-
-ERROR: Key samp.error should be a SAMP string but found SAMPMap [("samp.errortxt",SAMPString "Unsupported message: samp.hub.callAll")]
-
--}
-
-stringFromKeyValE ::
+stringFromMapElementE ::
     (Monad m)
-    => SAMPKeyValue
+    => SAMPMapElement
     -> Err m (String, String)
-stringFromKeyValE (k,SAMPString v) = return (fromRString k, fromRString v)
-stringFromKeyValE (k,x) = throwError ("Key " ++ show k ++
-                                      " should be a SAMP string but found " ++
-                                      show x)
+stringFromMapElementE (k, SAMPString v) =
+  return (fromRString k, fromRString v)
+stringFromMapElementE (k, x) =
+  throwError ("Key " ++ show k ++ " should be a SAMP string but found " ++
+              show x)
 
 {-
 The following routines could be made generic - ie use XmlRpcType a rather
@@ -718,11 +710,11 @@ than force Value, but need to look at to see if it is worth it.
 -}
 
 -- | Convert a (String, Value) tuple into (RString, SAMPValue)
-toSAMPKeyValue ::
+toSAMPMapElement ::
     (Monad m)
     => (String, Value)
-    -> Err m SAMPKeyValue
-toSAMPKeyValue (n,v) = (,) `liftM` toRStringE n `ap` fromValue v
+    -> Err m SAMPMapElement
+toSAMPMapElement (n,v) = (,) `liftM` toRStringE n `ap` fromValue v
 
               
 -- | Get a value from the contents of a SAMP Map (given as a list
@@ -730,42 +722,60 @@ toSAMPKeyValue (n,v) = (,) `liftM` toRStringE n `ap` fromValue v
 getKey ::
     (Monad m, SAMPType a)
     => RString          -- ^ Field name
-    -> [SAMPKeyValue]   -- ^ SAMP Map
+    -> SAMPMapValue     -- ^ SAMP Map
     -> Err m a
 getKey k xs = maybeToM ("Key " ++ show k ++ " not found")
-                  (lookup k xs) >>= fromSValue
+                  (M.lookup k xs) >>= fromSValue
 
--- | Remove the listed keys from the association list.
-cleanKeys :: Eq a => [a] -> [(a, b)] -> [(a, b)]
-cleanKeys ks = filter (\(k,_) -> k `notElem` ks)
+-- | Remove the listed keys (they do not have to exist).
+cleanKeys :: [RString] -> SAMPMapValue -> SAMPMapValue
+cleanKeys ks = M.filterWithKey remove
+  where
+    remove k _ = k `notElem` ks
 
--- | Extract the value of the first occurrence of the key
---   in the association list, and remove the remainder of
---   the list (which has been filtered to make sure that
---   there are no other pairs with the key in it).
---
+-- | Extract the value of the key from the map and a new map
+--   where the key has been removed.
 removeKeyE ::
-    (Monad m, Eq a, Show a)
-    => a        -- ^ key to find
-    -> [(a, b)] -- ^ association list
-    -> Err m (b, [(a, b)]) -- ^ value of key and remainder of the list
-removeKeyE k kvs =
-    let find c@(a, b) = if a == k then Left b else Right c
-        (ls, rs) = partitionEithers (map find kvs)
-    in case ls of
-         (b:_) -> return (b, rs)
-         _ -> throwError ("Unable to find key: " ++ show k)
+  (Ord a, Show a, Monad m)
+  => a   -- ^ key to find
+  -> M.Map a b -- ^ map to search
+  -> Err m (b, M.Map a b)
+  -- ^ value of the key and the new map (without this key)
+  --   otherwise errors out if the key does not exist.
+removeKeyE k old =
+  let (mval, new) = M.updateLookupWithKey remove k old
+      remove _ _ = Nothing
+  in case mval of
+    Just val -> return (val, new)
+    Nothing -> throwError ("Unable to find key: " ++ show k)
+
+{-
+removeKeyE ::
+  Monad m
+  => RString   -- ^ key to find
+  -> SAMPMapValue -- ^ map to search
+  -> Err m (SAMPValue, SAMPMapValue)
+  -- ^ value of the key and the new map (without this key)
+  --   otherwise errors out if the key does not exist.
 
 grabKeyE ::
     (Monad m, SAMPType a)
     => RString -- ^ key to find
-    -> [SAMPKeyValue]
-    -> Err m (a, [SAMPKeyValue]) -- ^ value of key and remainder of the list
+    -> SAMPMapValue
+    -> Err m (a, SAMPMapValue) -- ^ value of key and remainder of the map
+-}
+    
+grabKeyE ::
+    (Ord a, Show a, Monad m, SAMPType b)
+    => a -- ^ key to find
+    -> M.Map a SAMPValue
+    -> Err m (b, M.Map a SAMPValue) -- ^ value of key and remainder of the map
 grabKeyE k kvs = do
     (sval, rs) <- removeKeyE k kvs
     val <- fromSValue sval
     return (val, rs)
-           
+
+      
 {- | The SAMP profile supports three basic data types,
 a string, a list or a map (keys are strings and they
 can contain a SAMP data type).
@@ -776,15 +786,13 @@ message (ie 'MType'). There are several routines for
 converting a 'RString' to a numeric type following the
 syntax given in the SAMP recommendation.
 
-For SAMP maps we often just pass around @[SAMPKeyValue]@ rather
-than the @SAMPValue@ container.
 -}
 
 data SAMPValue =
     SAMPString RString
   | SAMPList [SAMPValue]
-  | SAMPMap [SAMPKeyValue]
-  deriving (Eq, Show)
+  | SAMPMap SAMPMapValue
+  deriving (Show, Eq)
 
 {-|
 The conversion provided by this instance is unsafe since 
@@ -798,11 +806,12 @@ instance XmlRpcType SAMPValue where
     toValue (SAMPString s) = toValue s
     toValue (SAMPList xs) = ValueArray (map toValue xs)
     toValue (SAMPMap xs) = ValueStruct [(fromRString n, toValue v) |
-                                        (n,v) <- xs]
+                                        (n,v) <- M.toList xs]
 
     fromValue (ValueString s) = liftM SAMPString (toRStringE s)
     fromValue (ValueArray xs) = liftM SAMPList (mapM fromValue xs)
-    fromValue (ValueStruct xs) = liftM SAMPMap (mapM toSAMPKeyValue xs)
+    fromValue (ValueStruct xs) =
+      liftM (SAMPMap . M.fromList) (mapM toSAMPMapElement xs)
     
     -- convert as strings
     fromValue (ValueUnwrapped s) = liftM SAMPString (toRStringE s)
@@ -817,10 +826,10 @@ instance XmlRpcType SAMPValue where
 instance J.ToJSON SAMPValue where
     toJSON (SAMPString s) = J.String (T.pack (fromRString s))
     toJSON (SAMPList xs)  = J.toJSON (map J.toJSON xs)
-    toJSON (SAMPMap kvs)  = J.Object (HM.fromList (map conv kvs))
+    toJSON (SAMPMap ms)  = J.Object (HM.fromList (map conv kvs))
         where
-          conv (k, vs) = (T.pack (fromRString k),
-                          J.toJSON vs)
+          kvs = M.toList ms
+          conv (k, vs) = (T.pack (fromRString k), J.toJSON vs)
                             
 -- TODO: improve this
 
@@ -833,7 +842,8 @@ showSAMPValue (SAMPList xs) =
 showSAMPValue (SAMPMap ms) =
     concat ["{", intercalate "," vals, "}"]
         where
-          vals = map (\(n,v) -> concat [show n, " -> ", showSAMPValue v]) ms
+          kvs = M.toList ms
+          vals = map (\(n,v) -> concat [show n, " -> ", showSAMPValue v]) kvs
 
 -- | Conversion routines for 'SAMPValue' values. This is intended to
 -- make it easier to convert between Haskell and SAMP types.
@@ -872,7 +882,7 @@ instance SAMPType Integer where
     fromSValue (SAMPString s) = maybeToM ("Unable to convert " ++ show s ++ " to an Integer.") (asIntegral s)
     fromSValue x = throwError ("Expected a string but sent " ++ show x)
 
-instance {-# OVERLAPPING #-} SAMPType [SAMPKeyValue] where
+instance SAMPType SAMPMapValue where
     toSValue = SAMPMap
     fromSValue (SAMPMap xs) = return xs
     fromSValue x = throwError ("Expected a SAMP map but sent " ++ show x)
@@ -937,56 +947,59 @@ The response includes the @samp.status@, @samp.result@, and @samp.error@
 fields, as well as any other values (with a key) to be passed around.
 -}
 data SAMPResponse =
-    SROkay { _srokResult :: [SAMPKeyValue]
-           , _srokOther :: [SAMPKeyValue] }
+    SROkay { _srokResult :: SAMPMapValue
+           , _srokOther :: SAMPMapValue }
         |
-    SRWarning { _srwarnResult :: [SAMPKeyValue]
-              , _srwarnError :: (RString, [SAMPKeyValue])
-              , _srwarnOther :: [SAMPKeyValue] }
+    SRWarning { _srwarnResult :: SAMPMapValue
+              , _srwarnError :: (RString, SAMPMapValue)
+              , _srwarnOther :: SAMPMapValue }
         |
-    SRError { _srerrError :: (RString, [SAMPKeyValue])
-            , _srerrOther :: [SAMPKeyValue] }
+    SRError { _srerrError :: (RString, SAMPMapValue)
+            , _srerrOther :: SAMPMapValue }
     deriving (Eq, Show)
 
+
+toSM :: [SAMPMapElement] -> SAMPMapValue
+toSM = M.fromList
 
 instance SAMPType SAMPResponse where
 
     toSValue (SROkay vals other) =
-        SAMPMap ([ (sStatus, sOkVal)
-                 , (sResult, SAMPMap vals)]
-                 ++ other)
+      SAMPMap (toSM ([ (sStatus, sOkVal)
+                     , (sResult, SAMPMap vals)])
+               `M.union` other)
+      
     toSValue (SRWarning vals (emsg, evals) other) =
-        SAMPMap ([ (sStatus, sWarnVal)
-                 , (sResult, SAMPMap vals)
-                 , (sError, SAMPMap err)]
-                 ++ other)
-            where
-              err = (sErrorTxt, SAMPString emsg) : evals
+      SAMPMap (toSM ([ (sStatus, sWarnVal)
+                     , (sResult, SAMPMap vals)
+                     , (sError, SAMPMap err)])
+               `M.union` other)
+      where
+        err = M.insert sErrorTxt (SAMPString emsg) evals
+              
     toSValue (SRError (emsg, evals) other) =
-        SAMPMap ([ (sStatus, sErrVal)
-                 , (sError, SAMPMap err)]
-                 ++ other)
-            where
-              err = (sErrorTxt, SAMPString emsg) : evals
+      SAMPMap (toSM ([ (sStatus, sErrVal)
+                     , (sError, SAMPMap err)])
+               `M.union` other)
+      where
+        err = M.insert sErrorTxt (SAMPString emsg) evals
 
-    fromSValue (SAMPMap xs) = do
-        -- Need to be explicit in ghc 7.10.2 as the (presumably overlapping)
-        -- SAMPValue instances seem to cause problems, which is why
-        -- the type of status is constrained in the case statement below.
-        (status, xs2) <- grabKeyE sStatus xs
-        let leftovers = cleanKeys [sResult, sError] xs2
+    -- how much should this be rewritten now using an actual map?
+    fromSValue (SAMPMap ms) = do
+        (status, ms2) <- grabKeyE sStatus ms
+        let leftovers = cleanKeys [sResult, sError] ms2
 
         let getError = do
-              (evals, _) <- grabKeyE sError xs2
+              (evals, _) <- grabKeyE sError ms2
               grabKeyE sErrorTxt evals
 
         case status :: RString of
           "samp.ok" -> do
-              vals <- getKey sResult xs2
+              vals <- getKey sResult ms2
               return (SROkay vals leftovers)
                       
           "samp.warning" -> do
-              vals <- getKey sResult xs2
+              vals <- getKey sResult ms2
               err <- getError
               return (SRWarning vals err leftovers)
 
@@ -1000,25 +1013,25 @@ instance SAMPType SAMPResponse where
                  
 -- | Create a SAMP response that indicates success
 toSAMPResponse ::
-    [SAMPKeyValue] -- ^ key,value pairs to reply to the caller
-    -> [SAMPKeyValue] -- ^ extra key/value pairs to send
+    SAMPMapValue -- ^ key,value pairs to reply to the caller
+    -> SAMPMapValue -- ^ extra key/value pairs to send
     -> SAMPResponse
 toSAMPResponse = SROkay
 
 -- | Create a SAMP response that indicates an error
 toSAMPResponseError ::
     RString -- ^ the error test (@samp.errortxt@)
-    -> [SAMPKeyValue] -- ^ other elements of the error
-    -> [SAMPKeyValue] -- ^ extra key/value pairs to send
+    -> SAMPMapValue -- ^ other elements of the error
+    -> SAMPMapValue -- ^ extra key/value pairs to send
     -> SAMPResponse
 toSAMPResponseError emsg evals = SRError (emsg, evals)
 
 -- | Create a SAMP response that indicates a warning.
 toSAMPResponseWarning ::
-    [SAMPKeyValue] -- ^ successful key,value pairs
+    SAMPMapValue -- ^ successful key,value pairs
     -> RString -- ^ error message (@samp.errortxt@)
-    -> [SAMPKeyValue] -- ^ other elements of the error
-    -> [SAMPKeyValue] -- ^ extra key/value pairs to send
+    -> SAMPMapValue -- ^ other elements of the error
+    -> SAMPMapValue -- ^ extra key/value pairs to send
     -> SAMPResponse
 toSAMPResponseWarning svals emsg evals =
     SRWarning svals (emsg, evals) 
@@ -1083,7 +1096,7 @@ isSAMPWarning SRError {} = False
 -- | Return the result stored in a SAMP response.
 --
 --   This does not return the extra values.
-getSAMPResponseResult :: SAMPResponse -> Maybe [SAMPKeyValue]
+getSAMPResponseResult :: SAMPResponse -> Maybe SAMPMapValue
 getSAMPResponseResult (SROkay r _) = Just r
 getSAMPResponseResult (SRWarning r _ _) = Just r
 getSAMPResponseResult SRError {} = Nothing
@@ -1093,7 +1106,7 @@ Return the error information stored in a SAMP response.
 The first element of the tuple is the @samp.errortxt@
 value, the second element is the other values of the error map.
 -}
-getSAMPResponseError :: SAMPResponse -> Maybe (RString, [SAMPKeyValue])
+getSAMPResponseError :: SAMPResponse -> Maybe (RString, SAMPMapValue)
 getSAMPResponseError SROkay {} = Nothing
 getSAMPResponseError (SRWarning _ e _) = Just e
 getSAMPResponseError (SRError e _) = Just e
@@ -1108,7 +1121,7 @@ getSAMPResponseErrorTxt = fmap fst . getSAMPResponseError
 {-|
 Return any "extra" values that were included in the response.
 -}
-getSAMPResponseExtra :: SAMPResponse -> [SAMPKeyValue]
+getSAMPResponseExtra :: SAMPResponse -> SAMPMapValue
 getSAMPResponseExtra (SROkay _ o) = o
 getSAMPResponseExtra (SRWarning _ _ o) = o
 getSAMPResponseExtra (SRError _ o) = o
@@ -1120,8 +1133,8 @@ and any extra parameters
 -}
 data SAMPMessage = SM {
       _smType :: MType
-    , _smParams :: [SAMPKeyValue]
-    , _smExtra ::  [SAMPKeyValue]
+    , _smParams :: SAMPMapValue
+    , _smExtra ::  SAMPMapValue
     } deriving (Eq, Show)
 
 {-|
@@ -1132,9 +1145,9 @@ toSAMPMessage ::
     => MType
     -- ^ The 'MType' of the message (this is the @samp.mtype@ key). It
     --   can not contain a wild card.
-    -> [SAMPKeyValue]
+    -> SAMPMapValue
     -- ^ The parameters for the message (this is the @samp.params@ key).
-    -> [SAMPKeyValue]
+    -> SAMPMapValue
     -- ^ Any extra key and value pairs to include in the message.
     -> Err m SAMPMessage
 toSAMPMessage mtype params extra
@@ -1145,9 +1158,9 @@ toSAMPMessageMT ::
     MType
     -- ^ The 'MType' of the message (this is the @samp.mtype@ key). It
     --   MUST NOT contain a wild card, but this is not enforced
-    -> [SAMPKeyValue]
+    -> SAMPMapValue
     -- ^ The parameters for the message (this is the @samp.params@ key).
-    -> [SAMPKeyValue]
+    -> SAMPMapValue
     -- ^ Any extra key and value pairs to include in the message.
     -> SAMPMessage
 toSAMPMessageMT = SM
@@ -1157,12 +1170,12 @@ getSAMPMessageType :: SAMPMessage -> MType
 getSAMPMessageType = _smType
 
 -- | Return the parameters of the message (the @samp.params@ key).
-getSAMPMessageParams :: SAMPMessage -> [SAMPKeyValue]
+getSAMPMessageParams :: SAMPMessage -> SAMPMapValue
 getSAMPMessageParams = _smParams
 
 -- | Return the extra key,value pairs in this message (i.e. those
 --   not part of the @samp.params@ key).
-getSAMPMessageExtra :: SAMPMessage -> [SAMPKeyValue]
+getSAMPMessageExtra :: SAMPMessage -> SAMPMapValue
 getSAMPMessageExtra = _smExtra
 
 smtype , sparams :: RString
@@ -1171,14 +1184,15 @@ sparams = "samp.params"
 
 instance SAMPType SAMPMessage where
     toSValue sm =
-        SAMPMap ([ (smtype, toSValue (_smType sm))
-                 , (sparams, SAMPMap (_smParams sm))
-                 ] ++ _smExtra sm)
+      SAMPMap (toSM ([ (smtype, toSValue (_smType sm))
+                     , (sparams, SAMPMap (_smParams sm))
+                     ]) `M.union` _smExtra sm)
                         
     fromSValue (SAMPMap xs) = do
       (mt, xs2) <- grabKeyE smtype xs
       (ps, xs3) <- grabKeyE sparams xs2
       toSAMPMessage mt ps xs3
+      
     fromSValue x = throwError ("Expected a SAMP map but sent " ++ show x)
 
 -- | Convert via @SAMPValue@                   
@@ -1371,3 +1385,35 @@ instance SAMPType HubSecret where
     fromSValue s = toHubSecret <$> fromSValue s
 
 
+-- | Create a "nice" output; this is intended for quick debugging
+--   and is very limited. I am sure there's a library out there
+--   that could do this easier.
+dumpSAMPValue :: SAMPValue -> String
+dumpSAMPValue = run 0
+  where
+    run l v = intercalate "\n" (reverse (go l [] v))
+    
+    indent l s = replicate (l*4) ' ' ++ s
+
+    -- maybe convert a SAMPValue to a list and can then
+    -- just fold over it.
+    
+    go l old (SAMPString s) = indent l (show s) : old
+    go l old (SAMPList ls) =
+      let l2 = l + 1
+          new = map (run l2) ls
+          start = indent l "["
+          end = indent l "]"
+      in end : reverse new ++ (start : old)
+    go l old (SAMPMap ms) =
+      let l2 = l + 1
+          new = map (goKV l2 []) (M.toList ms)
+          start = indent l "{"
+          end = indent l "}"
+      in end : reverse new ++ (start : old)
+
+    goKV l old (k, v) =
+      let l2 = l + 1
+          out = run l2 v  -- nopity nope nope
+          new = indent l (show k ++ " : " ++ out) : old
+      in intercalate "\n" (reverse new)

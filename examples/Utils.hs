@@ -12,6 +12,8 @@ module Utils
         getSocket, getAddress, hostName, hostNameBS,
        ) where
 
+import qualified Data.Map as M
+
 import System.Exit (exitFailure)
 import System.IO
 
@@ -42,11 +44,12 @@ createClient name description =
     registerClientE >>= \conn ->
     toMetadataE name (Just description)
                 Nothing Nothing Nothing >>= \md ->
-    declareMetadataE conn (md ++ authorMetadata) >>
+    declareMetadataE conn (md `M.union` authorMetadata) >>
     return conn
 
-authorMetadata :: [SAMPKeyValue]
-authorMetadata = 
+authorMetadata :: SAMPMapValue
+authorMetadata =
+  M.fromList
     [("author.name", "Doug Burke"),
      ("author.affiliation", "Smithsonian Astrophysical Observatory"),
      ("author.email", "dburke.gw@gmail.com")]
@@ -81,15 +84,15 @@ runPrintChannel pchan =
 syncPrint :: PrintChannel -> [String] -> IO ()
 syncPrint = writeChan
 
-displayKV :: SAMPKeyValue -> String
+displayKV :: SAMPMapElement -> String
 displayKV (k,v) = "  " ++ fromRString k ++ " -> " ++ showSAMPValue v
 
-showKV :: SAMPKeyValue -> IO ()
+showKV :: SAMPMapElement -> IO ()
 showKV = putStrLn . displayKV
 
-getKeyStr :: [SAMPKeyValue] -> RString -> Maybe RString
+getKeyStr :: SAMPMapValue -> RString -> Maybe RString
 getKeyStr kvs key =
-    case lookup key kvs of
+    case M.lookup key kvs of
         Just (SAMPString s) -> Just s
         _ -> Nothing
 

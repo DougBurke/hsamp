@@ -38,6 +38,7 @@ TODO:
 module Main (main) where
 
 import qualified Control.Exception as CE
+import qualified Data.Map as M
 import qualified Network as N
 
 import Control.Concurrent
@@ -98,16 +99,16 @@ getMType [] = Left "Missing required mtype argument"
 getMType (name:xs) = 
     handleError Left $ fmap (flip (,) xs) (toMTypeE name)
 
-getKV :: String -> Either String SAMPKeyValue
-getKV arg = do
+splitKV :: String -> Either String SAMPMapElement
+splitKV arg = do
     let (l,r) = break (=='=') arg
     lval <- if null l
-              then Left $ "Expected key=value but sent '" ++ arg ++ "'"
+              then Left ("Expected key=value but sent '" ++ arg ++ "'")
               else Right l
     rval <- if null r || r == "="
-              then Left $ "Expected key=value but sent '" ++ arg ++ "'"
-              else Right $ tail r
-    handleError Left $ stringToKeyValE lval rval
+              then Left ("Expected key=value but sent '" ++ arg ++ "'")
+              else Right (tail r)
+    handleError Left (stringToMapElementE lval rval)
 
 -- | Strip out the --debug flag if it exists. There is no validation of
 --   the arguments.
@@ -119,14 +120,16 @@ procArgs = foldr go (False, [])
     go x (f, xs) | x == "--debug" = (True, xs)
                  | otherwise      = (f, x:xs)
 
-processArgs :: [String] -> Either String ((ConnMode, MType, [SAMPKeyValue]), Bool)
+processArgs ::
+  [String]
+  -> Either String ((ConnMode, MType, SAMPMapValue), Bool)
 processArgs args = do
   let (dbgFlag, args1) = procArgs args
       (conmode, args2) = getConnection args1
       
   (mtype, args3) <- getMType args2
-  kvals <- mapM getKV args3
-  return ((conmode, mtype, kvals), dbgFlag)
+  kvals <- mapM splitKV args3
+  return ((conmode, mtype, M.fromList kvals), dbgFlag)
 
 main :: IO ()
 main = do
@@ -173,14 +176,14 @@ could skip this step).
 
 processMessage ::
     SAMPConnection
-    -> (ConnMode, MType, [SAMPKeyValue])
+    -> (ConnMode, MType, SAMPMapValue)
     -> IO ()
 processMessage conn (cmode, mtype, params) = do
   targets <- runE (getSubscribedClientsE conn mtype)
   if null targets
     then putStrLn $ "No clients are subscribed to the message " ++ show mtype
     else do
-      msg <- runE (toSAMPMessage mtype params [])
+      msg <- runE (toSAMPMessage mtype params M.empty)
       (pchan, _) <- startPrintChannel -- not needed for notification case but do anyway
       case cmode of
         Sync   -> parallel_ (map (sendSync pchan conn msg . fst) targets)
@@ -249,27 +252,32 @@ showHeader ::
 showHeader lbl delta target = 
     lbl ++ " response from " ++ showTarget target ++ " in " ++ show delta ++ " seconds"
 
+showMap :: SAMPMapValue -> [String]
+showMap = map displayKV . M.toList
+
 showSuccess ::
     NominalDiffTime -> Target -> SAMPResponse -> [String]
 showSuccess delta target rsp = 
-    let Just svals = getSAMPResponseResult rsp  
-    in showHeader "Successful" delta target : map displayKV svals
+    let Just smap = getSAMPResponseResult rsp
+    in showHeader "Successful" delta target : showMap smap
 
 showError ::
     NominalDiffTime -> Target -> SAMPResponse -> [String]
 showError delta target rsp = 
-    let Just (emsg, evals) = getSAMPResponseError rsp
+    let Just (emsg, emap) = getSAMPResponseError rsp
     in [showHeader "Error" delta target, "    " ++ fromRString emsg]
-       ++ map displayKV evals
+       ++ showMap emap
 
 showWarning ::
     NominalDiffTime -> Target -> SAMPResponse -> [String]
 showWarning delta target rsp = 
-    let Just svals = getSAMPResponseResult rsp
-        Just (emsg, evals) = getSAMPResponseError rsp
+    let Just smap = getSAMPResponseResult rsp
+        Just (emsg, emap) = getSAMPResponseError rsp
+        svals = showMap smap
+        evals = showMap emap
     in [showHeader "Warning" delta target, "    " ++ fromRString emsg]
-       ++ if null svals then [] else "  Response" : map displayKV svals
-       ++ if null evals then [] else "  Error" : map displayKV evals
+       ++ if null svals then [] else "  Response" : svals
+       ++ if null evals then [] else "  Error" : evals
 
 sendSync ::
     PrintChannel -> SAMPConnection -> SAMPMessage -> ClientName -> IO ()
@@ -277,7 +285,7 @@ sendSync pchan conn msg tid = do
     sTime <- getCurrentTime
     rsp <- runE (callAndWaitE conn tid msg (Just timeoutPeriod))
     eTime <- getCurrentTime
-    tname <- handleError (return . const Nothing) $ getClientNameE conn tid
+    tname <- handleError (return . const Nothing) (getClientNameE conn tid)
     printResponse pchan (diffUTCTime eTime sTime) (tid,tname) rsp
 
 getMsgTag :: IO MessageTag
@@ -291,7 +299,7 @@ sendASync ::
     -> SAMPMessage
     -> IO [ClientName]
 sendASync mt conn msg = do
-  dbg $ "Sending asynchronous message: " ++ show msg
+  dbg ("Sending asynchronous message: " ++ show msg)
   sTime <- getCurrentTime
   putMVar mt sTime
   msgTag <- getMsgTag
@@ -303,13 +311,13 @@ waitForCalls pchan chan cv = do
    modifyMVar_ cv $ \clients ->
      -- TODO: I do not understand the logic of this  
      if receiverid `elem` clients
-       then return $ filter (/= receiverid) clients
+       then return (filter (/= receiverid) clients)
        else do
          syncPrint pchan ["Ignoring unexpected response from " ++
                           show receiverid]
          return clients
    ncl <- readMVar cv
-   unless (null ncl) $ waitForCalls pchan chan cv
+   unless (null ncl) (waitForCalls pchan chan cv)
 
 {-
 
@@ -319,7 +327,8 @@ on setting up the server).
 
 -}
 
-makeServer :: PrintChannel -> TimeVar -> Channel -> SAMPConnection -> Socket -> IO ThreadId
+makeServer ::
+  PrintChannel -> TimeVar -> Channel -> SAMPConnection -> Socket -> IO ThreadId
 makeServer pchan mt chan conn sock = do
     tid <- myThreadId
     url <- getAddress sock
@@ -352,11 +361,13 @@ calls = []
 handleOther :: PrintChannel -> SAMPNotificationFunc
 handleOther pchan _ name msg =
   let mtype = getSAMPMessageType msg
-      keys = getSAMPMessageParams msg
-      other = getSAMPMessageExtra msg
+      pmap = getSAMPMessageParams msg
+      omap = getSAMPMessageExtra msg
+      params = showMap pmap
+      other = showMap omap
   in syncPrint pchan $ 
     ("Notification of " ++ show mtype ++ " from " ++ show name) :
-    map displayKV keys ++ ["---"] ++ map displayKV other ++ [""]
+    params ++ ["---"] ++ other ++ [""]
 
 -- TODO: check that msgid is correct, which means it has to be sent in!
 

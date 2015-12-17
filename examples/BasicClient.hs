@@ -13,6 +13,8 @@ Portability :  requires haxr
 
 module Main (main) where
 
+import qualified Data.Map as M
+
 import Control.Monad.Trans (liftIO)
 
 import Network.SAMP.Standard
@@ -54,10 +56,11 @@ runClient = runE $ do
     liftIO (putStrLn ("Client id: " ++ clName))
     
     -- Store metadata in hub for use by other applications.
-    let vkey = ("dummy.version", "0.1-3")
+    let vkey = "dummy.version"
+        ver = "0.1-3"
     md <- toMetadataE "dummy" (Just "Test Application")
                       Nothing Nothing Nothing
-    declareMetadataE conn (vkey : md)
+    declareMetadataE conn (M.insert vkey ver md)
     liftIO $ putStrLn "Registered with the hub"
     
     -- Send a message requesting file load to all other
@@ -66,7 +69,8 @@ runClient = runE $ do
     -- Should really check that /tmp/foo.bar does not exist before
     -- sending this message!
     liftIO $ putStrLn "Sending file.load message for /tmp/foo.bar"
-    msg <- toSAMPMessage "file.load" [("filename", "/tmp/foo.bar")] []
+    let opts = M.fromList [("filename", "/tmp/foo.bar")]
+    msg <- toSAMPMessage "file.load" opts M.empty
     notifyAllE_ conn msg
 
     -- Unregister
