@@ -421,14 +421,15 @@ notifyAllE_ ::
 notifyAllE_ cl msg = void $ notifyAllE cl msg
 
 -- | Send a message to a client and wait for a response. The timeout parameter
--- controls how long the wait will be before error-ing out (if given).
+-- controls how long the wait will be before error-ing out.
 -- Unlike 'callE' and 'callAllE', the client need not be callable to use
 -- this routine.
 callAndWaitE ::
     SAMPConnection
     -> ClientName -- ^ the name of the client to contact
     -> SAMPMessage -- ^ the message
-    -> Maybe Int -- ^ the maximum timeout to wait, in seconds
+    -> Maybe Int -- ^ the maximum timeout to wait, in seconds. If the timeout
+                 --   is called then an exception is thrown.
     -> Err IO SAMPResponse
 callAndWaitE cl clid msg tout = 
     let t = fromMaybe 0 tout
