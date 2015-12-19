@@ -38,7 +38,7 @@ import Control.Arrow (first)
 import Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
 import Control.Concurrent.MVar (newEmptyMVar, takeMVar)
 
-import Control.Monad (forM_, unless, when, void)
+import Control.Monad (forM_, replicateM, unless, when, void)
 import Control.Monad.Error.Class (MonadError)
 import Control.Monad.Except (ExceptT, catchError, throwError, runExceptT)
 import Control.Monad.IO.Class (MonadIO)
@@ -224,7 +224,7 @@ waitForResponse rmap clId msgTag = do
       -- Only interested in the first key in this case
       getKV kvs = case break ((== key) . fst) kvs of
         (_, []) -> (kvs, Nothing)
-        (l, (h:r)) -> (l ++ r, Just (snd h))
+        (l, h:r) -> (l ++ r, Just (snd h))
           
       go = do
         mrsp <- atomicModifyIORef' rmap getKV
@@ -283,7 +283,7 @@ assertNoKey ::
   (MonadError String m, Eq a, Show a)
   => String -> a -> [(a, b)] -> m ()
 assertNoKey lbl k kvs =
-  unless (null (filter ((== k) . fst) kvs))
+  unless (not (any ((== k) . fst) kvs))
     (throwError (lbl ++ ": key should not be found: " ++ show k))
   
 
@@ -341,12 +341,11 @@ addClient cl = do
   assertTrue "New client id is not re-used" (clId `notElem` onames)
   assertTrue "New client secret is not re-used" (clSecret `notElem` osecrets)
   
-  
 
-checkFail :: String -> Err IO () -> HubTest IO ()
+checkFail :: String -> Err IO a -> HubTest IO ()
 checkFail lbl call = do
-  flag <- lift ((call >> return False)
-                `catchError` (const (return True)))
+  flag <- lift ((void call >> return False)
+                `catchError` const (return True))
   assertTrue ("Expected fail: " ++ lbl) flag
 
 
@@ -416,7 +415,7 @@ randomSAMPString anyPrint = do
       fromChars = if anyPrint then legalSAMPChars else alphaSAMPChars
       
   nchar <- getRandomR (0, maxCount)
-  chars <- sequence (replicate nchar (uniform fromChars))
+  chars <- replicateM nchar (uniform fromChars)
   -- if the conversion to RString fails then there's an error in the
   -- code: treat as a run-time error
   case toEitherE (toRStringE chars) of
@@ -436,7 +435,7 @@ randomSAMPList level anyPrint = do
       pLevel = pred level
   nel <- getRandomR (0, nmax)
 
-  els <- sequence (replicate nel (randomSAMPValue pLevel anyPrint))
+  els <- replicateM nel (randomSAMPValue pLevel anyPrint)
   return (SAMPList els)
 
 
@@ -457,8 +456,8 @@ randomSAMPHashMap level anyPrint = do
   let convKey (SAMPString s) = s
       convKey x = error ("Internal error: randomSAMPString: " ++ show x)
       
-  keys <- sequence (replicate nel (randomSAMPString anyPrint))
-  els <- sequence (replicate nel (randomSAMPValue pLevel anyPrint))
+  keys <- replicateM nel (randomSAMPString anyPrint)
+  els <- replicateM nel (randomSAMPValue pLevel anyPrint)
   return (SAMPMap (M.fromList (zip (map convKey keys) els)))
 
 
@@ -467,6 +466,7 @@ toMaybeE = handleError (const Nothing)
 
 toEitherE :: Err (Either String) a -> Either String a
 toEitherE = handleError Left
+
 
 main :: IO ()
 main = do
@@ -483,8 +483,7 @@ main = do
   exitSuccess
 
 
--- could allow in Err IO ()?
-putLn :: MonadIO m => String -> m () -- String -> HubTest IO ()
+putLn :: MonadIO m => String -> m ()
 putLn = liftIO . putStrLn
 
 runHubTests :: HubTest IO a -> IO ()
@@ -808,7 +807,7 @@ unexpectedNotification _ clName msg = do
 calls :: PingCount -> SAMPCallMap
 calls pingCount =
   [ (echoMTYPE, callEcho)
-  , (pingMTYPE, (callPing pingCount))
+  , (pingMTYPE, callPing pingCount)
   , (failMTYPE, callFail)
   , ("*", unexpectedCall) -- error out
   ]
@@ -933,7 +932,7 @@ waitForProcessing = liftIO . waitMillis
 waitMillis ::
   Int  -- ^ delay in milliseconds
   -> IO ()
-waitMillis n = (threadDelay (n * 1000))
+waitMillis n = threadDelay (n * 1000)
 
 -- | Since the standard does not require that a timeout leads to
 --   a failed connection, only warn if the call does not time out.
@@ -1295,17 +1294,14 @@ testClients si = do
   (pingCount2, rmap2, tid2) <- liftIO (callableClient cl2)
   lift (declareSubscriptionsE cl2 defaultSubs)
 
-  -- TODO: check for error
-  --  - could come up with a random id that we know is not
-  --    valid, but not worth it (and can not guarantee some other
-  --    client doesn't register it)
-  let errAct1 = getMetadataE cl1 "This ID is not valid" >> return False
-  flag1 <- lift (errAct1 `catchError` (const (return True)))
-  assertTrue "Error out when query metadata with an unregistered ID" flag1
-
-  let errAct2 = getSubscriptionsE cl1 "This ID is not valid" >> return False
-  flag2 <- lift (errAct2 `catchError` (const (return True)))
-  assertTrue "Error out when query subscriptions with an unregistered ID" flag2
+  -- could come up with a random id that we know is not
+  -- valid, but not worth it (and can not guarantee some other
+  -- client doesn't register it)
+  checkFail "getMetadata with an invalid ID"
+    (getMetadataE cl1 "This ID is not valid")
+    
+  checkFail "getSubscriptions with invalid ID"
+    (getSubscriptionsE cl1 "This ID is not valid")
 
   -- HubTester re-uses a tag for this client: that is, the message tag can
   -- be re-used. This is not something that is checked for in the HSAMP
@@ -1448,7 +1444,7 @@ testClients si = do
   
   -- TODO: how to make sure clients are unregistered on error?
   removeClient cl4 tid4
-  putLn ("Finished closing down client 4")
+  putLn "Finished closing down client 4"
 
   -- callAndWait testing
 
@@ -1554,17 +1550,17 @@ testClients si = do
   assertTestClients cl1 [clId2, clId3]
   assertTestClients cl2 [clId1, clId3]
   removeClient cl3 tid3
-  putLn ("Finished closing down client 3")
+  putLn "Finished closing down client 3"
   
   assertTestClients cl1 [clId2]
   assertTestClients cl2 [clId1]
   
   -- unregister them in a different order to those are created
   removeClient cl1 tid1
-  putLn ("Finished closing down client 1")
+  putLn "Finished closing down client 1"
   
   removeClient cl2 tid2
-  putLn ("Finished closing down client 1")
+  putLn "Finished closing down client 1"
 
   -- check that unregistering an unregistered client is an error
   checkFail "Client already unregistered" (unregisterE cl1)
