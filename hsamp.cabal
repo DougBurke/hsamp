@@ -49,8 +49,8 @@ flag  examples
 
 flag  xmlhack
   description: Adjust the XML returned by the hub (e.g. for ds9 7.3.2). This is only used if examples is True.
---  default: False
-  default: True
+  default: False
+--  default: True
 
 -- Just trying to get to build on ghc 7.10.2, so limited constraints.
 -- I am not looking to support older versions of ghc at this
@@ -256,3 +256,46 @@ executable hsamp-hub
   else
     buildable:  False
 
+
+executable hsamp-testhub
+  hs-source-dirs:  examples
+  main-is:         TestHub.hs
+  other-modules:   Paths_hsamp
+                   Utils
+
+  ghc-options:
+     -Wall
+
+  if flag(examples)
+    build-depends:
+      -- aeson,
+      ---- async,
+      base,
+      -- base64-bytestring,
+      bytestring,
+      containers,
+      -- data-default-class,
+      -- directory,
+      -- fast-logger,
+      -- hashable,
+      -- haxr,
+      hsamp,
+      hslogger,
+      -- http-types,
+      MonadRandom == 0.4.*,
+      mtl,
+      network,
+      -- network-uri,
+      random,
+      -- scotty,
+      -- text,
+      time,
+      transformers
+      -- unix,
+      -- unordered-containers,
+      -- wai,
+      -- wai-extra
+
+  else
+    buildable:  False
+        

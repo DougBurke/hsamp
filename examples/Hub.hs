@@ -1038,9 +1038,11 @@ ignoreError lbl e = do
   hPutStrLn stderr ("*** " ++ show e)
 
 
-ignoreNotifyError :: ClientName -> MType -> CE.SomeException -> IO ()
-ignoreNotifyError name mtype =
-  let emsg = "notifying client" ++ show name ++ " about " ++ show mtype
+ignoreNotifyError :: ClientName -> String -> MType -> CE.SomeException -> IO ()
+ignoreNotifyError name fname mtype =
+  let emsg = "notifying client " ++ show name ++
+             (if null fname then "" else " " ++ fname ++ " ") ++
+             " about " ++ show mtype
   in ignoreError emsg
   
     
@@ -1206,7 +1208,6 @@ sendToCW hi sender waitTime msg receiver = do
   case emid of
     Right mid -> do
       let sendName = cdName sender
-          errorRsp = rawError "Timeout"
                      
       dbg ("Sending " ++ fromMType mtype ++ " from " ++
            show sendName ++ " to " ++ show recName)
@@ -1217,6 +1218,9 @@ sendToCW hi sender waitTime msg receiver = do
       forkCall (clientReceiveCall sendName receiver mid msg)
 
       let tVal = toDuration waitTime
+          errorRsp = rawError ("Timeout: call took longer than " ++
+                               show waitTime ++ " sec.")
+
       when (tVal > 0) (
           forkCall (sleep tVal
                     >> putMVar rspmvar errorRsp
@@ -1400,14 +1404,16 @@ notifyRecipient sendName msg receiver = do
 
     case cdCallback receiver of
       Just url -> do
+        let fname = getFullName receiver
+            name = show recName ++ if null fname then "" else " " ++ fname
         {-
         putStrLn ("*** " ++ show mtype ++ " from " ++ show sendName ++
                   " to " ++ show recName)  -- DBG
         -}
         dbgIO ("Sending notify of " ++ fromMType mtype ++ " to client " ++
-               show recName)
+               name)
         handleError (hdl url) (act url)
-                        `CE.catch` ignoreNotifyError recName mtype
+                        `CE.catch` ignoreNotifyError recName fname mtype
 
       Nothing -> return ()
 
@@ -1449,10 +1455,12 @@ clientReceiveCall sendName receiver msgId msg =
 
     in case cdCallback receiver of
          Just url -> do
+           let fname = getFullName receiver
+               name = show rName ++ if null fname then "" else " " ++ fname
            dbgIO ("Sending call of " ++ fromMType mtype ++ " to client " ++
-                  show rName)
+                  name)
            handleError (hdl url) (act url)
-                           `CE.catch` ignoreNotifyError rName mtype
+                           `CE.catch` ignoreNotifyError rName fname mtype
 
          _ -> return ()
 
