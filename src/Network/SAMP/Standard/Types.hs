@@ -1271,7 +1271,7 @@ renderSAMPResponse = renderResponse . fromSMR
 --   to make sure that potential conversion errors are handled.
 --
 newtype MessageTag = MTag { _unMTag :: RString }
-    deriving Eq
+    deriving (Eq, Ord)
 
 toMessageTag :: RString -> MessageTag
 toMessageTag = MTag

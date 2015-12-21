@@ -155,10 +155,14 @@ setXmlrpcCallbackE conn url =
 -- although this module does not enforce this.
 callE ::
     SAMPConnection
-    -> ClientName -- ^ the name of the client to contact
-    -> MessageTag -- ^ a unique identifier for the communication
-    -> SAMPMessage -- ^ the message
-    -> Err IO MessageId -- ^ the message identifier created by the hub for this communication
+    -> ClientName
+    -- ^ the name of the client to contact
+    -> MessageTag
+    -- ^ a unique identifier for the communication
+    -> SAMPMessage
+    -- ^ the message
+    -> Err IO MessageId
+    -- ^ the message identifier created by the hub for this communication
 callE conn clid msgtag msg =
     callHubE conn "samp.hub.call"
         [toSValue clid, toSValue msgtag, toSValue msg]
@@ -215,16 +219,17 @@ type SAMPNotificationFunc =
   ClientSecret -> ClientName -> SAMPMessage -> IO ()
 
 -- | A mapping from a 'MType' to the routine used to handle calls
--- of the message @samp.client.receiveCall@. The response will be returned to the hub using the
--- @samp.hub.reply@ message (using 'Network.SAMP.Standard.Client.replyE')
--- when using 'simpleClientServer'.
+--   of the message @samp.client.receiveCall@. The response will be
+--   returned to the hub using the @samp.hub.reply@ message (using
+--   'Network.SAMP.Standard.Client.replyE') when using the
+--   'simpleClientServer'.
 type SAMPCallMap = [(MType, SAMPCallFunc)]
 
 type SAMPCallFunc =
      ClientSecret -> ClientName -> MessageId -> SAMPMessage -> IO SAMPResponse
 
--- | The handler for SAMP response messages (those received by a callable client
--- via the @samp.client.receiveResponse@ message).
+-- | The handler for SAMP response messages (those received by a
+--   callable client via the @samp.client.receiveResponse@ message).
 type SAMPResponseFunc =
     ClientSecret -> ClientName -> MessageTag -> SAMPResponse -> IO ()
 
@@ -311,11 +316,16 @@ callable SAMP client. This can be appended to to handle
 extra messages beyond the SAMP Standard Profile.
 -}
 clientMethodMap ::
-    SAMPConnection -- ^ the connection to use when replying to a message
-    -> SAMPNotificationMap -- ^ routines for handling notifications (@samp.client.receiveNotification@)
-    -> SAMPCallMap -- ^ routines for handling calls (@samp.client.receiveCall@)
-    -> SAMPResponseFunc -- ^ routinr for handling responses (@samp.client.receiveResponse@)
-    -> SAMPMethodMap -- ^ input for the 'clientMethods' routine
+    SAMPConnection
+    -- ^ the connection to use when replying to a message
+    -> SAMPNotificationMap
+    -- ^ routines for handling notifications (@samp.client.receiveNotification@)
+    -> SAMPCallMap
+    -- ^ routines for handling calls (@samp.client.receiveCall@)
+    -> SAMPResponseFunc
+    -- ^ routine for handling responses (@samp.client.receiveResponse@)
+    -> SAMPMethodMap
+    -- ^ input for the 'clientMethods' routine
 clientMethodMap ci ns cs r =
     [((== "samp.client.receiveNotification"), fun (receiveNotification ns)),
      ((== "samp.client.receiveCall"), fun (receiveCall cs ci)),
@@ -338,8 +348,8 @@ handleSAMPCall ::
     -> String -- ^ XML-RPC input containing the SAMP details of the call
     -> IO ()
 handleSAMPCall f str = do
-    dbg $ "SAMP body of call is:\n" ++ str
-    rE $ parseSAMPCall str >>= f
+    dbg ("SAMP body of call is:\n" ++ str)
+    rE (parseSAMPCall str >>= f)
 
 -- | Handle the SAMP messages sent to a callable client. This processes a
 -- single call using the supplied handlers.
