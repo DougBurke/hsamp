@@ -172,11 +172,13 @@ executable hsamp-sender
       containers,            
       hsamp,
       hslogger,
+      mtl,            
       network,
       parallel-io,
       random,
-      time
-
+      time,
+      transformers
+                  
   else
     buildable:  False
 
@@ -196,7 +198,9 @@ executable hsamp-snooper
       containers,
       hsamp,
       hslogger,
-      network
+      mtl,
+      network,
+      transformers
 
   else
     buildable:  False
@@ -260,7 +264,9 @@ executable hsamp-hub
 executable hsamp-testhub
   hs-source-dirs:  examples
   main-is:         TestHub.hs
-  other-modules:   Paths_hsamp
+  other-modules:   Calculator
+                   Paths_hsamp
+                   TestUtils
                    Utils
 
   ghc-options:
@@ -269,7 +275,7 @@ executable hsamp-testhub
   if flag(examples)
     build-depends:
       -- aeson,
-      ---- async,
+      async,
       base,
       -- base64-bytestring,
       bytestring,

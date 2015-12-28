@@ -10,24 +10,25 @@ module Utils
         displayKV, showKV,
         getKeyStr,
         getSocket, getAddress, hostName, hostNameBS,
+        waitMillis, waitForProcessing
        ) where
 
+import qualified Data.ByteString.Char8 as B
 import qualified Data.Map as M
-
-import System.Exit (exitFailure)
-import System.IO
+import qualified Network as N
 
 import Control.Concurrent.Chan
-import Control.Concurrent (ThreadId, forkIO)
-
-import qualified Data.ByteString.Char8 as B
-
-import qualified Network as N
-import Network.Socket (Socket, PortNumber, socketPort)
+import Control.Concurrent (ThreadId, forkIO, threadDelay)
+import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.Trans (liftIO)
 
 import Network.SAMP.Standard.Types
 import Network.SAMP.Standard.Client
 import Network.SAMP.Standard.Setup
+import Network.Socket (Socket, PortNumber, socketPort)
+
+import System.Exit (exitFailure)
+import System.IO
 
 -- | Run a set of SAMP commands and exit on error.
 
@@ -113,4 +114,19 @@ hostName portNum = "http://127.0.0.1:" ++ show portNum ++ "/xmlrpc"
 
 hostNameBS :: PortNumber -> B.ByteString
 hostNameBS = B.pack . hostName
+
+waitMillis ::
+  Int  -- ^ delay in milliseconds
+  -> IO ()
+waitMillis n = threadDelay (n * 1000)
+
+-- Pause processing for a small amount of time to try and let
+-- threads process everything.
+--
+waitForProcessing ::
+  MonadIO m
+  => Int  -- ^ delay in milliseconds (as that's what HubTester uses)
+  -> m ()
+waitForProcessing = liftIO . waitMillis
+
 

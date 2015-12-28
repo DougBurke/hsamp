@@ -24,35 +24,42 @@ From http://www.star.bris.ac.uk/~mbt/jsamp/
 
 Usage:
 
-  ./testhub --debug
+  ./testhub --debug [rng1 rng2]
+
+The rng1/2 arguments are to allow problematic generators to
+be re-run, but it looks like the storm test failures are
+non-deterministic.
+
+To do:
+
+Problems include
+
+ a) the test of long messages is currently limited to 0..3 rather
+    than 0..5 since the latter is *very* slow with hsamp-hub
+ b) the storm tests can hang
 
 -}
 
 module Main (main) where
 
+import qualified Data.Map.Strict as M
 import qualified Data.Set as Set
-import qualified Data.Map as M
 
 import Control.Arrow (first)
 
-import Control.Concurrent (ThreadId, forkIO, killThread, threadDelay)
+import Control.Concurrent (ThreadId, forkIO)
 import Control.Concurrent.MVar (newEmptyMVar, takeMVar)
 
 import Control.Monad (forM_, replicateM, unless, when, void)
-import Control.Monad.Error.Class (MonadError)
-import Control.Monad.Except (ExceptT, catchError, throwError, runExceptT)
-import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.Except (catchError, throwError, runExceptT)
 import Control.Monad.Random (MonadRandom(..), Rand, runRand, uniform)
-import Control.Monad.Trans.State.Strict ( StateT
-                                        -- , evalStateT
-                                        , execStateT
-                                        , get, modify', put)
 import Control.Monad.Trans (liftIO)
 import Control.Monad.Trans.Class (lift)
+import Control.Monad.Trans.State.Strict (execStateT)
 
 import Data.Char (chr)
 import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
-import Data.List (partition, sort)
+import Data.List (isPrefixOf, partition, sort)
 import Data.Maybe (fromJust, isJust)
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 
@@ -62,7 +69,6 @@ import Network.SAMP.Standard ( SAMPInfo, SAMPConnection(..)
                              , Err
                              , handleError
                              , getSAMPInfoHubURL, getSAMPInfoHubMetadata
-                             , registerClientE, toMetadata
                              , toClientName
                              , runE
                              , withSAMP)
@@ -77,6 +83,7 @@ import Network.SAMP.Standard.Client ( callAndWaitE
                                     , notifyAllE
                                     , notifyE
                                     , pingHubE
+                                    , toMetadata
                                     , unregisterE)
 import Network.SAMP.Standard.Setup (sampLockFileE, getHubInfoE)
 import Network.SAMP.Standard.Server ( SAMPNotificationMap
@@ -90,7 +97,6 @@ import Network.SAMP.Standard.Server ( SAMPNotificationMap
                                     , simpleClientServer)
 import Network.SAMP.Standard.Server.Scotty (runServerSignal)
 import Network.SAMP.Standard.Types ( ClientName
-                                   , ClientSecret
                                    , MessageId
                                    , MessageTag
                                    , MType
@@ -100,7 +106,6 @@ import Network.SAMP.Standard.Types ( ClientName
                                    , SAMPResponse
                                    , SAMPType
                                    , SAMPValue(..)
-                                   , dumpSAMPValue
                                    , fromMType
                                    , getKey
                                    , getSAMPMessageExtra
@@ -126,52 +131,22 @@ import System.Environment (getArgs, getProgName)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr)
 import System.Log.Logger
-import System.Random (RandomGen, newStdGen)
+import System.Random (RandomGen, StdGen, newStdGen)
+
+import Text.Read (readEither)
 
 -- import Paths_hsamp (version)
 
-import Utils (getAddress, getSocket)
-
-data HubStore =
-  HubStore
-  {
-    _hsOtherClients :: [ClientName]
-    -- ^ Clients that are known to exist (or existed) that are not
-    --   related to the hub. These will be ignored in tests and checks.
-    --   Ideally this would be in a reader monad, since the list isn't
-    --   expected to change once created.
-  , _hsUsedNames :: [ClientName]
-    -- ^ names used by the hub (kept so that we can check that names are
-    --   not being re-used)
-  , _hsUsedSecrets :: [ClientSecret]
-    -- ^ secrets used by the hub (kept so that we can check that names are
-    --   not being re-used)
-  }
-
-
-emptyHubStore :: HubStore
-emptyHubStore = 
-  HubStore
-  { 
-    _hsOtherClients = []
-  , _hsUsedNames = []
-  , _hsUsedSecrets = []
-  }
-
-
--- | ping messages increase a global counter
-type PingCount = IORef Int
-
-newPingCount :: IO PingCount
-newPingCount = newIORef 0
-
-increasePingCount :: PingCount -> IO ()
-increasePingCount pc =
-  let incr v = (succ v, ())
-  in atomicModifyIORef' pc incr
-  
-getPingCount :: PingCount -> IO Int
-getPingCount = readIORef
+import Calculator (runCalcStorm)
+import TestUtils (HubStore(..), HubTest, PingCounter
+                 , assert, assertKey, assertNoKey, assertPing
+                 , assertSAMPMap, assertSet, assertTestClients, assertTrue
+                 , checkFail
+                 , emptyHubStore
+                 , addOtherClients, makeClient, removeClient
+                 , putLn
+                 , getCounter, increaseCounter, newPingCounter)
+import Utils (getAddress, getSocket, waitMillis, waitForProcessing)
 
 -- | Store the responses to a client, labelled by the message
 --   tag.
@@ -234,120 +209,8 @@ waitForResponse rmap clId msgTag = do
           
   go
 
--- transformer stack: layer State on top of Err
---
-type HubTest m a = StateT HubStore (ExceptT String m) a
 
-
-assertTrue :: MonadError a m => a -> Bool -> m ()
-assertTrue lbl f = unless f (throwError lbl)
-
-assert ::
-  (MonadError String m, Eq a, Show a) => String -> a -> a -> m ()
-assert lbl expVal gotVal =
-  let lbl2 = lbl ++ ":\nexpected=" ++ show expVal ++
-             "\ngot     =" ++ show gotVal
-  in assertTrue lbl2 (expVal == gotVal)
-
--- An unordered comparison of the two lists
-assertSet ::
-  (MonadError String m, Ord a, Eq a, Show a) => String -> [a] -> [a] -> m ()
-assertSet lbl expVal gotVal =
-  assert lbl (Set.fromList expVal) (Set.fromList gotVal)
-
-
-assertSAMPMap ::
-  (MonadError String m)
-  => String -> SAMPMapValue -> SAMPMapValue -> m ()
-assertSAMPMap lbl m1 m2 =
-  let v1 = SAMPMap m1
-      v2 = SAMPMap m2
-      lbl2 = lbl ++
-             ":\nexpected=\n" ++ dumpSAMPValue v1 ++
-             ":\ngot     =\n" ++ dumpSAMPValue v2
-  in assertTrue lbl2 (v1 == v2)
   
--- Assert that the key exists, and return that value.
-assertKey ::
-  (MonadError String m, Ord b, Show b)
-  => String -> b -> M.Map b c -> m c
-assertKey lbl k ms =
-  let kstr = show k
-  in case M.lookup k ms of
-      Just v -> return v
-      Nothing -> throwError (lbl ++ ": key not found: " ++ kstr)
-
-      
--- Error if a is a member of the list
-assertNoKey ::
-  (MonadError String m, Eq a, Show a)
-  => String -> a -> [(a, b)] -> m ()
-assertNoKey lbl k kvs =
-  unless (not (any ((== k) . fst) kvs))
-    (throwError (lbl ++ ": key should not be found: " ++ show k))
-  
-
--- Check the list of known clients matches the input list
---   - the current connection is not included
---   - any clients that were registered when the test was
---     started are ignored
---
-assertTestClients :: SAMPConnection -> [ClientName] -> HubTest IO ()
-assertTestClients conn expNames = do
-  state <- get
-  gotNames <- lift (getRegisteredClientsE conn)
-  let expSet = Set.fromList expNames
-
-      -- remove the other clients from the list of clients,
-      -- but it is possible that they have since gone away,
-      -- so do not require that they exist in gotNames
-      otherSet = Set.fromList (_hsOtherClients state)
-      gotSet = Set.fromList gotNames `Set.difference` otherSet
-
-  assert "Registered test clients match" expSet gotSet
-
-
--- | Check that the ping count matches the expected value
-assertPing :: String -> Int -> PingCount -> HubTest IO ()
-assertPing lbl count pc = do
-  got <- liftIO (getPingCount pc)
-  assert ("Ping count: " ++ lbl) count got
-
-
--- Overwrite the list of client names
-addOtherClients :: Monad m => [ClientName] -> HubTest m ()
-addOtherClients names = 
-  modify' (\s -> s { _hsOtherClients = names })
-
-
--- A new client has been created, so check it doesn't clash
--- (name or secret) with previous clients and add it to the
--- store.
-addClient :: Monad m => SAMPConnection -> HubTest m ()
-addClient cl = do
-  let clId = scId cl
-      clSecret = scPrivateKey cl
-  ostate <- get
-  let onames = _hsUsedNames ostate
-      osecrets = _hsUsedSecrets ostate
-
-      nstate = ostate {
-        _hsUsedNames = clId : onames
-        , _hsUsedSecrets = clSecret : osecrets
-        }
-
-  put nstate
-
-  assertTrue "New client id is not re-used" (clId `notElem` onames)
-  assertTrue "New client secret is not re-used" (clSecret `notElem` osecrets)
-  
-
-checkFail :: String -> Err IO a -> HubTest IO ()
-checkFail lbl call = do
-  flag <- lift ((void call >> return False)
-                `catchError` const (return True))
-  assertTrue ("Expected fail: " ++ lbl) flag
-
 
 echoMTYPE, pingMTYPE, failMTYPE :: MType
 echoMTYPE = "test.echo"
@@ -468,23 +331,37 @@ toEitherE :: Err (Either String) a -> Either String a
 toEitherE = handleError Left
 
 
+usage :: IO ()
+usage = do
+  pName <- getProgName
+  hPutStrLn stderr ("Usage: " ++ pName ++ " --debug [rng1 rng2]")
+  exitFailure
+
+
 main :: IO ()
 main = do
-  args <- getArgs
-  case args of
+  allArgs <- getArgs
+  let (opts, args) = partition ("--" `isPrefixOf`) allArgs
+  case opts of
     [] -> return ()
     ["--debug"] -> updateGlobalLogger "SAMP" (setLevel DEBUG)
-    _ -> do
-      pName <- getProgName
-      hPutStrLn stderr ("Usage: " ++ pName ++ " [--debug]")
-      exitFailure
+    _ -> usage
 
-  withSAMP (runHubTests runTests)
+  gen <- case args of
+    [] -> newStdGen
+    [gen1, gen2] -> do
+      let gstr = gen1 ++ " " ++ gen2
+      case readEither gstr of
+        Right g -> return g
+        Left emsg -> do
+          putStrLn ("Unable to parse " ++ gstr ++ ": " ++ emsg)
+          usage >> newStdGen -- ugh
+          
+    _ -> usage >> newStdGen -- ugh
+    
+  withSAMP (runHubTests (runTests gen))
   exitSuccess
 
-
-putLn :: MonadIO m => String -> m ()
-putLn = liftIO . putStrLn
 
 runHubTests :: HubTest IO a -> IO ()
 -- runHubTests act = void (runE (evalStateT act emptyHubStore))
@@ -496,38 +373,6 @@ runHubTests act = do
   putStrLn ("  used secrets : " ++ show (_hsUsedSecrets newState))
 
   
--- TODO:
---    hub tester has a register method that checks that the
---    hub id remains constant, that client ids are not reused,
---    and neither are private keys. So need to carry around
---    some state.
---    We shold now be doing this EXCEPT for the check on the hub
---    name
---
-makeClient :: SAMPInfo -> HubTest IO SAMPConnection
-makeClient si = do
-  conn <- lift (registerClientE si)
-
-  let clientName = scId conn
-      clientSecret = scPrivateKey conn
-  putLn ("Created client: " ++ show clientName ++ " secret: " ++
-         show clientSecret)
-  
-  metadata <- lift (getMetadataE conn clientName)
-  assertTrue "New client has no metadata" (M.null metadata)
-
-  subscriptions <- lift (getSubscriptionsE conn clientName)
-  assert "New client has no subscriptions" [] subscriptions
-    
-  -- verify that the client is not included in the registered
-  -- clients list
-  rclients <- lift (getRegisteredClientsE conn)
-  assertTrue
-    "New client does not appear in the getRegisteredClients call"
-    (clientName `notElem` rclients)
-
-  addClient conn
-  return conn
 
 
 reportHub :: SAMPInfo -> IO ()
@@ -553,16 +398,19 @@ validateClient client clientName = do
   void (getSubscriptionsE client clientName)
 
 
-runTests :: HubTest IO ()
-runTests = do
+runTests :: StdGen -> HubTest IO ()
+runTests gen = do
   hubUrl <- lift sampLockFileE
   putLn ("Hub location: " ++ show hubUrl)
   hi <- lift (getHubInfoE hubUrl)
   liftIO (reportHub hi)
   
+  let genStr = show gen
+
   withClient (makeClient hi) basicClient
-  testClients hi
-  testStress hi
+  gen1 <- testClients gen hi
+  putLn "*** starting calculator tests ***"
+  _ <- runCalcStorm genStr gen1 hi 10 20
   
   putLn "Finished."
 
@@ -715,10 +563,10 @@ setupClient2 cl2 = do
 --
 callableClient ::
   SAMPConnection
-  -> IO (PingCount, ResponseMap, ThreadId)
+  -> IO (PingCounter, ResponseMap, ThreadId)
 callableClient conn = do
   mvar <- newEmptyMVar
-  pingCount <- newPingCount
+  pingCount <- newPingCounter
   responseMap <- newResponseMap
 
   let act = do
@@ -744,31 +592,12 @@ callableClient conn = do
   return (pingCount, responseMap, tid)
 
 
--- | Remove a callable client from the hub and kill the thread
---   handling the client's SAMP connection.
---
---   Note that there is no type safety here, in that nothing
---   tells the compiler that the client has been closed down.
---
---   Would like to check that the client has actually stopped
---   processing requests, but it's not clear how to do this,
---   as need a client to talk to the hub.
---
---   There is a delay before returning, to give the client a
---   chance to be stopped. This probably isn't needed.
---
-removeClient :: SAMPConnection -> ThreadId -> HubTest IO ()
-removeClient cl tid = do
-  putLn ("Removing client: " ++ show (scId cl))
-  lift (unregisterE cl)
-  liftIO (killThread tid)
-  waitForProcessing 100
   
 -- Routines to handle SAMP conversations from a hub to a client
 
 -- samp.client.receiveNotification
 notifications ::
-  PingCount
+  PingCounter
   -> SAMPNotificationMap
 notifications pingCount =
   [ (echoMTYPE, ignoreEcho)
@@ -780,10 +609,10 @@ notifications pingCount =
 ignoreEcho :: SAMPNotificationFunc
 ignoreEcho _ _ _ = return ()
 
-notifyPing :: PingCount -> SAMPNotificationFunc
+notifyPing :: PingCounter -> SAMPNotificationFunc
 notifyPing pc _ clName _ = do
   putStrLn ("SENT A PING (notify from " ++ show clName ++ ")") -- DBG
-  increasePingCount pc
+  increaseCounter pc
 
 dumpKV :: (Show a, Show b) => (a, b) -> IO ()
 dumpKV (k,v) = putStrLn ("    key=" ++ show k ++ " value=" ++ show v)
@@ -804,7 +633,7 @@ unexpectedNotification _ clName msg = do
   
 
 -- samp.client.receiveCall
-calls :: PingCount -> SAMPCallMap
+calls :: PingCounter -> SAMPCallMap
 calls pingCount =
   [ (echoMTYPE, callEcho)
   , (pingMTYPE, callPing pingCount)
@@ -847,10 +676,10 @@ callEcho _ _ msgId msg = do
   return (toSAMPResponse params other)
 
 
-callPing :: PingCount -> SAMPCallFunc
+callPing :: PingCounter -> SAMPCallFunc
 callPing pc _ _ msgId msg = do
   delayCall msg
-  increasePingCount pc
+  increaseCounter pc
   let other = addMessageId msgId msg
   return (toSAMPResponse M.empty other)
 
@@ -919,20 +748,6 @@ rfunc rmap secret clid msgTag rsp = do
 -}    
 rfunc rmap _ clId msgTag rsp = addResponse rmap clId msgTag rsp
 
-
--- Pause processing for a small amount of time to try and let
--- threads process everything.
---
-waitForProcessing ::
-  MonadIO m
-  => Int  -- ^ delay in milliseconds (as that's what HubTester uses)
-  -> m ()
-waitForProcessing = liftIO . waitMillis
-
-waitMillis ::
-  Int  -- ^ delay in milliseconds
-  -> IO ()
-waitMillis n = threadDelay (n * 1000)
 
 -- | Since the standard does not require that a timeout leads to
 --   a failed connection, only warn if the call does not time out.
@@ -1052,9 +867,9 @@ allTests gen cl rmap ids = do
 pingTests ::
   SAMPConnection
   -> ResponseMap
-  -> (ClientName, PingCount)  -- client 1
-  -> (ClientName, PingCount)  -- client 2
-  -> (ClientName, PingCount)  -- client 3
+  -> (ClientName, PingCounter)  -- client 1
+  -> (ClientName, PingCounter)  -- client 2
+  -> (ClientName, PingCounter)  -- client 3
   -> HubTest IO ()
 pingTests cl rsp (id1, pc1) (id2, pc2) (_, pc3) = do
 
@@ -1088,9 +903,9 @@ pingTests cl rsp (id1, pc1) (id2, pc2) (_, pc3) = do
   -- unlike HubTester there have already been some counts, so
   -- check the increase (could hard-code the start values, but this
   -- is more modular)
-  start1 <- liftIO (getPingCount pc1)
-  start2 <- liftIO (getPingCount pc2)
-  start3 <- liftIO (getPingCount pc3)
+  start1 <- liftIO (getCounter pc1)
+  start2 <- liftIO (getCounter pc2)
+  start3 <- liftIO (getCounter pc3)
   
   forM_ (zip t1 t2) $ \(tag1, tag2) -> do
     -- NOTE: there's a difference here to TestHub, since here the same
@@ -1116,15 +931,15 @@ pingTests cl rsp (id1, pc1) (id2, pc2) (_, pc3) = do
       nr3 = nPings * (1 + Set.size recipients)
 
       spinWait3 = do
-        c3 <- getPingCount pc3
+        c3 <- getCounter pc3
         when (c3 < np3) (waitMillis 100 >> spinWait3)
       
       spinWait2 = do
-        c2 <- getPingCount pc2
+        c2 <- getCounter pc2
         when (c2 < np2) (waitMillis 100 >> spinWait2)
 
       spinWait1 = do
-        c1 <- getPingCount pc1
+        c1 <- getCounter pc1
         when (c1 < np1) (waitMillis 100 >> spinWait1)
 
       spinWait = do
@@ -1139,13 +954,13 @@ pingTests cl rsp (id1, pc1) (id2, pc2) (_, pc3) = do
   waitForProcessing 400
 
   -- check for no change
-  c1 <- liftIO (getPingCount pc1)
+  c1 <- liftIO (getCounter pc1)
   assert (pingHead ++ " count1") np1 c1
 
-  c2 <- liftIO (getPingCount pc2)
+  c2 <- liftIO (getCounter pc2)
   assert (pingHead ++ " count2") np2 c2
 
-  c3 <- liftIO (getPingCount pc3)
+  c3 <- liftIO (getCounter pc3)
   assert (pingHead ++ " count3") np3 c3
 
   nr <- liftIO (countResponse rsp)
@@ -1207,10 +1022,10 @@ subsTest cl clId1 clId2 = do
   assert "Call All of unsubscribed message" [] called
   
 
-  
-
-testClients :: SAMPInfo -> HubTest IO ()
-testClients si = do
+testClients ::
+  RandomGen g
+  => g -> SAMPInfo -> HubTest IO g
+testClients gen si = do
 
   withClient (makeClient si) testClient0
   
@@ -1338,7 +1153,6 @@ testClients si = do
 
         return (toSAMPMessageMT echoMTYPE params extra)
 
-  gen <- liftIO newStdGen  -- should this be a fixed value for repeatability?
   let necho = 5
       echos = [0..(necho-1)]
       waitTimes = map (\i -> 200 + 100 * i) echos
@@ -1468,7 +1282,7 @@ testClients si = do
     -- should a test be made of the extra parameters?
 
   -- forM_ [0..5::Int] $ \ie -> do
-  forM_ [0..3::Int] $ \ie -> do  -- use a max of 3 for testing for now
+  forM_ [0..3::Int] $ \ie -> do  -- TODO: use a max of 3 for testing for now
                                  -- as larger values take too long
     let num = 10 ^ ie
         xs = toSValue (map toSValue [1 .. num::Int])
@@ -1477,7 +1291,7 @@ testClients si = do
 
     putLn ("call and wait with list size " ++ show num)
     rsp <- lift (callAndWaitE cl2 clId1 msg Nothing)
-    -- NOTE: hsamp-hub does not time out correctly for long messages 
+    -- TODO: hsamp-hub does not time out correctly for long messages 
     
     let head2 = "callAndWait client 2 calling id=" ++ show clId1 ++
                 " ie=" ++ show ie
@@ -1502,8 +1316,7 @@ testClients si = do
   let otherIds = [clId1, clId2]
   lift (verifySubscribedClients cl3 otherIds)
 
-  -- TODO: for now ignore the new generator
-  _ <- lift (allTests gen3 cl3 rmap3 otherIds)
+  gen4 <- lift (allTests gen3 cl3 rmap3 otherIds)
 
   pingTests cl3 rmap3
     (clId1, pingCount1) (clId2, pingCount2) (clId3, pingCount3)
@@ -1565,8 +1378,5 @@ testClients si = do
   -- check that unregistering an unregistered client is an error
   checkFail "Client already unregistered" (unregisterE cl1)
   
+  return gen4
 
-testStress :: SAMPInfo -> HubTest IO ()
-testStress _ = do
-  putLn "Stress tests to be written"
-  
