@@ -37,7 +37,7 @@ Problems include
  a) the test of long messages is currently limited to 0..3 rather
     than 0..5 since the latter is *very* slow with hsamp-hub
  b) the storm tests can hang
-
+ c) the storm messages aren't sent asynchronously (I think)
 -}
 
 module Main (main) where

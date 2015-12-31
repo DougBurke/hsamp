@@ -39,6 +39,10 @@ source-repository head
   type:     mercurial
   location: https://bitbucket.org/doug_burke/hsamp/
 
+flag  threaded
+  description: Use the threaded RTS
+  default: False
+
 flag  testclient
   description: Build the test client (the examples are probably better)
   default: False
@@ -211,8 +215,10 @@ executable hsamp-hub
   other-modules:   Paths_hsamp
                    Utils
 
-  ghc-options:
-     -Wall
+  if flag(threaded)
+    ghc-options:  -Wall -threaded
+  else
+    ghc-options:  -Wall
 
   if flag(examples)
     build-depends:
@@ -269,8 +275,10 @@ executable hsamp-testhub
                    TestUtils
                    Utils
 
-  ghc-options:
-     -Wall
+  if flag(threaded)
+    ghc-options:  -Wall -threaded
+  else
+    ghc-options:  -Wall
 
   if flag(examples)
     build-depends:
