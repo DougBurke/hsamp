@@ -113,7 +113,7 @@ import qualified HubCall as HC
 import qualified Network as N
 import qualified Network.XmlRpc.Internals as XI
 
--- ghc 7.10.2 says that this import is redundant, but if
+-- ghc 7.10.2/3 says that this import is redundant, but if
 -- it is commented out then fdWrite and closeFd are not defined
 import qualified System.Posix.IO as P
 
@@ -128,7 +128,7 @@ import System.Random (RandomGen, StdGen, getStdGen, setStdGen)
 
 import Control.Arrow (first)
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
+import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, writeTVar)
 import Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO, putTMVar,
                                      takeTMVar)
 import Control.Monad.IO.Class (MonadIO)
@@ -495,31 +495,33 @@ broadcastShutDown hi = do
   noticeIO "\n"
   noticeIO "Hub is shutting down."
   let name = toClientName (hiName (hiReader hi))
-  hub <- readMVar (hiState hi)
+  hub <- atomically (readTVar (hiState hi))
   forM_ (M.elems (hiClients hub))
         (broadcastRemovedClient hi . cdName)
   broadcastMType hi name
     (toSAMPMessageMT "samp.hub.event.shutdown" M.empty M.empty)
 
 
--- | Run an action with a copy of the Hub's state. It is possible that
---   the action changes the hub state, but it has to do so by calling
---   @modifyMVar@ (or similar routine). See 'changeHub' for an
---   alternative.
+-- TODO: should some of these be left in STM rather than converted
+--       to IO?
+
+-- | Run an action with a copy of the Hub's state.
+--   See 'changeHub' for an alternative.
 --
 withHub ::
     HubInfo
     -> (HubInfoState -> IO a)
     -> IO a
-withHub hi act = readMVar (hiState hi) >>= act
+withHub hi act = atomically (readTVar (hiState hi)) >>= act
 
 withHubP ::
     HubInfo
     -> (HubInfoState -> a)
     -> IO a
 withHubP hi act = do
-  hub <- readMVar (hiState hi)
+  hub <- atomically (readTVar (hiState hi))
   return (act hub)
+
 
 {-
 TODO: make sure that the code run witihn the changeHub calls is minimal,
@@ -531,11 +533,18 @@ offloading as much as possible to the action to run afterwards
 changeHub ::
     HubInfo
     -> (HubInfoState -> (HubInfoState, a))
-       -- ^ The action is performed with a @modifyMVar@ call.
+       -- ^ The action is performed with a @modifyTVar'@ call.
        --   The return value is the new hub state.
     -> IO a
-changeHub hi act = modifyMVar (hiState hi) (return . act)
-               
+changeHub hi act =
+  let go = do
+        let tvar = hiState hi
+        ostate <- readTVar tvar
+        let (nstate, ans) = act ostate
+        writeTVar tvar nstate
+        return ans
+  in atomically go
+
 -- | Run an action with a copy of the Hub's state. See
 --   'changeHubWithClient' for an alternative.
 --
@@ -616,18 +625,24 @@ changeHubWithClientE ::
        --   code to ensure the new state is evaluated).
     -> IO (Either String a)
 changeHubWithClientE hi secret act = do
-  let mvar = hiState hi
+  let tvar = hiState hi
       doit ohub = do
         let clMap = hiClients ohub
         case M.lookup secret clMap of
           Just client -> 
             let (nhub, rsp, sact) = act ohub client
-            in return (nhub, (Right rsp, sact))
+            in (nhub, (Right rsp, sact))
                 
           _ -> let emsg = "Invalid client secret"
-               in return (ohub, (Left emsg, return ()))
-                   
-  (rsp, sact) <- modifyMVar mvar doit
+               in (ohub, (Left emsg, return ()))
+
+      go = do
+        ostate <- readTVar tvar
+        let (nstate, ans) = doit ostate
+        writeTVar tvar nstate
+        return ans
+
+  (rsp, sact) <- atomically go
   sact
   return rsp
 
@@ -1998,14 +2013,14 @@ data HubInfoState =
 data HubInfo =
     HubInfo {
       hiReader :: HubInfoReader
-    , hiState :: MVar HubInfoState
+    , hiState :: TVar HubInfoState
     }
                   
 dumpHub :: HubInfo -> IO ()
 dumpHub hi = do
   let hir = hiReader hi
       mvar = hiState hi
-  his <- readMVar mvar
+  his <- atomically (readTVar mvar)
   dbgIO ("Hub: " ++ fromRString (hiName hir))
   dbgIO ("  next client: " ++ show (hiNextClient his))
   dbgIO "  clients:"
@@ -2065,8 +2080,8 @@ newHubInfo huburl gen secret = do
             , hiClients = M.empty
             , hiNextClient = 1
             }
-  mvar <- newMVar his
-  return HubInfo { hiReader = hir, hiState = mvar }
+  tvar <- newTVarIO his
+  return HubInfo { hiReader = hir, hiState = tvar }
 
 
 addClient ::
