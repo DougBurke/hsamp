@@ -79,14 +79,12 @@ import Control.Monad (forM_, liftM, unless, void, when)
 import Control.Monad.Except (ExceptT, catchError, throwError)
 import Control.Monad.Error.Class (MonadError)
 import Control.Monad.IO.Class (MonadIO)
-import Control.Monad.STM (STM, atomically, retry)
+import Control.Monad.STM (STM, atomically)
 import Control.Monad.Trans (liftIO)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State.Strict (StateT, get, modify', put)
 
 import Data.Maybe (catMaybes)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
-import Data.Tuple (swap)
 
 import Network.SAMP.Standard (Err, SAMPConnection(..), SAMPInfo)
 import Network.SAMP.Standard.Client (getRegisteredClientsE
@@ -302,30 +300,32 @@ getCounter = readTVar . _unCtr
 
 
 -- | A basic key-value store
-type Store k a = IORef (M.Map k a)
+type Store k a = TVar (M.Map k a)
 
 newStore :: IO (Store k a)
-newStore = newIORef M.empty
+newStore = newTVarIO M.empty
 
 -- | The assumption is that the key does not exist in the
 --   store, but this is not enforced (at least for now).
 --
-addStore :: Ord k => k -> a -> Store k a -> IO ()
-addStore key val store =
-  let insert m = (M.insert key val m, ())
-  in atomicModifyIORef' store insert
+addStore :: Ord k => k -> a -> Store k a -> STM ()
+addStore key val store = modifyTVar' store (M.insert key val)
+
 
 -- | This removes the entry from the store, if it exists
 --
-getStore :: Ord k => k -> Store k a -> IO (Maybe a)
-getStore key store = 
+getStore :: Ord k => k -> Store k a -> STM (Maybe a)
+getStore key store = do
+  oldVal <- readTVar store
   let f _ _ = Nothing
-      remove m = swap (M.updateLookupWithKey f key m)
-  in atomicModifyIORef' store remove
+      (rval, newVal) = M.updateLookupWithKey f key oldVal
+  writeTVar store newVal
+  return rval
+    
 
 -- | Is the store empty
-nullStore :: Store k a -> IO Bool
-nullStore s = M.null <$> readIORef s
+nullStore :: Store k a -> STM Bool
+nullStore s = M.null <$> readTVar s
 
 
 -- assertions

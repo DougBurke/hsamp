@@ -36,7 +36,7 @@ import Control.Monad (forM, forM_, unless, void, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.Random (RandT, runRandT, uniform)
 import Control.Monad.Random.Class (MonadRandom(..))
-import Control.Monad.STM (retry)
+import Control.Monad.STM (atomically, retry)
 import Control.Monad.Trans (liftIO)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT)
@@ -102,7 +102,7 @@ import TestUtils (HubTest
                  , nullStore
                  , mapConcurrentlyE
                  , putLn)
-import Utils (getAddress, getSocket, waitMillis, waitForProcessing)
+import Utils (getAddress, getSocket, waitForProcessing)
 
 type CalcStore = Store MessageTag Int
 
@@ -172,7 +172,7 @@ calls ctr = [("*", handleCall ctr)]
 -- validate that the response is correct
 rfunc :: CalcStore -> SAMPResponseFunc
 rfunc store _ clName msgTag rsp = do
-  mExp <- getStore msgTag store
+  mExp <- atomically (getStore msgTag store)
   unless (isJust mExp)
     (error ("No stored value for tag=" ++ show msgTag ++
             " client=" ++ show clName))
@@ -301,7 +301,7 @@ sendAsync ::
 sendAsync store uniqTag conn receiver msg expVal = do
   let tag = getTag uniqTag
   void (callE conn receiver tag msg)
-  liftIO (addStore tag expVal store)
+  atomicallyIO (addStore tag expVal store)
 
 
 combineMaps :: (Ord k, Num a) => [M.Map k a] -> M.Map k a
@@ -378,16 +378,14 @@ runCalcStorm genStr ogen si nclient nquery = do
         when (sum cts < ntotal) retry
         
       -- wait for the call async messages to be processed
-      waitStore store =
-        let go = do
-              isEmpty <- nullStore store
-              unless isEmpty (waitMillis 100 >> go)
-        in go
+      waitStore store = do
+        isEmpty <- nullStore store
+        unless isEmpty retry
 
   putLn "... waiting for evalCounters"
   atomicallyIO (waitSum evalCounters)
   putLn "... waitStore"
-  liftIO (forM_ stores waitStore)
+  atomicallyIO (forM_ stores waitStore)
 
   putLn "Closing down storm clients ..."
   finishStorm (zip conns tids)
