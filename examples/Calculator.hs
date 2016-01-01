@@ -41,7 +41,7 @@ import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT)
 
 import Data.Maybe (fromJust, isJust)
-import Data.List (unzip4, zip4)
+import Data.List (transpose, unzip4, zip4)
 
 import Network.SAMP.Standard.Client ( callAndWaitE
                                     , declareMetadataE
@@ -268,23 +268,19 @@ validateResponse lbl rsp expVal = do
 -- | Send a message using a randomly-selected method:
 --      notify, synchronous, asynchronous
 --
-
-sendNotify ::
+type SendMethod =
   SAMPConnection
   -> ClientName
   -> SAMPMessage
   -> Int
   -- ^ The expected answer
   -> Err IO ()
+
+
+sendNotify :: SendMethod
 sendNotify conn receiver msg _ = notifyE conn receiver msg
 
-sendSync ::
-  SAMPConnection
-  -> ClientName
-  -> SAMPMessage
-  -> Int
-  -- ^ The expected answer
-  -> Err IO ()
+sendSync :: SendMethod
 sendSync conn receiver msg expVal = do
   rsp <- callAndWaitE conn receiver msg Nothing
   validateResponse ("sendSync: receiver=" ++ show receiver) rsp expVal
@@ -301,30 +297,11 @@ getTag t =
 sendAsync ::
   CalcStore
   -> Int -- counter
-  -> SAMPConnection
-  -> ClientName
-  -> SAMPMessage
-  -> Int
-  -- ^ The expected answer
-  -> Err IO ()
+  -> SendMethod
 sendAsync store uniqTag conn receiver msg expVal = do
   let tag = getTag uniqTag
   void (callE conn receiver tag msg)
   liftIO (addStore tag expVal store)
-
-randomSend ::
-  RandomGen g
-  => CalcStore
-  -> Int -- ^ a unique integer value
-  -> SAMPConnection
-  -> ClientName
-  -> SAMPMessage
-  -> Int
-  -- ^ The expected answer
-  -> RandErr g IO ()
-randomSend store ctr conn receiver msg expVal = do
-  f <- uniform [sendNotify, sendSync, sendAsync store ctr]
-  lift (f conn receiver msg expVal)
 
 
 {-
@@ -363,9 +340,19 @@ runCalcStorm genStr ogen si nclient nquery = do
   sendCounters <- replicateM nclient (liftIO newSendCounter)
   let sendMap = M.fromList (zip clNames sendCounters)
 
-  -- TODO: These should be sent asynchronously      
-  let act = forM clinfos (makeStorm nquery sendMap)
-  (_, ngen) <- lift (runRandT act ogen)
+  -- create the random messages, for each client
+  let mkStorm = forM clinfos (createStorm nquery sendMap)
+  (msgInfos, ngen) <- lift (runRandT mkStorm ogen)
+
+  -- "mix up" the messages, otherwise the first nquery
+  -- ones in the list are from the same client.
+  --
+  let msgs = concat (transpose msgInfos)
+  assert "[programmer check] list lengths match"
+    (length (concat msgInfos)) (length msgs)
+  
+  -- send them concurrently
+  void (lift (mapConcurrentlyE id msgs))
 
   putLn ("Initial RNG: " ++ genStr)
   putLn "Waiting for calc storm clients to finish ..."
@@ -385,11 +372,11 @@ runCalcStorm genStr ogen si nclient nquery = do
               unless isEmpty (waitMillis 100 >> go)
         in go
 
-  putLn "DBG - waiting for sendCounters"
+  putLn "... waiting for sendCounters"
   liftIO (waitSum sendCounters)
-  putLn "DBG - waiting for evalCounters"
+  putLn "... waiting for evalCounters"
   liftIO (waitSum evalCounters)
-  putLn "DBG - waitStore"
+  putLn "... waitStore"
   liftIO (forM_ stores waitStore)
 
   -- Now the calls have been made, can find out the number of
@@ -418,25 +405,45 @@ runCalcStorm genStr ogen si nclient nquery = do
   return ngen
 
 
-makeStorm ::
+-- | Create the information needed to create nquery calls
+--   from this client. Randomised:
+--      - message content (operation and arguments)
+--      - receiver
+--      - method for sending the message
+--
+--   TODO: this need not be in IO, since do not need to increase
+--   the SendCounter, as could return the names of the clients being
+--   sent a message (so can calculate it outside this routine).
+--   This is a hold-over from an earlier method and should be
+--   cleaned up (once got it working).
+--
+createStorm ::
   RandomGen g
   => Int
+  -- ^ number of queries
   -> M.Map ClientName SendCounter
+  -- ^ the storm clients (including this one); the SendCounter
+  --   of the messages being sent a message will be increased
+  --   here (not necessary now sending back the client name
+  --   that is selected, but leave in for now)
   -> (SAMPConnection, EvalCounter, CalcStore, ThreadId)
-  -> RandErr g IO ()
-makeStorm nquery nameMap (conn, _, store, _) = do
+  -- ^ the client making the call.
+  -> RandErr g IO [Err IO ()]
+  -- ^ Returns the action to make the call
+createStorm nquery nameMap (conn, _, store, _) = do
 
-  -- the assumption is that otherNames is not empty
+  -- the assumption is that others is not empty
   let others = M.toList (M.delete (scId conn) nameMap)
 
       ctrs = [1..nquery]
       act ctr = do
         (msg, expVal) <- createMessage
         (receiver, sendCounter) <- uniform others
+        sendMethod <- uniform [sendNotify, sendSync, sendAsync store ctr]
         liftIO (increaseCounter sendCounter)
-        randomSend store ctr conn receiver msg expVal
+        return (sendMethod conn receiver msg expVal)
 
-  forM_ ctrs act
+  forM ctrs act
 
 
 -- | Create the requested number of calculator clients,

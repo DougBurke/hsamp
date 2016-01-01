@@ -28,7 +28,7 @@ Usage:
 
 The rng1/2 arguments are to allow problematic generators to
 be re-run, but it looks like the storm test failures are
-non-deterministic.
+non-deterministic, so this isn't that useful.
 
 To do:
 
@@ -37,7 +37,7 @@ Problems include
  a) the test of long messages is currently limited to 0..3 rather
     than 0..5 since the latter is *very* slow with hsamp-hub
  b) the storm tests can hang
- c) the storm messages aren't sent asynchronously (I think)
+
 -}
 
 module Main (main) where
@@ -103,6 +103,7 @@ import Network.SAMP.Standard.Types ( ClientName
                                    , RString
                                    , SAMPMapValue
                                    , SAMPMessage
+                                   , SAMPMapElement
                                    , SAMPResponse
                                    , SAMPType
                                    , SAMPValue(..)
@@ -617,19 +618,37 @@ notifyPing pc _ clName _ = do
 dumpKV :: (Show a, Show b) => (a, b) -> IO ()
 dumpKV (k,v) = putStrLn ("    key=" ++ show k ++ " value=" ++ show v)
 
-unexpectedNotification :: SAMPNotificationFunc
-unexpectedNotification _ clName msg = do
+extract :: SAMPMessage -> (MType, [SAMPMapElement], [SAMPMapElement])
+extract msg = 
   let mtype = getSAMPMessageType msg
       keys = M.toList (getSAMPMessageParams msg)
       extra = M.toList (getSAMPMessageExtra msg)
+  in (mtype, keys, extra)
 
-  putStrLn ("Error: client " ++ show clName ++ 
-            " receiveNotification=" ++ show mtype)
+     
+unexpectedNotification :: SAMPNotificationFunc
+unexpectedNotification _ clName msg = do
+  reportUnexpected clName "receiveNotification" Nothing msg
+  error "SHOULD NOT HAVE HAPPENED"
+  
+
+reportUnexpected ::
+  ClientName
+  -> String   -- ^ label
+  -> Maybe String  -- ^ extra info
+  -> SAMPMessage
+  -> IO ()
+reportUnexpected clName label mstr msg = do
+  let (mtype, keys, extra) = extract msg
+  putStrLn ("Error: client " ++ show clName ++ " " ++
+            label ++ "=" ++ show mtype)
+  case mstr of
+    Just str -> putStrLn str
+    _ -> return ()
   putStrLn "  keys:"
   forM_ keys dumpKV
   unless (null extra) (putStrLn "  extra:" >> forM_ extra dumpKV)
-  putStrLn "<-- end unexpectedNotification -->"
-  error "SHOULD NOT HAVE HAPPENED"
+  putStrLn ("<-- end " ++ label ++ " -->")
   
 
 -- samp.client.receiveCall
@@ -714,23 +733,12 @@ callFail _ _ msgId msg = do
 -- maybe want to return an error message
 unexpectedCall :: SAMPCallFunc
 unexpectedCall _ clName msgId msg = do
-  let mtype = getSAMPMessageType msg
-      keys = M.toList (getSAMPMessageParams msg)
-      extra = M.toList (getSAMPMessageExtra msg)
-
-      other = addMessageId msgId msg
-
-  putStrLn ("Error: client " ++ show clName ++ 
-            " receiveCall=" ++ show mtype)
-  putStrLn (" msg id: " ++ show msgId)
-  putStrLn "  keys:"
-  forM_ keys dumpKV
-  unless (null extra) (putStrLn "  extra:" >> forM_ extra dumpKV)
-  putStrLn "<-- end unexpectedCall -->"
-
+  let txt = " msg id: " ++ show msgId
+  reportUnexpected clName "receiveCall" (Just txt) msg
   delayCall msg
+  let other = addMessageId msgId msg
   return (toSAMPResponseError
-          "Client is not subscibed to this MType)" M.empty other)
+          "Client is not subscribed to this MType)" M.empty other)
 
 
 -- samp.client.receiveResponse
