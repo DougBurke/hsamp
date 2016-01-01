@@ -3,7 +3,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015
+Copyright   :  (c) Douglas Burke 2015, 2016
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
