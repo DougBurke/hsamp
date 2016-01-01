@@ -386,22 +386,23 @@ runCalcStorm genStr ogen si nclient nquery = do
   putLn "Closing down storm clients ..."
   finishStorm (zip conns tids)
 
-  -- Final check for the number of sent and received messages.
+  -- Repeat checks for the number of sent and received messages
+  -- to make sure that nothing has been sent since the clients
+  -- finished.
   --
   putLn "Final storm checks..."
 
-  forM_ (zip4 sentCounts sendCounters evalCounters clNames) $
-    \(nexp, sendCtr, evalCtr, name) -> do
-      nsent <- liftIO (getCounter sendCtr)
-      neval <- liftIO (getCounter evalCtr)
+  sends <- forM sendCounters (liftIO . getCounter)
+  evals <- forM evalCounters (liftIO . getCounter)
 
-      -- this should not happen, but check anyway
+  let nsends = sum sends
+  assert "Total counts" ntotal nsends
+  
+  forM_ (zip4 sentCounts sends evals clNames) $
+    \(nexp, nsent, neval, name) -> do
       assert ("Unexpected call count for " ++ show name) nexp nsent
-
-      -- check that nothing else has happened since the calls were
-      -- processed above.
       assert ("Unexpected eval count for " ++ show name) nsent neval
-        
+
   return ngen
 
 
