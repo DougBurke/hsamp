@@ -36,6 +36,7 @@ import Control.Monad (forM, forM_, unless, void, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.Random (RandT, runRandT, uniform)
 import Control.Monad.Random.Class (MonadRandom(..))
+import Control.Monad.STM (retry)
 import Control.Monad.Trans (liftIO)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT)
@@ -89,6 +90,7 @@ import System.Random (RandomGen)
 import TestUtils (HubTest
                  , EvalCounter
                  , Store
+                 , atomicallyIO
                  , assert
                  , makeClients
                  , newEvalCounter
@@ -224,7 +226,7 @@ doCalc ctr msg = do
 
   case mres of
     Right ans -> do
-      increaseCounter ctr
+      atomicallyIO (increaseCounter ctr)
       return (Right ans)
     Left emsg -> return (Left emsg)
     
@@ -371,13 +373,10 @@ runCalcStorm genStr ogen si nclient nquery = do
   putLn "Waiting for calc storm clients to finish ..."
   
   -- wait until all the messages have been sent.
-  let waitSum counters =
-        let go = do
-              cts <- forM counters getCounter
-              let ncts = sum cts
-              when (ncts < ntotal) (waitMillis 100 >> go)
-        in go
-
+  let waitSum counters = do
+        cts <- forM counters getCounter
+        when (sum cts < ntotal) retry
+        
       -- wait for the call async messages to be processed
       waitStore store =
         let go = do
@@ -386,7 +385,7 @@ runCalcStorm genStr ogen si nclient nquery = do
         in go
 
   putLn "... waiting for evalCounters"
-  liftIO (waitSum evalCounters)
+  atomicallyIO (waitSum evalCounters)
   putLn "... waitStore"
   liftIO (forM_ stores waitStore)
 
@@ -397,7 +396,7 @@ runCalcStorm genStr ogen si nclient nquery = do
   -- expected.
   --
   putLn "Final storm check..."
-  evals <- forM evalCounters (liftIO . getCounter)
+  evals <- atomicallyIO (forM evalCounters getCounter)
   forM_ (zip evals clNames) $
     \(neval, name) -> do
       let nsent = sendMap M.! name

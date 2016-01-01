@@ -44,20 +44,19 @@ module TestUtils (
   -- , removeClient_
 
     -- * other stuff
+  , atomicallyIO
   , mapConcurrentlyE
   , putLn
     
     -- * counters
   , EvalCounter
   , PingCounter
-  , SendCounter
     
   , getCounter
   , increaseCounter
 
   , newEvalCounter
   , newPingCounter
-  , newSendCounter
 
     -- * store
   , Store
@@ -73,11 +72,14 @@ import qualified Data.Set as Set
 
 import Control.Concurrent (ThreadId, killThread)
 import Control.Concurrent.Async (mapConcurrently)
+import Control.Concurrent.STM.TVar (TVar, modifyTVar', newTVarIO, readTVar,
+                                    writeTVar)
 
 import Control.Monad (forM_, liftM, unless, void, when)
 import Control.Monad.Except (ExceptT, catchError, throwError)
 import Control.Monad.Error.Class (MonadError)
 import Control.Monad.IO.Class (MonadIO)
+import Control.Monad.STM (STM, atomically, retry)
 import Control.Monad.Trans (liftIO)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State.Strict (StateT, get, modify', put)
@@ -97,6 +99,10 @@ import Network.SAMP.Standard.Types (ClientName, ClientSecret
                                    , dumpSAMPValue, runE)
 
 import Utils (waitForProcessing)
+
+-- | Lift a STM transaction.
+atomicallyIO :: MonadIO m => STM a -> m a
+atomicallyIO = liftIO . atomically
 
 -- transformer stack: layer State on top of Err
 --
@@ -265,39 +271,34 @@ makeClients si nclient = do
 --   The phantom type is used to distinguish between the different
 --   type of counters.
 --
-data Counter a = Ctr { _unCtr :: IORef Int }
+data Counter a = Ctr { _unCtr :: TVar Int }
 
 data EvalCounterType
 data PingCounterType
-data SendCounterType
 
 type EvalCounter = Counter EvalCounterType
 type PingCounter = Counter PingCounterType
-type SendCounter = Counter SendCounterType
 
 newCounter :: IO (Counter a)
-newCounter = Ctr <$> newIORef 0
+newCounter = Ctr <$> newTVarIO 0
 
 -- | Counter for number of times the calculator has been evaluated
 --   (e.g. called with notify or call).
 newEvalCounter :: IO EvalCounter
 newEvalCounter = newCounter
 
+
 -- | The number of times a ping call was received.
 newPingCounter :: IO PingCounter
 newPingCounter = newCounter
 
--- | Counter for number of times the calculator has been called.
-newSendCounter :: IO SendCounter
-newSendCounter = newCounter
 
-increaseCounter :: Counter a -> IO ()
-increaseCounter (Ctr c) =
-  let incr v = (succ v, ())
-  in atomicModifyIORef' c incr
+increaseCounter :: Counter a -> STM ()
+increaseCounter (Ctr c) = modifyTVar' c succ
 
-getCounter :: Counter a -> IO Int
-getCounter = readIORef . _unCtr
+
+getCounter :: Counter a -> STM Int
+getCounter = readTVar . _unCtr
 
 
 -- | A basic key-value store
@@ -409,7 +410,7 @@ assertTestClients conn expNames = do
 -- | Check that the ping count matches the expected value
 assertPing :: String -> Int -> PingCounter -> HubTest IO ()
 assertPing lbl count pc = do
-  got <- liftIO (getCounter pc)
+  got <- atomicallyIO (getCounter pc)
   assert ("Ping count: " ++ lbl) count got
 
 
