@@ -241,6 +241,7 @@ executable hsamp-hub
       network-uri,
       random,
       scotty,
+      stm == 2.4.*,
       text,
       time,
       transformers,

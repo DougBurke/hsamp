@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015
+Copyright   :  (c) Douglas Burke 2015, 2016
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -128,10 +128,12 @@ import System.Random (RandomGen, StdGen, getStdGen, setStdGen)
 
 import Control.Arrow (first)
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.MVar (MVar, modifyMVar, newEmptyMVar, newMVar,
-                                putMVar, readMVar, takeMVar)
+import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
+import Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO, putTMVar,
+                                     takeTMVar)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad (forM_, guard, unless, void, when)
+import Control.Monad.STM (atomically)
 import Control.Monad.Trans (liftIO)
 
 import Data.Bits ((.|.))
@@ -351,11 +353,11 @@ newMessageId ::
     HubInfo
     -> ClientSecret
     -- ^ the client which will be sent the message Id
-    -> (MessageTag, ClientData, Maybe (MVar SAMPMethodResponse))
+    -> (MessageTag, ClientData, Maybe (TMVar SAMPMethodResponse))
     -- ^ the source of the message
     -> IO (Either String MessageId)
     -- ^ in case the client can not be found
-newMessageId hi secret (tag, sender, mmvar) = do
+newMessageId hi secret (tag, sender, mrsp) = do
   cTime <- getCurrentTime
   changeHubWithClientE hi secret $ \ohub orec -> 
     let oclientmap = hiClients ohub
@@ -367,7 +369,7 @@ newMessageId hi secret (tag, sender, mmvar) = do
                     -- if get to here the sender must have a callback
                   , ifdUrl = fromJust (cdCallback sender)
                   , ifdTag = tag
-                  , ifdMVar = mmvar
+                  , idfMRsp = mrsp
                   , ifdTime = cTime }
         
         -- Inserting a prefix to ensure no collision is
@@ -964,7 +966,7 @@ sendToAll2 cTime hi tag msg ohub sender =
                   -- if get to here the sender must have a callback
                 , ifdUrl = fromJust (cdCallback sender)
                 , ifdTag = tag
-                , ifdMVar = Nothing
+                , idfMRsp = Nothing
                 , ifdTime = cTime }
 
       isHub = isHubSubscribed hir mtype sendName
@@ -1198,8 +1200,8 @@ sendToCW ::
     -> ClientData
     -> IO SAMPMethodResponse
 sendToCW hi sender waitTime msg receiver = do
-  rspmvar <- newEmptyMVar
-  let arg = (dummyTag, sender, Just rspmvar)
+  rspvar <- newEmptyTMVarIO
+  let arg = (dummyTag, sender, Just rspvar)
       rSecret = cdSecret receiver
       recName = cdName receiver
       mtype = getSAMPMessageType msg
@@ -1215,19 +1217,21 @@ sendToCW hi sender waitTime msg receiver = do
       -- Note: the timer starts at receipt of the message
       --       to the client, not from when the 
       --       samp.client.receiveCall is made
-      forkCall (clientReceiveCall sendName receiver mid msg)
+      cid <- forkIO (clientReceiveCall sendName receiver mid msg)
 
       let tVal = toDuration waitTime
           errorRsp = rawError ("Timeout: call took longer than " ++
                                show waitTime ++ " sec.")
 
+      -- Is there a better way to time out than this?
       when (tVal > 0) (
           forkCall (sleep tVal
-                    >> putMVar rspmvar errorRsp
+                    >> atomically (putTMVar rspvar errorRsp)
+                    >> CE.throwTo cid CE.ThreadKilled
                     >> removeMessageId hi mid rSecret)
           )
 
-      takeMVar rspmvar
+      atomically (takeTMVar rspvar)
 
     Left _ -> do
       dbg "*** Looks like the receiver has disappeared ***"
@@ -1368,8 +1372,8 @@ replyToOrigin clName ifd replyData = do
       tag = ifdTag ifd
       rsp = SAMPReturn (toSValue replyData)
             
-  case ifdMVar ifd of
-    Just mvar -> putMVar mvar rsp
+  case idfMRsp ifd of
+    Just var -> atomically (putTMVar var rsp)
     _ -> sendReceiveResponse url secret clName tag replyData
 
 
@@ -1828,14 +1832,14 @@ newtype SubscriptionMap = SM (HM.HashMap MType SAMPMapValue)
 emptySubMap :: SubscriptionMap
 emptySubMap = SM HM.empty
 
--- | This structure should be a union type, since having a MVar
---   means that some of the other fields are not needed. Not
+-- | This structure should be a union type, since if ifdMRsp is not
+--   None then some of the other fields are not needed. Not
 --   worth re-factoring at this time as this is all in flux.
 data InFlightData =
     IFD { ifdSecret :: ClientSecret
         , ifdUrl :: String
         , ifdTag :: MessageTag
-        , ifdMVar :: Maybe (MVar SAMPMethodResponse)
+        , idfMRsp :: Maybe (TMVar SAMPMethodResponse)
         , ifdTime :: UTCTime
         -- ^ the approximate time the response was sent
         }
