@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015
+Copyright   :  (c) Douglas Burke 2015, 2016
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -32,7 +32,7 @@ import qualified Data.Map.Strict as M
 
 import Control.Concurrent (ThreadId, forkIO, killThread)
 import Control.Concurrent.MVar (newEmptyMVar, takeMVar)
-import Control.Monad (forM, forM_, replicateM, unless, void, when)
+import Control.Monad (forM, forM_, unless, void, when)
 import Control.Monad.Except (throwError)
 import Control.Monad.Random (RandT, runRandT, uniform)
 import Control.Monad.Random.Class (MonadRandom(..))
@@ -41,7 +41,7 @@ import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT)
 
 import Data.Maybe (fromJust, isJust)
-import Data.List (transpose, unzip4, zip4)
+import Data.List (foldl', transpose, unzip4, zip4)
 
 import Network.SAMP.Standard.Client ( callAndWaitE
                                     , declareMetadataE
@@ -88,12 +88,10 @@ import System.Random (RandomGen)
 
 import TestUtils (HubTest
                  , EvalCounter
-                 , SendCounter
                  , Store
                  , assert
                  , makeClients
                  , newEvalCounter
-                 , newSendCounter
                  , increaseCounter
                  , getCounter
                  , addStore
@@ -304,6 +302,12 @@ sendAsync store uniqTag conn receiver msg expVal = do
   liftIO (addStore tag expVal store)
 
 
+combineMaps :: (Ord k, Num a) => [M.Map k a] -> M.Map k a
+combineMaps =
+  let comb = M.unionWith (+)
+  in foldl' comb M.empty
+
+
 {-
 TODO: if there is an error, it's not going to necessarily
   kill the test. Either need to get the calculator threads
@@ -336,14 +340,23 @@ runCalcStorm genStr ogen si nclient nquery = do
 
   let (conns, evalCounters, stores, tids) = unzip4 clinfos
       clNames = map scId conns
+      
+      osendMap = M.fromList (map (\n -> (n,0)) clNames)
 
-  sendCounters <- replicateM nclient (liftIO newSendCounter)
-  let sendMap = M.fromList (zip clNames sendCounters)
+      -- create the random messages, for each client
+      storminfo = zip conns stores
+      mkStorm = forM storminfo (createStorm nquery osendMap)
+      
+  (rvals, ngen) <- lift (runRandT mkStorm ogen)
+  let (sendMaps, msgInfos) = unzip rvals
 
-  -- create the random messages, for each client
-  let mkStorm = forM clinfos (createStorm nquery sendMap)
-  (msgInfos, ngen) <- lift (runRandT mkStorm ogen)
-
+      -- combine all the send calls
+      sendMap = combineMaps sendMaps
+      
+  -- make sure "sent" the correct number of messages
+  let nsends = sum (M.elems sendMap)
+  assert "Total counts" ntotal nsends
+  
   -- "mix up" the messages, otherwise the first nquery
   -- ones in the list are from the same client.
   --
@@ -372,35 +385,22 @@ runCalcStorm genStr ogen si nclient nquery = do
               unless isEmpty (waitMillis 100 >> go)
         in go
 
-  putLn "... waiting for sendCounters"
-  liftIO (waitSum sendCounters)
   putLn "... waiting for evalCounters"
   liftIO (waitSum evalCounters)
   putLn "... waitStore"
   liftIO (forM_ stores waitStore)
 
-  -- Now the calls have been made, can find out the number of
-  -- messages sent to each client.
-  sentCounts <- forM sendCounters (liftIO . getCounter)
-
   putLn "Closing down storm clients ..."
   finishStorm (zip conns tids)
 
-  -- Repeat checks for the number of sent and received messages
-  -- to make sure that nothing has been sent since the clients
-  -- finished.
+  -- A final check to make sure no more calls were evaluated than
+  -- expected.
   --
-  putLn "Final storm checks..."
-
-  sends <- forM sendCounters (liftIO . getCounter)
+  putLn "Final storm check..."
   evals <- forM evalCounters (liftIO . getCounter)
-
-  let nsends = sum sends
-  assert "Total counts" ntotal nsends
-  
-  forM_ (zip4 sentCounts sends evals clNames) $
-    \(nexp, nsent, neval, name) -> do
-      assert ("Unexpected call count for " ++ show name) nexp nsent
+  forM_ (zip evals clNames) $
+    \(neval, name) -> do
+      let nsent = sendMap M.! name
       assert ("Unexpected eval count for " ++ show name) nsent neval
 
   return ngen
@@ -412,39 +412,36 @@ runCalcStorm genStr ogen si nclient nquery = do
 --      - receiver
 --      - method for sending the message
 --
---   TODO: this need not be in IO, since do not need to increase
---   the SendCounter, as could return the names of the clients being
---   sent a message (so can calculate it outside this routine).
---   This is a hold-over from an earlier method and should be
---   cleaned up (once got it working).
---
 createStorm ::
-  RandomGen g
+  (RandomGen g, Monad m)
   => Int
   -- ^ number of queries
-  -> M.Map ClientName SendCounter
-  -- ^ the storm clients (including this one); the SendCounter
-  --   of the messages being sent a message will be increased
-  --   here (not necessary now sending back the client name
-  --   that is selected, but leave in for now)
-  -> (SAMPConnection, EvalCounter, CalcStore, ThreadId)
+  -> M.Map ClientName Int
+  -- ^ the number of times the client has been sent a message
+  --   (it is expected, but not required, that the count is 0
+  --   for all clients)
+  -> (SAMPConnection, CalcStore)
   -- ^ the client making the call.
-  -> RandErr g IO [Err IO ()]
-  -- ^ Returns the action to make the call
-createStorm nquery nameMap (conn, _, store, _) = do
+  -> RandErr g m (M.Map ClientName Int, [Err IO ()])
+  -- ^ Returns the new set of counts and the action to make the call
+createStorm nquery onameMap (conn, store) = do
 
   -- the assumption is that others is not empty
-  let others = M.toList (M.delete (scId conn) nameMap)
+  let others = M.keys (M.delete (scId conn) onameMap)
 
       ctrs = [1..nquery]
       act ctr = do
         (msg, expVal) <- createMessage
-        (receiver, sendCounter) <- uniform others
+        receiver <- uniform others
         sendMethod <- uniform [sendNotify, sendSync, sendAsync store ctr]
-        liftIO (increaseCounter sendCounter)
-        return (sendMethod conn receiver msg expVal)
+        return (receiver, sendMethod conn receiver msg expVal)
 
-  forM ctrs act
+  ans <- forM ctrs act
+  let (names, fcalls) = unzip ans
+  let nnameMap = foldl' incMap onameMap names
+      incMap omap name = M.adjust succ name omap
+      
+  return (nnameMap, fcalls)
 
 
 -- | Create the requested number of calculator clients,
