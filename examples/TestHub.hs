@@ -49,16 +49,19 @@ import Control.Arrow (first)
 
 import Control.Concurrent (ThreadId, forkIO)
 import Control.Concurrent.MVar (newEmptyMVar, takeMVar)
+import Control.Concurrent.STM.TVar (TVar, modifyTVar', newTVarIO, readTVar,
+                                    writeTVar)
 
 import Control.Monad (forM_, replicateM, unless, when, void)
 import Control.Monad.Except (catchError, throwError, runExceptT)
+import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Random (MonadRandom(..), Rand, runRand, uniform)
+import Control.Monad.STM (STM, atomically, retry)
 import Control.Monad.Trans (liftIO)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.State.Strict (execStateT)
 
 import Data.Char (chr)
-import Data.IORef (IORef, atomicModifyIORef', newIORef, readIORef)
 import Data.List (isPrefixOf, partition, sort)
 import Data.Maybe (fromJust, isJust)
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
@@ -149,70 +152,72 @@ import TestUtils (HubStore(..), HubTest, PingCounter
                  , getCounter, increaseCounter, newPingCounter)
 import Utils (getAddress, getSocket, waitMillis, waitForProcessing)
 
+-- | Lift a STM transaction.
+atomicallyIO :: MonadIO m => STM a -> m a
+atomicallyIO = liftIO . atomically
+
 -- | Store the responses to a client, labelled by the message
 --   tag.
 --
-type ResponseMap = IORef [((ClientName, MessageTag), SAMPResponse)]
+type ResponseMapSTM = TVar [((ClientName, MessageTag), SAMPResponse)]
 
-newResponseMap :: IO ResponseMap
-newResponseMap = newIORef []
+newResponseMapSTM :: IO ResponseMapSTM
+newResponseMapSTM = newTVarIO []
 
-countResponse :: ResponseMap -> IO Int
-countResponse rmap = length `fmap` readIORef rmap
+countResponseSTM :: ResponseMapSTM -> STM Int
+countResponseSTM rmap = length `fmap` readTVar rmap
 
 -- | Add the response to the start of the list.
 --
-addResponse ::
-  ResponseMap -> ClientName -> MessageTag -> SAMPResponse -> IO ()
-addResponse rmap clId msgTag rsp =
+addResponseSTM ::
+  ResponseMapSTM -> ClientName -> MessageTag -> SAMPResponse -> STM ()
+addResponseSTM rmap clId msgTag rsp =
   let newVal = ((clId, msgTag), rsp)
-      add kvs = (newVal : kvs, ())
-  in atomicModifyIORef' rmap add
+      add kvs = newVal : kvs
+  in modifyTVar' rmap add
+
 
 -- | Removes all entries that match this client and tag. The return value
 --   can be empty.
 --
---   Subject to change. Is this atomic? Use STM instead?
-removeResponse ::
-  ResponseMap -> ClientName -> MessageTag -> IO [SAMPResponse]
-removeResponse rmap clId msgTag =
+removeResponseSTM ::
+  ResponseMapSTM -> ClientName -> MessageTag -> STM [SAMPResponse]
+removeResponseSTM rmap clId msgTag = do
+  oldVals <- readTVar rmap
   let match (k,_) = k == (clId, msgTag)
-      getV kvs = let (as, bs) = partition match kvs
-                 in (bs, map snd as)
-  in atomicModifyIORef' rmap getV
+      (xs, newVals) = partition match oldVals
+  writeTVar rmap newVals
+  return (map snd xs)
 
 
 -- | Wait until the given response has been returned. It
 --   returns a single response, even if there are multiple
 --   ones in the store.
 --
---   This is a simple polling loop and there is no time out.
+--   This is a simple loop and there is no time out.
 --
-waitForResponse ::
-  ResponseMap -> ClientName -> MessageTag -> IO SAMPResponse
-waitForResponse rmap clId msgTag = do
+waitForResponseSTM ::
+  ResponseMapSTM -> ClientName -> MessageTag -> STM SAMPResponse
+waitForResponseSTM rmap clId msgTag = do
   let key = (clId, msgTag)
-      
+
       -- I wanted to just read the map in this loop, but there's
       -- a potential race if the extraction step is separate from
       -- the check step.
       --
       -- Only interested in the first key in this case
       getKV kvs = case break ((== key) . fst) kvs of
-        (_, []) -> (kvs, Nothing)
-        (l, h:r) -> (l ++ r, Just (snd h))
-          
-      go = do
-        mrsp <- atomicModifyIORef' rmap getKV
-        case mrsp of
-          Just rsp -> return rsp
-          _ -> waitMillis 100 >> go
-          
-  go
+        (_, []) -> Nothing
+        (l, h:r) -> Just (l ++ r, snd h)
 
+  oldVals <- readTVar rmap
+  case getKV oldVals of
+    Nothing -> retry
+    Just (newVals, ans) -> do
+      writeTVar rmap newVals
+      return ans
 
-  
-
+    
 echoMTYPE, pingMTYPE, failMTYPE :: MType
 echoMTYPE = "test.echo"
 pingMTYPE = "samp.app.ping"
@@ -564,11 +569,11 @@ setupClient2 cl2 = do
 --
 callableClient ::
   SAMPConnection
-  -> IO (PingCounter, ResponseMap, ThreadId)
+  -> IO (PingCounter, ResponseMapSTM, ThreadId)
 callableClient conn = do
   mvar <- newEmptyMVar
   pingCount <- newPingCounter
-  responseMap <- newResponseMap
+  responseMap <- newResponseMapSTM
 
   let act = do
         sock <- getSocket
@@ -745,7 +750,7 @@ unexpectedCall _ clName msgId msg = do
 --
 -- TODO: use a mvar or channel?
 rfunc ::
-  ResponseMap
+  ResponseMapSTM
   -> SAMPResponseFunc
 {-
 rfunc rmap secret clid msgTag rsp = do
@@ -754,7 +759,7 @@ rfunc rmap secret clid msgTag rsp = do
             "\nresponse=" ++ show rsp) -- DBG
   addResponse rmap msgTag rsp
 -}    
-rfunc rmap _ clId msgTag rsp = addResponse rmap clId msgTag rsp
+rfunc rmap _ clId msgTag rsp = atomically (addResponseSTM rmap clId msgTag rsp)
 
 
 -- | Since the standard does not require that a timeout leads to
@@ -802,7 +807,7 @@ verifySubscribedClients cl ids = do
 -- Test callAll and notifyAll
 allTests ::
   RandomGen g
-  => g -> SAMPConnection -> ResponseMap -> [ClientName] -> Err IO g
+  => g -> SAMPConnection -> ResponseMapSTM -> [ClientName] -> Err IO g
 allTests gen cl rmap ids = do
 
   let makeMsg = do
@@ -831,14 +836,14 @@ allTests gen cl rmap ids = do
   assertSet "Notification list (all)" ids notified
 
   called <- callAllE cl tag1 msg1
-  nreply <- liftIO (countResponse rmap)
+  nreply <- atomicallyIO (countResponseSTM rmap)
 
   -- This seems like it could be fragile
   when (nreply > 0)
     (putLn "WARNING: Looks like hub call()/notify() not completing quickly")
 
   forM_ ids $ \rid -> do
-    rsp <- liftIO (waitForResponse rmap rid tag1)
+    rsp <- atomicallyIO (waitForResponseSTM rmap rid tag1)
 
     assertTrue (head3 ++ "response okay") (isSAMPSuccess rsp)
 
@@ -862,11 +867,11 @@ allTests gen cl rmap ids = do
       mid mquery
 
   -- Finished this section, so there should be no calls
-  nreply1 <- liftIO (countResponse rmap)
+  nreply1 <- atomicallyIO (countResponseSTM rmap)
   assert (head3 ++ "finished processing") 0 nreply1
 
   waitForProcessing 500
-  nreply2 <- liftIO (countResponse rmap)
+  nreply2 <- atomicallyIO (countResponseSTM rmap)
   assert (head3 ++ "no messages have reappeared") 0 nreply2
   
   return ngen
@@ -874,7 +879,7 @@ allTests gen cl rmap ids = do
 
 pingTests ::
   SAMPConnection
-  -> ResponseMap
+  -> ResponseMapSTM
   -> (ClientName, PingCounter)  -- client 1
   -> (ClientName, PingCounter)  -- client 2
   -> (ClientName, PingCounter)  -- client 3
@@ -951,13 +956,13 @@ pingTests cl rsp (id1, pc1) (id2, pc2) (_, pc3) = do
         when (c1 < np1) (waitMillis 100 >> spinWait1)
 
       spinWait = do
-        nr <- countResponse rsp
-        when (nr < nr3) (waitMillis 100 >> spinWait)
+        nr <- countResponseSTM rsp
+        when (nr < nr3) retry
         
   liftIO spinWait3
   liftIO spinWait2
   liftIO spinWait1
-  liftIO spinWait
+  atomicallyIO spinWait
   
   waitForProcessing 400
 
@@ -971,7 +976,7 @@ pingTests cl rsp (id1, pc1) (id2, pc2) (_, pc3) = do
   c3 <- liftIO (getCounter pc3)
   assert (pingHead ++ " count3") np3 c3
 
-  nr <- liftIO (countResponse rsp)
+  nr <- atomicallyIO (countResponseSTM rsp)
   assert (pingHead ++ " response") nr3 nr
   
   lift (declareSubscriptionsE cl [])
@@ -1029,6 +1034,61 @@ subsTest cl clId1 clId2 = do
   called <- lift (callAllE cl ytag msg)
   assert "Call All of unsubscribed message" [] called
   
+
+-- Validate results from client 2
+validateClient2 ::
+  (Eq a, Show a, MonadIO m)
+  => (SAMPResponse -> Maybe a)
+  -> ClientName
+  -> ResponseMapSTM
+  -> [SAMPMessage]
+  -> [MessageTag]
+  -> [a]
+  -> Err m ()
+validateClient2 findId clId1 rmap2 msgs tags msgIds2 =
+  forM_ (zip3 msgs tags msgIds2) $ \(msg, msgTag, msgId) -> do
+    let head2 = "Client 2 from=" ++ show clId1 ++ " tag=" ++ show msgTag
+
+    rsps <- atomicallyIO (removeResponseSTM rmap2 clId1 msgTag)
+    case rsps of
+      [rsp] -> do
+        assertTrue (head2 ++ " response okay") (isSAMPSuccess rsp)
+
+        let params = getSAMPMessageParams msg
+        case getSAMPResponseResult rsp of
+          Just res -> assertSAMPMap (head2 ++ " response") params res
+          _ -> throwError (head2 ++ " internal error: no result!")
+
+        case findId rsp of
+          Just msgKey -> assert (head2 ++ " msgId is correct") msgId msgKey
+          _ -> throwError (head2 ++ " key missing: " ++ show msgIdQueryKey)
+
+      [] -> throwError (head2 ++ " no responses")
+      _ -> throwError (head2 ++ " multiple responses: " ++ show (length rsps))
+
+
+-- Validate results from client 4
+validateClient4 ::
+  (Ord a, Show a, MonadIO m)
+  => (SAMPResponse -> Maybe a)
+  -> ClientName
+  -> ResponseMapSTM
+  -> MessageTag
+  -> [a]
+  -> Int
+  -> Err m ()
+validateClient4 findId clId1 rmap4 sameTag msgIds4 necho = do
+  rsps4 <- atomicallyIO (removeResponseSTM rmap4 clId1 sameTag)
+  let head4 = "Client 4 from id=" ++ show clId1 ++ " tag=" ++ show sameTag
+  assert (head4 ++ " number of responses") necho (length rsps4)
+  assertTrue (head4 ++ " responses okay") (all isSAMPSuccess rsps4)
+
+  -- This does not appear to be checked in HubTester
+  case mapM findId rsps4 of
+    Just gotIds4 -> assert (head4 ++ " ids are wrong")
+                    (sort msgIds4) (sort gotIds4)
+    Nothing -> throwError (head4 ++ " missing an id in a response")
+
 
 testClients ::
   RandomGen g
@@ -1190,57 +1250,27 @@ testClients gen si = do
   -- lot of the calls have been processed then it
   -- means that the overhad of making the calls is too large.
   --
-  check <- liftIO (countResponse rmap2)
+  check <- atomicallyIO (countResponseSTM rmap2)
   when (check > necho `div` 2)
     (putLn ("WARNING: looks like hub call/notify not completing " ++
             "quickly (" ++ show check ++ "/" ++ show necho ++ ")"))
   
   let spinWait = do
-        c2 <- countResponse rmap2
-        c4 <- countResponse rmap4
-        unless (c2 == necho && c2 == c4) (waitMillis 100 >> spinWait)
+        c2 <- countResponseSTM rmap2
+        c4 <- countResponseSTM rmap4
+        unless (c2 == necho && c2 == c4) retry -- (waitMillis 100 >> spinWait)
 
-  liftIO spinWait
+  atomicallyIO spinWait
         
   let findId rsp = findKey msgIdQueryKey (getSAMPResponseExtra rsp)
 
-  -- Validate results from client 2
-  forM_ (zip3 msgs tags msgIds2) $ \(msg, msgTag, msgId) -> do
-    let head2 = "Client 2 from=" ++ show clId1 ++ " tag=" ++ show msgTag
-
-    rsps <- liftIO (removeResponse rmap2 clId1 msgTag)
-    case rsps of
-      [rsp] -> do
-        assertTrue (head2 ++ " response okay") (isSAMPSuccess rsp)
-
-        let params = getSAMPMessageParams msg
-        case getSAMPResponseResult rsp of
-          Just res -> assertSAMPMap (head2 ++ " response") params res
-          _ -> throwError (head2 ++ " internal error: no result!")
-
-        case findId rsp of
-          Just msgKey -> assert (head2 ++ " msgId is correct") msgId msgKey
-          _ -> throwError (head2 ++ " key missing: " ++ show msgIdQueryKey)
-
-      [] -> throwError (head2 ++ " no responses")
-      _ -> throwError (head2 ++ " multiple responses: " ++ show (length rsps))
-
-  -- Validate results from client 4
-  rsps4 <- liftIO (removeResponse rmap4 clId1 sameTag)
-  let head4 = "Client 4 from id=" ++ show clId1 ++ " tag=" ++ show sameTag
-  assert (head4 ++ " number of responses") necho (length rsps4)
-  assertTrue (head4 ++ " responses okay") (all isSAMPSuccess rsps4)
-
-  -- This does not appear to be checked in HubTester
-  case mapM findId rsps4 of
-    Just gotIds4 -> assert (head4 ++ " ids are wrong")
-                    (sort msgIds4) (sort gotIds4)
-    Nothing -> throwError (head4 ++ " missing an id in a response")
-
-  nrsp2 <- liftIO (countResponse rmap2)
+  lift (validateClient2 findId clId1 rmap2 msgs tags msgIds2)
+  lift (validateClient4 findId clId1 rmap4 sameTag msgIds4 necho)
+  
+  nrsp2 <- atomicallyIO (countResponseSTM rmap2)
   assert "No more responses for client 2" 0 nrsp2
 
-  nrsp4 <- liftIO (countResponse rmap4)
+  nrsp4 <- atomicallyIO (countResponseSTM rmap4)
   assert "No more responses for client 4" 0 nrsp4
   
   -- check the ping count: (check not in TestHub)

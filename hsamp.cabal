@@ -302,6 +302,7 @@ executable hsamp-testhub
       -- network-uri,
       random,
       -- scotty,
+      stm == 2.4.*,
       -- text,
       time,
       transformers
