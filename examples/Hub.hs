@@ -581,8 +581,7 @@ changeHubWithClient ::
     HubInfo
     -> ClientSecret
     -> (HubInfoState -> ClientData -> (HubInfoState, SAMPMethodResponse, IO ()))
-       -- ^ The action is performed within a @modifyMVar@ call.
-       --   The return value is the new hub state, the return
+       -- ^ The return value is the new hub state, the return
        --   value, and an IO action to run after setting the
        --   new hub state (e.g. any broadcast message to be sent or
        --   code to ensure the new state is evaluated).
@@ -601,8 +600,7 @@ changeHubWithCallableClient ::
     HubInfo
     -> ClientSecret
     -> (HubInfoState -> ClientData -> (HubInfoState, SAMPMethodResponse, IO ()))
-       -- ^ The action is performed within a @modifyMVar@ call.
-       --   The return value is the new hub state, the return
+       -- ^ The return value is the new hub state, the return
        --   value, and an IO action to run after setting the
        --   new hub state (e.g. any broadcast message to be sent or
        --   code to ensure the new state is evaluated).
@@ -618,8 +616,7 @@ changeHubWithClientE ::
     HubInfo
     -> ClientSecret
     -> (HubInfoState -> ClientData -> (HubInfoState, a, IO ()))
-       -- ^ The action is performed within a @modifyMVar@ call.
-       --   The return value is the new hub state, the return
+       -- ^ The return value is the new hub state, the return
        --   value, and an IO action to run after setting the
        --   new hub state (e.g. any broadcast message to be sent or
        --   code to ensure the new state is evaluated).
@@ -651,8 +648,7 @@ changeHubWithCallableClientE ::
     HubInfo
     -> ClientSecret
     -> (HubInfoState -> ClientData -> (HubInfoState, SAMPMethodResponse, IO ()))
-       -- ^ The action is performed within a @modifyMVar@ call.
-       --   The return value is the new hub state, the return
+       -- ^ The return value is the new hub state, the return
        --   value, and an IO action to run after setting the
        --   new hub state (e.g. any broadcast message to be sent or
        --   code to ensure the new state is evaluated).
@@ -818,12 +814,6 @@ notifyAll hi secret msg = do
 
   return ("notifyAll", rsp)
 
-{-
-
-Could the MVar in sendToClient - currently used for callAndWait - be
-used for all cases. Could attach a timer thread to it, that will
-"cancel" the MVar so can identify problematic systems?
--}
 
 findOtherSubscribedClients ::
     ClientMap
@@ -961,8 +951,8 @@ sendToAll hi secret tag msg = do
 
 -- The idea is to iterate through the hub, changing the client data
 -- of the subscribed clients, and build up the IO actions to notify
--- these clients. This action is then run *outside* the modifyMVar
--- call.
+-- these clients. This action is then run *outside* the STM
+-- transaction.
 --
 sendToAll2 ::
   UTCTime

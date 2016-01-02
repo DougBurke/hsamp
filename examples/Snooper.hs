@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -38,19 +38,21 @@ TODO:
 
 module Main (main) where
 
+import qualified Control.Exception as CE
+import qualified Data.Map.Strict as M
+
 import System.Environment (getArgs, getProgName)
 import System.Exit (exitSuccess, exitFailure)
 import System.IO (hPutStrLn, stderr)
 import System.IO.Error (isUserError, ioeGetErrorString)
 
-import qualified Control.Exception as CE
 import Control.Concurrent (ThreadId, killThread, myThreadId)
-import Control.Concurrent.MVar (MVar, modifyMVar, newMVar, readMVar)
+import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, writeTVar)
+import Control.Monad.STM (atomically)
 
 -- import Control.Monad (when)
 
 import Data.Maybe (fromJust)
-import qualified Data.Map.Strict as M
 
 import System.Log.Logger (Priority(DEBUG), setLevel, updateGlobalLogger)
 
@@ -211,7 +213,7 @@ defined).
 -}
 
 type ClientMap = M.Map ClientName String
-type ClientMapVar = MVar ClientMap
+type ClientMapVar = TVar ClientMap
 
 bracket :: RString -> String
 bracket a = " (" ++ fromRString a ++ ")"
@@ -225,7 +227,7 @@ newClientMap :: SAMPConnection -> IO ClientMapVar
 newClientMap conn = do
     clients <- runE (getClientNamesE conn)
     let conv (k,v) = (k, toName k v)
-    newMVar (M.fromList (map conv clients))
+    newTVarIO (M.fromList (map conv clients))
 
 getFromMap :: ClientMap -> ClientName -> String
 getFromMap clmap n = M.findWithDefault (show n) n clmap
@@ -234,16 +236,22 @@ getFromMap clmap n = M.findWithDefault (show n) n clmap
 
 getDisplayName :: ClientMapVar -> ClientName -> IO String
 getDisplayName clvar clid = do
-    clmap <- readMVar clvar
+    clmap <- atomically (readTVar clvar)
     return (getFromMap clmap clid)
 
 -- Remove the client from the map, returning its display name
 
 removeClient :: ClientMapVar -> ClientName -> IO String
-removeClient clvar clid = 
-    modifyMVar clvar $ \clmap -> do
-        let rval = getFromMap clmap clid
-        return (M.delete clid clmap, rval)
+removeClient clvar clid = do
+  let act = do
+        omap <- readTVar clvar
+        writeTVar clvar (M.delete clid omap)
+        return omap
+        
+  -- can deletion and getFromMap be combined?
+  clmap <- atomically act
+  return (getFromMap clmap clid)
+  
 
 -- Add the client to the map, returning its display name. Will overwrite
 -- existing values.
@@ -251,8 +259,13 @@ removeClient clvar clid =
 addClient :: ClientMapVar -> ClientName -> Maybe RString -> IO String
 addClient clvar clid clname = do
     let name = toName clid clname
-    modifyMVar clvar $ \clmap ->
-        return (M.insert clid name clmap, name)
+        act = do
+          clmap <- readTVar clvar
+          writeTVar clvar (M.insert clid name clmap)
+
+    atomically act
+    return name
+
 
 processCall ::
     SAMPConnection

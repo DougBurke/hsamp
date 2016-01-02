@@ -204,6 +204,7 @@ executable hsamp-snooper
       hslogger,
       mtl,
       network,
+      stm == 2.4.*,
       transformers
 
   else
