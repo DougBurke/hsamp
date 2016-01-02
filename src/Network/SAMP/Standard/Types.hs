@@ -125,7 +125,7 @@ import System.Random (Random(random), RandomGen, randomR)
 Several of the networking libraries used by the SAMP
 routines require initialization, which is provided by this
 routine. This should be performed before any SAMP routine
-is used (e.g. including 'Network.SAMP.Standard.Client.getHubInfoE').
+is used (e.g. including 'Network.SAMP.Standard.Setup.getHubInfoE').
 
 At present this includes 'Network.Socket.withSocketsDo'. 
 -}

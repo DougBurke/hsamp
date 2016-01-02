@@ -42,8 +42,7 @@ import qualified Data.Map as M
 import qualified Network as N
 
 import Control.Concurrent (ThreadId, forkIO, myThreadId)
--- TODO: use async instead?
-import Control.Concurrent.ParallelIO.Global (parallel_, stopGlobalPool)
+import Control.Concurrent.Async (mapConcurrently)
 import Control.Concurrent.STM.TChan (TChan, newTChanIO, readTChan, writeTChan)
 import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, writeTVar)
 import Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO, putTMVar
@@ -232,8 +231,9 @@ processMessage conn (cmode, mtype, params) = do
       msg <- runE (toSAMPMessage mtype params M.empty)
       (pchan, _) <- startPrintChannel -- not needed for notification case but do anyway
       case cmode of
-        Sync   -> parallel_ (map (sendSync pchan conn msg . fst) targets)
-                  >> stopGlobalPool
+        Sync   ->
+          let act = sendSync pchan conn msg . fst
+          in void (mapConcurrently act targets)
 
         Notify -> do
           putStrLn "Notifications sent to:" 

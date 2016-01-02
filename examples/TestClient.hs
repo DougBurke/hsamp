@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -16,34 +16,80 @@ Test out the SAMP client code.
 
 TODO:
 
- - combine code with Snooper.hs
-
+ - combine code with example code (e.g. Snooper.hs)
+ - possibly remove, as maybe better off using the other example
+   codes
 -}
 
 module Main (main) where
 
 import qualified Control.Exception as CE
+import qualified Data.Map as M
 
 import System.Environment (getArgs, getProgName)
 import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr)
-import System.IO.Error
+import System.IO.Error (ioeGetErrorString, isUserError)
 
 import Control.Arrow (first)
-import Control.Monad (forM_, unless)
-import Control.Monad.Trans (liftIO)
 import Control.Concurrent (ThreadId, killThread, threadDelay, forkIO, myThreadId)
-import Control.Concurrent.ParallelIO.Global
+import Control.Concurrent.Async (mapConcurrently)
+import Control.Monad (forM_, unless, void)
+import Control.Monad.Trans (liftIO)
 
 import Data.Maybe (fromJust, fromMaybe)
 import Data.Version (showVersion)
 
-import Network.SAMP.Standard
+import Network.SAMP.Standard.Client (callAndWaitE
+                                    , declareMetadataE
+                                    , declareSubscriptionsSimpleE
+                                    , getMetadataE
+                                    , getRegisteredClientsE
+                                    , getSubscribedClientsE
+                                    , getSubscriptionsE
+                                    , pingE
+                                    , registerClientE
+                                    , toMetadataE
+                                    , unregisterE)
+import Network.SAMP.Standard.Server (SAMPCallFunc
+                                    , SAMPCallMap
+                                    , SAMPNotificationFunc
+                                    , SAMPNotificationMap
+                                    , SAMPResponseFunc
+                                    , callAllE
+                                    , setXmlrpcCallbackE
+                                    , simpleClientServer)
+import Network.SAMP.Standard.Setup (getHubInfoE
+                                   , sampLockFileE)
 import Network.SAMP.Standard.Server.Scotty (runServer)
+import Network.SAMP.Standard.Types (Err
+                                   , MType
+                                   , RString
+                                   , SAMPConnection(..)
+                                   , SAMPInfo
+                                   , SAMPMessage
+                                   , SAMPValue
+                                   , fromClientName
+                                   , getSAMPInfoHubMetadata
+                                   , getSAMPInfoHubSecret
+                                   , getSAMPInfoHubURL
+                                   , getSAMPResponseErrorTxt
+                                   , handleError
+                                   , isSAMPSuccess
+                                   , isSAMPWarning
+                                   , runE
+                                   , showSAMPValue
+                                   , toMessageTag
+                                   , toRString
+                                   , toRStringE
+                                   , toSAMPMessage
+                                   , toSAMPResponse
+                                   , toSValue
+                                   , withSAMP)
 
 import Network.Socket (PortNumber, socketPort)
 
-import System.Log.Logger
+import System.Log.Logger (Priority(DEBUG), setLevel, updateGlobalLogger)
 
 import Utils (getSocket)
 
@@ -73,7 +119,10 @@ rather than the whole routine.
 -}
 doIt :: IO ()
 doIt =
-  let act = getHubInfoE >>= \hi -> putLn "Found hub." >> processHub hi
+  let act = sampLockFileE >>=
+            getHubInfoE >>=
+            \hi -> putLn "Found hub." >>
+            processHub hi
 
       hdlr :: String -> IO ()
       hdlr msg  = hPutStrLn stderr ("ERROR: " ++ msg) >> exitFailure
@@ -107,8 +156,11 @@ Perhaps I want a finally/try rather than catch here?
 -}
 
 processHub :: SAMPInfo -> Err IO ()
-processHub si@(ss, surl, ekeys) = do
-    putLn ("Samp secret: " ++ fromRString ss)
+processHub si = do
+    let ss = getSAMPInfoHubSecret si
+        surl = getSAMPInfoHubURL si
+        ekeys = M.toList (getSAMPInfoHubMetadata si)
+    putLn ("Samp secret: " ++ show ss)
     putLn ("Samp hub:    " ++ surl)
     unless (null ekeys) $ do
          putLn "  extra info:"
@@ -152,7 +204,8 @@ makeClient si _ = do
           Nothing  -- (Just (hostName pNum ++ "icon.png"))
           Nothing
     let v = fromMaybe "unknown" (toRString (showVersion version))
-    declareMetadataE conn $ ("testclient.version", toSValue v) : md
+        mds = M.insert "testclient.version" (toSValue v) md
+    declareMetadataE conn mds
     return conn
 
 {-
@@ -170,10 +223,12 @@ setSubscriptions cl pNum = do
 wait :: Int -> IO ()
 wait = threadDelay . (1000000 *)
 
-reportIt :: String -> [SAMPKeyValue] -> Err IO ()
+reportIt :: Show k => String -> [(k, SAMPValue)] -> Err IO ()
 reportIt lbl msgs = do
-         putLn ("    " ++ lbl)
-         forM_ msgs $ \(n,v) -> putLn (concat ["        ", fromRString n, " : ", showSAMPValue v])
+  putLn ("    " ++ lbl)
+  let showME (n, v) =
+        putLn (concat ["        ", show n, " : ", showSAMPValue v])
+  forM_ msgs showME
 
 reportClients :: SAMPConnection -> Err IO ()
 reportClients cl = do
@@ -184,7 +239,7 @@ reportClients cl = do
           subs <- getSubscriptionsE cl name
           reportIt "Subscriptions" subs
           mds <- getMetadataE cl name
-          reportIt "Metadata" mds
+          reportIt "Metadata" (M.toList mds)
 
 reportSubscriptions :: SAMPConnection -> MType -> Err IO ()
 reportSubscriptions cl msg = do
@@ -193,7 +248,7 @@ reportSubscriptions cl msg = do
     reportIt ("Subscriptions to " ++ show msg) msgs'
 
 pingMsg :: (Monad m) => Err m SAMPMessage
-pingMsg = toSAMPMessage "samp.app.ping" []
+pingMsg = toSAMPMessage "samp.app.ping" M.empty M.empty
 
 {-
 TODO: try asynchronous ping
@@ -203,8 +258,7 @@ pingItems :: SAMPConnection -> Err IO ()
 pingItems cl = do
     putLn "Calling clients that respond to samp.app.ping (synchronous)"
     rsp <- getSubscribedClientsE cl "samp.app.ping"
-    liftIO (parallel_ (map cp rsp))
-    liftIO stopGlobalPool
+    liftIO (void (mapConcurrently cp rsp))
     putLn "Finished calling samp.app.ping (synchronous)"
 
         where
@@ -224,14 +278,16 @@ pingItemsAsync :: SAMPConnection -> Err IO ()
 pingItemsAsync cl = do
     putLn "Calling clients that respond to samp.app.ping (asynchronous)"
     msg <- pingMsg
+    -- TODO: could generate a randomized tag
     msgTag <- toMessageTag <$> toRStringE "need-a-better-system"
     rsp <- callAllE cl msgTag msg
-    liftIO $ forM_ rsp $ \(n,mid) -> putStrLn ("  contacted " ++ show n ++
-                                               " with id " ++ show mid)
-
+    let showRsp (n, mid) = putStrLn ("  contacted " ++ show n ++
+                                     " with id " ++ show mid)
+    liftIO (forM_ rsp showRsp)
+    
 doClient :: SAMPConnection -> PortNumber -> Err IO ()
 doClient conn pNum = do
-    putLn ("Registered client: public name = " ++ fromRString (scId conn))
+    putLn ("Registered client: public name = " ++ show (scId conn))
     setSubscriptions conn pNum
     pingE conn
     putLn "Was able to ping the hub using the Standard profile's ping method"
@@ -252,37 +308,24 @@ processCall ::
 processCall tid conn = 
     simpleClientServer conn (notifications tid) calls rfunc
 
-notifications :: ThreadId -> [SAMPNotificationFunc]
+notifications :: ThreadId -> SAMPNotificationMap
 notifications tid = [("samp.hub.event.shutdown", handleShutdown tid)]
 
-calls :: [SAMPCallFunc]
+calls :: SAMPCallMap
 calls = [("samp.app.ping", handlePing)]
 
-handleShutdown ::
-    ThreadId
-    -> MType
-    -> ClientSecret
-    -> ClientName
-    -> [SAMPKeyValue]
-    -> IO ()
-handleShutdown tid _ _ name _ = do
+handleShutdown :: ThreadId -> SAMPNotificationFunc
+handleShutdown tid _ name _ = do
     putStrLn ("Received a shutdown message from " ++ show name)
     killThread tid
 
-handlePing ::
-    MType
-    -> ClientSecret
-    -> ClientName
-    -> MessageId
-    -> [SAMPKeyValue]
-    -> IO SAMPResponse
-handlePing _ _ senderid msgid _ = do
+handlePing :: SAMPCallFunc
+handlePing _ senderid msgid _ = do
     putStrLn ("Received a ping request from " ++ show senderid ++
               " msgid=" ++ show msgid)
-    return (toSAMPResponse [])
+    return (toSAMPResponse M.empty M.empty)
 
 rfunc :: SAMPResponseFunc
--- rfunc secret receiverid msgid rsp =
 rfunc _ receiverid msgid rsp =
     if isSAMPSuccess rsp
       then putStrLn ("Got a response to msg-id=" ++ show msgid ++

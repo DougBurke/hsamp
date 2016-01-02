@@ -110,16 +110,18 @@ executable testclient
 
   if flag(testclient)
     build-depends:
+      async,
       base,
       bytestring,
+      containers,
       hsamp,
       hslogger,
       mtl,
       network,
       network-uri,
-      parallel-io,
-      scotty
-
+      scotty,
+      transformers
+      
   else
     buildable:  False
 
@@ -171,6 +173,7 @@ executable hsamp-sender
 
   if flag(examples)
     build-depends:
+      async,
       base,
       bytestring,
       containers,            
@@ -178,7 +181,6 @@ executable hsamp-sender
       hslogger,
       mtl,            
       network,
-      parallel-io,
       random,
       stm == 2.4.*,
       time,
