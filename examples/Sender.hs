@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -41,26 +41,70 @@ import qualified Control.Exception as CE
 import qualified Data.Map as M
 import qualified Network as N
 
-import Control.Concurrent
-import Control.Concurrent.ParallelIO.Global
+import Control.Concurrent (ThreadId, forkIO, myThreadId)
+import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
+import Control.Concurrent.MVar (MVar, modifyMVar_, newEmptyMVar, newMVar
+                               , putMVar, readMVar, takeMVar)
+-- TODO: use async instead?
+import Control.Concurrent.ParallelIO.Global (parallel_, stopGlobalPool)
 import Control.Monad (forM_, unless, when)
 
 import Data.Maybe (isNothing)
 import Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
 
-import Network.SAMP.Standard
-import Network.SAMP.Standard.Server.Scotty
+import Network.SAMP.Standard.Client (callAndWaitE
+                                    , declareSubscriptionsSimpleE
+                                    , getClientNameE
+                                    , getSubscribedClientsE
+                                    , notifyAllE
+                                    , unregisterE)
+import Network.SAMP.Standard.Server (SAMPCallMap
+                                    , SAMPNotificationFunc
+                                    , SAMPNotificationMap
+                                    , SAMPResponseFunc
+                                    , callAllE
+                                    , setXmlrpcCallbackE
+                                    , simpleClientServer)
+import Network.SAMP.Standard.Server.Scotty (runServer)
+import Network.SAMP.Standard.Types (ClientName
+                                   , MessageTag
+                                   , MType
+                                   , RString
+                                   , SAMPConnection
+                                   , SAMPMapElement
+                                   , SAMPMapValue
+                                   , SAMPMessage
+                                   , SAMPResponse
+                                   , fromRString
+                                   , getSAMPMessageExtra
+                                   , getSAMPMessageParams
+                                   , getSAMPMessageType
+                                   , getSAMPResponseError
+                                   , getSAMPResponseResult 
+                                   , handleError
+                                   , isSAMPErrorOnly
+                                   , isSAMPWarning
+                                   , randomAlphaNumRString
+                                   , runE
+                                   , stringToMapElementE
+                                   , toMessageTag
+                                   , toMTypeE
+                                   , toRStringE
+                                   , toSAMPMessage
+                                   , withSAMP)
 import Network.Socket (Socket)
 
 import System.Environment (getArgs, getProgName)
 import System.Exit (exitSuccess, exitFailure)
-import System.IO
-import System.IO.Error
-import System.Log.Logger
-import System.Random
+import System.IO (hPutStrLn, stderr)
+import System.IO.Error (ioeGetErrorString, isUserError)
+import System.Log.Logger (Priority(DEBUG), debugM, setLevel
+                         , updateGlobalLogger)
+import System.Random (getStdRandom)
 import System.Timeout (timeout)
     
-import Utils
+import Utils (PrintChannel, createClient, displayKV, doE, getAddress
+             , getSocket, startPrintChannel, syncPrint)
 
 -- convert seconds to milliseconds, error-ing out if the converted
 -- value would cause overflow.
