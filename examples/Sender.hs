@@ -42,14 +42,16 @@ import qualified Data.Map as M
 import qualified Network as N
 
 import Control.Concurrent (ThreadId, forkIO, myThreadId)
-import Control.Concurrent.Chan (Chan, newChan, readChan, writeChan)
-import Control.Concurrent.MVar (MVar, modifyMVar_, newEmptyMVar, newMVar
-                               , putMVar, readMVar, takeMVar)
 -- TODO: use async instead?
 import Control.Concurrent.ParallelIO.Global (parallel_, stopGlobalPool)
-import Control.Monad (forM_, unless, when)
+import Control.Concurrent.STM.TChan (TChan, newTChanIO, readTChan, writeTChan)
+import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, writeTVar)
+import Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO, putTMVar
+                                    , readTMVar)
+import Control.Monad (forM_, void, when)
+import Control.Monad.STM (atomically)
 
-import Data.Maybe (isNothing)
+import Data.List (partition)
 import Data.Time.Clock (UTCTime, NominalDiffTime, getCurrentTime, diffUTCTime)
 
 import Network.SAMP.Standard.Client (callAndWaitE
@@ -225,7 +227,7 @@ processMessage ::
 processMessage conn (cmode, mtype, params) = do
   targets <- runE (getSubscribedClientsE conn mtype)
   if null targets
-    then putStrLn $ "No clients are subscribed to the message " ++ show mtype
+    then putStrLn ("No clients are subscribed to the message " ++ show mtype)
     else do
       msg <- runE (toSAMPMessage mtype params M.empty)
       (pchan, _) <- startPrintChannel -- not needed for notification case but do anyway
@@ -237,48 +239,49 @@ processMessage conn (cmode, mtype, params) = do
           putStrLn "Notifications sent to:" 
           tgts <- runE (notifyAllE conn msg
                         >>= mapM (\n -> fmap ((,) n) (getClientNameE conn n)))
-          forM_ tgts $ \t -> putStrLn ("    " ++ showTarget t)
+          forM_ tgts (\t -> putStrLn ("    " ++ showTarget t))
 
         ASync  -> do
           chan <- newChannel
           tvar <- emptyTimeVar
           
           sock <- getSocket
-          _ <- makeServer pchan tvar chan conn sock
+          void (makeServer pchan tvar chan conn sock)
           dbg "Created server for async"
           
           clients <- sendASync tvar conn msg
 
-          cv <- newMVar clients
+          cv <- newTVarIO clients
           flag <- timeout timeoutPeriod (waitForCalls pchan chan cv)
-          case flag of
-            Just _ -> putStrLn "Received all calls"
-            _ -> putStrLn "Timed out waiting for calls"
             
           -- do we need to do this? should this be done within a resource
           -- "handler" (to make sure the socket is closed on error)?
           dbg "Closing socket"
           N.sClose sock
 
-          unless (isNothing flag) $ do
-            rclients <- takeMVar cv 
-            case rclients of
-              [] -> return ()
-              [cl] -> fail ("The following client failed to respond: " ++
-                            show cl)
-              _ -> fail ("The following clients failed to respond: " ++
-                         unwords (map show rclients))
+          case flag of
+            Just _ -> putStrLn "Received all calls"
+            _ -> do
+              putStrLn "Timed out waiting for calls"
+              rclients <- atomically (readTVar cv)
+              case rclients of
+                [] -> return ()
+                [cl] -> fail ("The following client failed to respond: " ++
+                              show cl)
+                _ -> fail ("The following clients failed to respond: " ++
+                           unwords (map show rclients))
 
-type TimeVar = MVar UTCTime
-type Channel = Chan ClientName
+
+type TimeVar = TMVar UTCTime
+type Channel = TChan ClientName
 
 type Target = (ClientName, Maybe RString)
     
 emptyTimeVar :: IO TimeVar
-emptyTimeVar = newEmptyMVar
+emptyTimeVar = newEmptyTMVarIO
 
 newChannel :: IO Channel
-newChannel = newChan
+newChannel = newTChanIO
 
 printResponse ::
     PrintChannel -> NominalDiffTime -> Target -> SAMPResponse -> IO ()
@@ -345,23 +348,30 @@ sendASync ::
 sendASync mt conn msg = do
   dbg ("Sending asynchronous message: " ++ show msg)
   sTime <- getCurrentTime
-  putMVar mt sTime
+  atomically (putTMVar mt sTime)
   msgTag <- getMsgTag
   map fst <$> runE (callAllE conn msgTag msg)
 
-waitForCalls :: PrintChannel -> Channel -> MVar [ClientName] -> IO ()
+
+waitForCalls :: PrintChannel -> Channel -> TVar [ClientName] -> IO ()
 waitForCalls pchan chan cv = do
-   receiverid <- readChan chan
-   modifyMVar_ cv $ \clients ->
-     -- TODO: I do not understand the logic of this  
-     if receiverid `elem` clients
-       then return (filter (/= receiverid) clients)
-       else do
+   let act = do
+         rid <- readTChan chan
+         clients <- readTVar cv
+         let (matches, nclients) = partition (== rid) clients
+         case matches of
+           [] -> return (Left rid)
+           _ -> writeTVar cv nclients >> return (Right (null nclients))
+
+   ans <- atomically act
+   case ans of
+     Right True -> return ()
+     Right _ -> waitForCalls pchan chan cv
+     Left rid -> do
          syncPrint pchan ["Ignoring unexpected response from " ++
-                          show receiverid]
-         return clients
-   ncl <- readMVar cv
-   unless (null ncl) (waitForCalls pchan chan cv)
+                          show rid]
+         waitForCalls pchan chan cv
+
 
 {-
 
@@ -372,23 +382,38 @@ on setting up the server).
 -}
 
 makeServer ::
-  PrintChannel -> TimeVar -> Channel -> SAMPConnection -> Socket -> IO ThreadId
+  PrintChannel
+  -> TimeVar
+  -> Channel
+  -> SAMPConnection
+  -> Socket
+  -> IO ThreadId
 makeServer pchan mt chan conn sock = do
     tid <- myThreadId
     url <- getAddress sock
     urlR <- runE (toRStringE url)
 
     -- register the messages that we are interested in
-    runE $ setXmlrpcCallbackE conn urlR >>
-           declareSubscriptionsSimpleE conn []
+    runE (setXmlrpcCallbackE conn urlR >>
+          declareSubscriptionsSimpleE conn [])
 
     -- now run the server
-    forkIO $ runServer sock url $ processCall pchan mt chan conn tid
+    forkIO (runServer sock url (processCall pchan mt chan conn tid))
+
 
 processCall ::
-    PrintChannel -> TimeVar -> Channel -> SAMPConnection -> ThreadId -> String -> IO ()
+  PrintChannel
+  -> TimeVar
+  -> Channel
+  -> SAMPConnection
+  -> ThreadId
+  -> String
+  -> IO ()
 processCall pchan mt chan conn tid =
-    simpleClientServer conn (notifications pchan tid) calls (rfunc conn pchan mt chan) 
+  simpleClientServer conn
+    (notifications pchan tid)
+    calls
+    (rfunc conn pchan mt chan) 
 
 -- TODO: support hub shutdown
 
@@ -423,8 +448,8 @@ rfunc ::
     -> SAMPResponseFunc
 rfunc conn pchan mt chan _ clName _ rsp = do
    eTime <- getCurrentTime
-   sTime <- readMVar mt
+   sTime <- atomically (readTMVar mt)
    tname <- handleError (return . const Nothing) $ getClientNameE conn clName
    printResponse pchan (diffUTCTime eTime sTime) (clName,tname) rsp
-   writeChan chan clName
+   atomically (writeTChan chan clName)
 

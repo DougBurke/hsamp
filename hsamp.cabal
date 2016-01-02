@@ -180,6 +180,7 @@ executable hsamp-sender
       network,
       parallel-io,
       random,
+      stm == 2.4.*,
       time,
       transformers
                   
