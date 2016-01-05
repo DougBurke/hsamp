@@ -40,6 +40,8 @@ module TestUtils (
   , addOtherClients
   , makeClient
   , makeClients
+  , closeClient
+  , closeClients
   , removeClient
   -- , removeClient_
 
@@ -104,6 +106,12 @@ atomicallyIO = liftIO . atomically
 
 -- transformer stack: layer State on top of Err
 --
+-- NOTE: this means that I can't use the _hsRunning field
+-- in HubStore to unregister clients on error because
+-- for this to work it would need to be
+--
+--   type HubTest m a = ExceptT String (StateT HubStore) a
+--
 type HubTest m a = StateT HubStore (ExceptT String m) a
 
 
@@ -121,6 +129,10 @@ data HubStore =
   , _hsUsedSecrets :: [ClientSecret]
     -- ^ secrets used by the hub (kept so that we can check that names are
     --   not being re-used)
+  , _hsRunning :: [SAMPConnection]
+    -- ^ The list of running clients. Should be a set but do not want
+    --   an Ord constraint on SAMPConnection, and going to a map (with
+    --   ClientName as the key) seems to much.
   }
 
 
@@ -131,6 +143,7 @@ emptyHubStore =
     _hsOtherClients = []
   , _hsUsedNames = []
   , _hsUsedSecrets = []
+  , _hsRunning = []
   }
 
 
@@ -182,13 +195,33 @@ addClient cl = do
 removeClient :: SAMPConnection -> ThreadId -> HubTest IO ()
 removeClient cl tid = removeClient_ cl tid >> waitForProcessing 100
 
--- This is 'removeClient' but without the delay
+-- | This is 'removeClient' but without the delay
 removeClient_ :: SAMPConnection -> ThreadId -> HubTest IO ()
 removeClient_ cl tid = do
   putLn ("Removing client: " ++ show (scId cl))
-  lift (unregisterE cl)
+  closeClient cl
   liftIO (killThread tid)
 
+
+-- | Unregisters the client  and removes itself from the hubtest
+--   state (if known).
+--
+closeClient :: SAMPConnection -> HubTest IO ()
+closeClient cl = do
+  lift (unregisterE cl)
+  let clean = filter (\conn -> scId conn /= scId cl)
+  modify' (\s -> s { _hsRunning = clean (_hsRunning s) })
+
+-- | Asynchronously unregister the clients, then remove them
+--   from the hubtest state (if known).
+--
+closeClients :: [SAMPConnection] -> HubTest IO ()
+closeClients cls = do
+  void (lift (mapConcurrentlyE unregisterE cls))
+  let names = map scId cls
+      clean = filter (\conn -> scId conn `notElem` names)
+  modify' (\s -> s { _hsRunning = clean (_hsRunning s) })
+  
 
 -- | Create multiple clients (and basic tests) making the
 --   process as asynchronous as possible.
@@ -221,12 +254,16 @@ makeClients ::
   -> HubTest IO [SAMPConnection]
 makeClients si nclient = do
 
-  when (nclient < 1) (throwError ("Internal error: nclient=" ++ show nclient))
+  when (nclient < 1)
+    (throwError ("Internal error: nclient=" ++ show nclient))
   
   let cts = [1 .. nclient]
       register _ = registerClientE si
   conns <- lift (mapConcurrentlyE register cts)
-  
+
+  -- separated from the registration step for simplicity
+  modify' (\s -> s { _hsRunning = conns ++ _hsRunning s })
+
   let showClient conn = 
         let clientName = scId conn
             clientSecret = scPrivateKey conn
@@ -263,7 +300,7 @@ makeClients si nclient = do
   return conns
 
 
--- | Increase a global counter (limited to Int, assumed to be
+-- | Increase a counter (limited to Int, assumed to be
 --   a non-negative integer).
 --
 --   The phantom type is used to distinguish between the different
@@ -336,8 +373,7 @@ assertTrue lbl f = unless f (throwError lbl)
 
 checkFail :: String -> Err IO a -> HubTest IO ()
 checkFail lbl call = do
-  flag <- lift ((void call >> return False)
-                `catchError` const (return True))
+  flag <- lift ((call >> return False) `catchError` (\_ -> return True))
   assertTrue ("Expected fail: " ++ lbl) flag
 
 

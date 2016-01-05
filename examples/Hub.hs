@@ -70,6 +70,10 @@ possible.
 
 TODO:
 
+  - if the hub is killed then messages about the hub closing down are often
+    not sent, because the hub shut down is too quick (i.e. does not wait for
+    the messages to be sent).
+
   - switch to async (if it makes sense; at present most of the concurrent
     calls do not have a useful return value). Here's my original
     todo item:

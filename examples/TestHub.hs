@@ -148,7 +148,8 @@ import TestUtils (HubStore(..), HubTest, PingCounter
                  , assertSAMPMap, assertSet, assertTestClients, assertTrue
                  , checkFail
                  , emptyHubStore
-                 , addOtherClients, makeClient, removeClient
+                 , addOtherClients
+                 , closeClient, makeClient, removeClient
                  , putLn
                  , getCounter, increaseCounter, newPingCounter)
 import Utils (getAddress, getSocket, waitMillis, waitForProcessing)
@@ -361,23 +362,48 @@ main = do
           usage >> newStdGen -- ugh
           
     _ -> usage >> newStdGen -- ugh
-    
-  withSAMP (runHubTests (runTests gen))
+
+  -- I want to unregister clients on error, but with the current
+  -- transformer stack I can't use the _hsRunning field in HubStore.
+  -- Would need to reorder the state and except transformers,
+  -- or be more careful in the code and catch errors explicitly.
+  --
+  let act = runTests gen
+  withSAMP (runHubTests act)
   exitSuccess
 
 
+-- | Unregister any clients that are still running,
+--   returning the number of such clients.
+closeDown :: HubStore -> Err IO Int
+closeDown s = do
+  let conns = _hsRunning s
+  forM_ conns unregisterE
+  return (length conns)
+  
+
+-- TODO: how to handle unregistering clients on error
 runHubTests :: HubTest IO a -> IO ()
 -- runHubTests act = void (runE (evalStateT act emptyHubStore))
 runHubTests act = do
-  newState <- runE (execStateT act emptyHubStore)
+
+  let runState = execStateT act emptyHubStore
+  newState <- runE runState
+
+  -- final clean up; expect no clients left
+  nrun <- runE (closeDown newState)
+  case nrun of
+    0 -> return ()
+    1 -> putLn "-- note: closing down one remaining client"
+    _ -> putLn ("-- note: closing down " ++ show nrun ++
+                " remaining clients")
+              
   putStrLn "Final state:"
   putStrLn ("  other clients: " ++ show (_hsOtherClients newState))
   putStrLn ("  used names   : " ++ show (_hsUsedNames newState))
   putStrLn ("  used secrets : " ++ show (_hsUsedSecrets newState))
 
   
-
-
 reportHub :: SAMPInfo -> IO ()
 reportHub si = do
   let prefix = "   : "
@@ -402,19 +428,19 @@ validateClient client clientName = do
 
 
 runTests :: StdGen -> HubTest IO ()
-runTests gen = do
+runTests ogen = do
   hubUrl <- lift sampLockFileE
   putLn ("Hub location: " ++ show hubUrl)
   hi <- lift (getHubInfoE hubUrl)
   liftIO (reportHub hi)
   
-  let genStr = show gen
+  let genStr = show ogen
 
   withClient (makeClient hi) basicClient
-  gen1 <- testClients gen hi
+  ngen <- testClients ogen hi
   putLn "*** starting calculator tests ***"
-  _ <- runCalcStorm genStr gen1 hi 10 20
-  
+
+  void (runCalcStorm genStr ngen hi 10 20)
   putLn "Finished."
 
 {-
@@ -450,8 +476,8 @@ withClient ::
   --   so in the action
 withClient make act = do
   cl <- make
-  act cl `catchError` (\e -> lift (unregisterE cl) >> throwError e)
-  lift (unregisterE cl)
+  act cl `catchError` (\e -> closeClient cl >> throwError e)
+  closeClient cl
   
 
 -- This is based on code in the initializer for the
@@ -478,8 +504,7 @@ basicClient client = do
   -}
 
   rclients <- lift (getRegisteredClientsE client)
-  assertTrue
-    "Registered clients include the hub"
+  assertTrue "Registered clients include the hub"
     (hubName `elem` rclients)
 
   -- TODO:
@@ -535,7 +560,8 @@ defMetadata =
   let name = "Test1"
       desc = "HubTester client application" 
   in toMetadata name (Just desc) Nothing Nothing Nothing
-  
+
+     
 -- returns the metadata  
 setupClient1 :: SAMPConnection -> Err IO SAMPMapValue
 setupClient1 cl1 = do
@@ -558,7 +584,7 @@ setupClient2 cl2 = do
 --   The client is marked as callable.
 --
 --   There is a rather basic attempt at waiting until the server
---   is ready. It is not perfect and may have ot be abandoned.
+--   is ready. It is not perfect and may have to be abandoned.
 --
 --   TODO: send in parent thread id so that can indicate an
 --         error by sending it a ThreadKilled exception
@@ -575,7 +601,7 @@ callableClient conn = do
   let act = do
         sock <- getSocket
         fullUrl <- getAddress sock
-        let baseUrl = reverse (dropWhile (/='/') (reverse fullUrl))
+        let baseUrl = reverse (dropWhile (/= '/') (reverse fullUrl))
               
         -- if the URL conversion fails it will error out (via fail)
         runE (toRStringE fullUrl
@@ -593,7 +619,6 @@ callableClient conn = do
   takeMVar mvar
 
   return (pingCount, responseMap, tid)
-
 
   
 -- Routines to handle SAMP conversations from a hub to a client
@@ -704,6 +729,7 @@ callPing pc _ _ msgId msg = do
   let other = addMessageId msgId msg
   return (toSAMPResponse M.empty other)
 
+
 -- Can we kill the parent thread on error?
 --
 -- The processing code is rather ugly here, just to extract the
@@ -731,6 +757,7 @@ callFail _ _ msgId msg = do
     Right xs -> error ("key=" ++ show errorKey ++ " was not a map but " ++
                        show xs)
     Left _ -> error ("No key=" ++ show errorKey ++ " in message")
+
   
 -- maybe want to return an error message
 unexpectedCall :: SAMPCallFunc
@@ -780,10 +807,10 @@ validateTimeOut cl clId = do
       unless (millis > delayDiff)
         (fail "Internal error: callAndWait ran too quickly!")
                   
-      putStrLn "WARNING: callAndWait did not timeout as requested"
+      putStrLn "*** WARNING: callAndWait did not timeout as requested"
       
     Left e -> do
-      -- unfortunately there's no guarantee for the timeout error
+      -- unfortunately there's no guarantee for the timeout error text
       putStrLn ("Note: caught (hopefully timeout) error: " ++ show e)
       return () -- TODO: is there a way to check for a timeout?
 
@@ -801,18 +828,19 @@ verifySubscribedClients cl ids = do
                  "expected=" ++ show ids ++ " " ++
                  "got=" ++ show names))
 
+
 -- Test callAll and notifyAll
 allTests ::
   RandomGen g
   => g -> SAMPConnection -> ResponseMap -> [ClientName] -> Err IO g
 allTests gen cl rmap ids = do
 
-  let makeMsg = do
+  let makeSimpleMsg = do
         v4 <- randomSAMPValue 4 False
         let params = M.singleton "val4" v4
         return (v4, toSAMPMessageMT echoMTYPE params extra0)
 
-      ((val4, msg), ngen) = runRand makeMsg gen
+      ((val4, msg), ngen) = runRand makeSimpleMsg gen
 
       delay = 400 :: Int
       extra0 = M.singleton waitMillisKey (toSValue delay)
@@ -874,6 +902,10 @@ allTests gen cl rmap ids = do
   return ngen
 
 
+pingMsg :: SAMPMapValue -> SAMPMessage
+pingMsg = toSAMPMessageMT pingMTYPE M.empty
+
+
 pingTests ::
   SAMPConnection
   -> ResponseMap
@@ -883,7 +915,7 @@ pingTests ::
   -> HubTest IO ()
 pingTests cl rsp (id1, pc1) (id2, pc2) (_, pc3) = do
 
-  let msg = toSAMPMessageMT pingMTYPE M.empty extra
+  let msg = pingMsg extra
       extra = M.singleton waitMillisKey (toSValue (100 :: Int))
 
       getNames = Set.fromList . map fst
@@ -981,8 +1013,15 @@ pingTests cl rsp (id1, pc1) (id2, pc2) (_, pc3) = do
   recipients3 <- lift (getNames <$> getSubscribedClientsE cl pingMTYPE)
   assert (pingHead ++ " subs as expected") recipients recipients3
 
-  return ()
 
+noPingTest ::
+  SAMPConnection
+  -> ClientName  -- client 3 (not subscribed to ping)
+  -> HubTest IO ()
+noPingTest cl id3 = do
+  let call = notifyE cl id3 (toSAMPMessageMT pingMTYPE M.empty M.empty)
+  checkFail "client 3 not subscribed to ping" call
+  
 
 errorTests ::
   SAMPConnection -> ClientName -> HubTest IO ()
@@ -1071,9 +1110,8 @@ validateClient4 ::
   -> ResponseMap
   -> MessageTag
   -> [a]
-  -> Int
   -> Err m ()
-validateClient4 findId clId1 rmap4 sameTag msgIds4 necho = do
+validateClient4 findId clId1 rmap4 sameTag msgIds4 = do
   rsps4 <- atomicallyIO (removeResponse rmap4 clId1 sameTag)
   let head4 = "Client 4 from id=" ++ show clId1 ++ " tag=" ++ show sameTag
   assert (head4 ++ " number of responses") necho (length rsps4)
@@ -1086,20 +1124,23 @@ validateClient4 findId clId1 rmap4 sameTag msgIds4 necho = do
     Nothing -> throwError (head4 ++ " missing an id in a response")
 
 
-testClients ::
-  RandomGen g
-  => g -> SAMPInfo -> HubTest IO g
-testClients gen si = do
+-- | Create a "large" message; a list of integers.
+makeLargeMessage :: Int -> (SAMPMessage, SAMPValue)
+makeLargeMessage ie = 
+  let num = 10 ^ ie
+      xs = toSValue (map toSValue [1 .. num::Int])
+      pars = M.singleton "list" xs
+      msg = toSAMPMessageMT echoMTYPE pars M.empty
+  in (msg, xs)
 
-  withClient (makeClient si) testClient0
-  
-  cl1 <- makeClient si
-  mdata1 <- lift (setupClient1 cl1)
-  assertTestClients cl1 []
-  
-  cl2 <- makeClient si
-  mdata2 <- lift (setupClient2 cl2)
-  
+
+checkClientMetadata12 ::
+  SAMPConnection
+  -> SAMPMapValue -- metadata client 1
+  -> SAMPConnection
+  -> SAMPMapValue -- metadata client 2
+  -> HubTest IO ()
+checkClientMetadata12 cl1 mdata1 cl2 mdata2 = do
   let clId1 = scId cl1
       clId2 = scId cl2
   assertTestClients cl2 [clId1]
@@ -1132,9 +1173,14 @@ testClients gen si = do
   drink' <- assertKey "Client 1 meta data (replaced)" "test.drink" gmeta21'
   assert "test.drink from client 1 (replaced)" "scrumpy" drink'
 
-  -- for now rmap1 is not used
-  (pingCount1, _, tid1) <- liftIO (callableClient cl1)
 
+checkClientSubscriptions1 ::
+  SAMPConnection
+  -> SAMPConnection
+  -> HubTest IO ()
+checkClientSubscriptions1 cl1 cl2 = do
+  let clId1 = scId cl1
+  
   let subs1 = [ ("test.dummy.1", emptyMap)
               , ("test.dummy.2", emptyMap) ]
   lift (declareSubscriptionsE cl1 subs1)
@@ -1170,9 +1216,9 @@ testClients gen si = do
 
   lift (declareSubscriptionsE cl1 defaultSubs)
 
-  (pingCount2, rmap2, tid2) <- liftIO (callableClient cl2)
-  lift (declareSubscriptionsE cl2 defaultSubs)
 
+checkInvalidGets :: SAMPConnection -> HubTest IO ()
+checkInvalidGets cl1 = do
   -- could come up with a random id that we know is not
   -- valid, but not worth it (and can not guarantee some other
   -- client doesn't register it)
@@ -1182,43 +1228,59 @@ testClients gen si = do
   checkFail "getSubscriptions with invalid ID"
     (getSubscriptionsE cl1 "This ID is not valid")
 
-  -- HubTester re-uses a tag for this client: that is, the message tag can
-  -- be re-used. This is not something that is checked for in the HSAMP
-  -- API (it is assumed that message ids are not re-used), so just keep the
-  -- client in
-  cl4 <- makeClient si
-  (pingCount4, rmap4, tid4) <- liftIO (callableClient cl4)
-  
-  let clId4 = scId cl4
+
+checkClient4 ::
+  SAMPConnection
+  -> SAMPConnection
+  -> SAMPConnection
+  -> HubTest IO ()
+checkClient4 cl1 cl2 cl4 = do
+  let clId1 = scId cl1
+      clId2 = scId cl2
+      clId4 = scId cl4
   assertTestClients cl2 [clId1, clId4]
   assertTestClients cl1 [clId2, clId4]
   assertTestClients cl4 [clId1, clId2]
 
-  putLn "DBG: about to send messages"
 
-  -- Now the fun begins: send echo messages via notify and call
+-- TODO: allow the msgIdQuery value to be optional
+makeMsg :: RandomGen g => Bool -> Int -> Rand g SAMPMessage
+makeMsg qFlag waitTime = do
+  val1 <- randomSAMPValue 2 False
+  val2 <- randomSAMPValue 4 False
+  let params = M.fromList [ ("val1", val1)
+                          , ("val2", val2)
+                          , ("val3", toSValue sval) ]
 
-  -- TODO: allow the msgIdQuery value to be optional
-  let makeMsg :: RandomGen g => Bool -> Int -> Rand g SAMPMessage
-      makeMsg qFlag waitTime = do
-        val1 <- randomSAMPValue 2 False
-        val2 <- randomSAMPValue 4 False
-        let params = M.fromList [ ("val1", val1)
-                                , ("val2", val2)
-                                , ("val3", toSValue sval) ]
+      -- TODO: should make this a top-level symbol
+      sval = case toEitherE (toRStringE legalSAMPChars) of
+        Right rstr -> rstr
+        Left emsg -> error ("Internal error: legalSAMPChars: " ++ emsg)
+  
+      extra = M.fromList [ (waitMillisKey, toSValue waitTime)
+                         , (msgIdQueryKey, toSValue qFlag) ]
 
-            -- TODO: should make this a top-level symbol
-            sval = case toEitherE (toRStringE legalSAMPChars) of
-              Right rstr -> rstr
-              Left emsg -> error ("Internal error: legalSAMPChars: " ++ emsg)
-        
-            extra = M.fromList [ (waitMillisKey, toSValue waitTime)
-                               , (msgIdQueryKey, toSValue qFlag) ]
+  return (toSAMPMessageMT echoMTYPE params extra)
 
-        return (toSAMPMessageMT echoMTYPE params extra)
 
-  let necho = 5
-      echos = [0..(necho-1)]
+necho :: Int
+necho = 5
+
+echos :: [Int]
+echos = [0..(necho-1)]
+
+
+sendMessages ::
+  RandomGen g
+  => g
+  -> SAMPConnection
+  -> (SAMPConnection, ResponseMap)
+  -> (SAMPConnection, ResponseMap)
+  -> HubTest IO g
+sendMessages ogen cl1 (cl2, rmap2) (cl4, rmap4) = do
+
+  let clId1 = scId cl1
+
       waitTimes = map (\i -> 200 + 100 * i) echos
       conv s = case toRString s of
         Just rstr -> toMessageTag rstr
@@ -1229,7 +1291,7 @@ testClients gen si = do
 
       sameTag = toMessageTag "sametag"
       
-      (msgs, gen2) = runRand makeMsgs gen
+      (msgs, ngen) = runRand makeMsgs ogen
 
   let procMsg (msg, tag) = do
         notifyE cl2 clId1 msg
@@ -1261,21 +1323,34 @@ testClients gen si = do
   let findId rsp = findKey msgIdQueryKey (getSAMPResponseExtra rsp)
 
   lift (validateClient2 findId clId1 rmap2 msgs tags msgIds2)
-  lift (validateClient4 findId clId1 rmap4 sameTag msgIds4 necho)
+  lift (validateClient4 findId clId1 rmap4 sameTag msgIds4)
   
   nrsp2 <- atomicallyIO (countResponse rmap2)
   assert "No more responses for client 2" 0 nrsp2
 
   nrsp4 <- atomicallyIO (countResponse rmap4)
   assert "No more responses for client 4" 0 nrsp4
+
+  return ngen
   
+
+sendPings ::
+  (SAMPConnection, PingCounter)
+  -> (SAMPConnection, PingCounter)
+  -> (SAMPConnection, PingCounter)
+  -> HubTest IO ()
+sendPings (cl1, pingCount1) (cl2, pingCount2) (cl4, pingCount4) = do
+
+  let clId1 = scId cl1
+      clId2 = scId cl2
+      clId4 = scId cl4
+
   -- check the ping count: (check not in TestHub)
   assertPing "Client 1" 0 pingCount1
   assertPing "Client 2" 0 pingCount2
   assertPing "Client 4" 0 pingCount4
 
-  let pingMsg = toSAMPMessageMT pingMTYPE M.empty M.empty
-  matches <- lift (notifyAllE cl4 pingMsg)
+  matches <- lift (notifyAllE cl4 (pingMsg M.empty))
 
   -- validate matches
   assertTrue "client 1 was pinged" (clId1 `elem` matches)
@@ -1289,17 +1364,21 @@ testClients gen si = do
   assertPing "Client 1" 1 pingCount1
   assertPing "Client 2" 1 pingCount2
   assertPing "Client 4" 0 pingCount4
-  
-  -- TODO: how to make sure clients are unregistered on error?
-  removeClient cl4 tid4
-  putLn "Finished closing down client 4"
 
-  -- callAndWait testing
 
-  let waitTimes2 = map (\i -> 100 * i) echos
-      makeMsgs2 = mapM (makeMsg False) waitTimes2
+callAndWaitTests ::
+  RandomGen g
+  => g
+  -> SAMPConnection
+  -> SAMPConnection
+  -> HubTest IO g
+callAndWaitTests ogen cl1 cl2 = do
+  let clId1 = scId cl1
 
-      (msgs2, gen3) = runRand makeMsgs2 gen2
+      waitTimes = map (\i -> 100 * i) echos
+      makeMsgs = mapM (makeMsg False) waitTimes
+
+      (msgs2, ngen) = runRand makeMsgs ogen
 
   -- No time out here
   forM_ msgs2 $ \msg -> do
@@ -1315,15 +1394,14 @@ testClients gen si = do
 
     -- should a test be made of the extra parameters?
 
-  -- forM_ [0..5::Int] $ \ie -> do
-  forM_ [0..3::Int] $ \ie -> do  -- TODO: use a max of 3 for testing for now
-                                 -- as larger values take too long
-    let num = 10 ^ ie
-        xs = toSValue (map toSValue [1 .. num::Int])
-        pars = M.singleton "list" xs
-        msg = toSAMPMessageMT echoMTYPE pars M.empty
+  return ngen
 
-    putLn ("call and wait with list size " ++ show num)
+
+testBigMessages :: SAMPConnection -> ClientName -> Int -> HubTest IO ()
+testBigMessages cl2 clId1 n = 
+  forM_ [0..n] $ \ie -> do
+    putLn ("call and wait with list size 10^" ++ show ie)
+    let (msg, xs) = makeLargeMessage ie
     rsp <- lift (callAndWaitE cl2 clId1 msg Nothing)
     -- TODO: hsamp-hub does not time out correctly for long messages 
     
@@ -1338,6 +1416,58 @@ testClients gen si = do
           _ -> throwError (head2 ++ " has no list element")
 
       Nothing -> throwError (head2 ++ " internal error: no result!")
+  
+    
+testClients ::
+  RandomGen g
+  => g -> SAMPInfo -> HubTest IO g
+testClients gen si = do
+
+  withClient (makeClient si) testClient0
+  
+  cl1 <- makeClient si
+  mdata1 <- lift (setupClient1 cl1)
+  assertTestClients cl1 []
+  
+  cl2 <- makeClient si
+  mdata2 <- lift (setupClient2 cl2)
+
+  let clId1 = scId cl1
+      clId2 = scId cl2
+  checkClientMetadata12 cl1 mdata1 cl2 mdata2
+
+  -- for now rmap1 is not used
+  (pingCount1, _, tid1) <- liftIO (callableClient cl1)
+  checkClientSubscriptions1 cl1 cl2 
+
+  (pingCount2, rmap2, tid2) <- liftIO (callableClient cl2)
+  lift (declareSubscriptionsE cl2 defaultSubs)
+
+  checkInvalidGets cl1
+
+  -- HubTester re-uses a tag for this client: that is, the message tag can
+  -- be re-used. This is not something that is checked for in the HSAMP
+  -- API (it is assumed that message ids are not re-used), so just keep the
+  -- client in
+  cl4 <- makeClient si
+  (pingCount4, rmap4, tid4) <- liftIO (callableClient cl4)
+  checkClient4 cl1 cl2 cl4
+  
+  -- Now the fun begins: send echo messages via notify and call
+
+  gen2 <- sendMessages gen cl1 (cl2, rmap2) (cl4, rmap4)
+
+  sendPings (cl1, pingCount1) (cl2, pingCount2) (cl4, pingCount4)
+
+  -- TODO: how to make sure clients are unregistered on error?
+  removeClient cl4 tid4
+  putLn "Finished closing down client 4"
+
+  gen3 <- callAndWaitTests gen2 cl1 cl2
+
+  -- TODO: use a max of 3 for testing for now as larger values take too long
+  -- testBigMessages cl2 clId1 5
+  testBigMessages cl2 clId1 3
 
   -- test the timeout; this is not required behavior so only warn
   -- if it fails
@@ -1354,12 +1484,9 @@ testClients gen si = do
 
   pingTests cl3 rmap3
     (clId1, pingCount1) (clId2, pingCount2) (clId3, pingCount3)
-  
-  -- Client 3 is not registered to a ping message so this should
-  -- be an error.
-  let call = notifyE cl1 clId3 (toSAMPMessageMT pingMTYPE M.empty M.empty) 
-  flag <- lift ((call >> return False) `catchError` (\_ -> return True))
-  assertTrue "Client 3 is not subscribed to ping" flag
+
+  -- Client 3 is not registered to a ping message
+  noPingTest cl1 clId3
 
   errorTests cl3 clId2
   subsTest cl3 clId1 clId2

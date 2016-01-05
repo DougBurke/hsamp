@@ -49,7 +49,6 @@ import Network.SAMP.Standard.Client ( callAndWaitE
                                     , declareSubscriptionsSimpleE
                                     , notifyE
                                     , toMetadata
-                                    , unregisterE
                                     )
 import Network.SAMP.Standard.Server ( SAMPCallFunc
                                     , SAMPCallMap
@@ -92,6 +91,7 @@ import TestUtils (HubTest
                  , Store
                  , atomicallyIO
                  , assert
+                 , closeClients
                  , makeClients
                  , newEvalCounter
                  , increaseCounter
@@ -372,18 +372,19 @@ runCalcStorm genStr ogen si nclient nquery = do
   putLn ("Initial RNG: " ++ genStr)
   putLn "Waiting for calc storm clients to finish ..."
   
-  -- wait until all the messages have been sent.
   let waitSum counters = do
         cts <- forM counters getCounter
         when (sum cts < ntotal) retry
         
-      -- wait for the call async messages to be processed
       waitStore store = do
         isEmpty <- nullStore store
         unless isEmpty retry
 
+  -- wait until all the messages to have been evaluated
   putLn "... waiting for evalCounters"
   atomicallyIO (waitSum evalCounters)
+
+  -- wait for the call async messages to be processed
   putLn "... waitStore"
   atomicallyIO (forM_ stores waitStore)
 
@@ -480,7 +481,7 @@ finishStorm :: [(SAMPConnection, ThreadId)] -> HubTest IO ()
 finishStorm args = do
   let (conns, tids) = unzip args
   putLn ("Removing " ++ show (length args) ++ " clients")
-  void (lift (mapConcurrentlyE unregisterE conns))
+  closeClients conns
   forM_ tids (liftIO . killThread)
   putLn "Done."
   waitForProcessing 100
