@@ -386,6 +386,8 @@ assert lbl expVal gotVal =
   in assertTrue lbl2 (expVal == gotVal)
 
 -- An unordered comparison of the two lists
+--
+-- Eq a is warned as being redundant in ghc 8.0
 assertSet ::
   (MonadError String m, Ord a, Eq a, Show a) => String -> [a] -> [a] -> m ()
 assertSet lbl expVal gotVal =

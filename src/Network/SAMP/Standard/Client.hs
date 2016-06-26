@@ -281,7 +281,7 @@ toMetadataE m txt html icon doc =
         f _ _ = return Nothing
         ms = [ f sName (Just m), f sTxt txt, f sHtml html
              , f sIcon icon, f sDoc doc]
-    in liftM (M.fromList . catMaybes) (sequence ms)
+    in fmap (M.fromList . catMaybes) (sequence ms)
 
 -- | Declare the metadata for the client. The metadata is provided as a
 --   list of (key,value) pairs as a map.  See 'toMetadata' and

@@ -41,8 +41,9 @@ import Control.Monad.Trans (liftIO)
 import Control.Monad.Trans.Class (lift)
 import Control.Monad.Trans.Except (ExceptT)
 
-import Data.Maybe (fromJust, isJust)
 import Data.List (foldl', transpose, unzip4, zip4)
+import Data.Maybe (fromJust, isJust)
+import Data.Semigroup ((<>))
 
 import Network.SAMP.Standard.Client ( callAndWaitE
                                     , declareMetadataE
@@ -201,7 +202,7 @@ handleCall ctr _ _ _ msg = do
     Left emsg ->
       let rmsg = case toRString emsg of
             Just v -> v
-            _ -> "Internal Error: failed call " ++ mtypeR
+            _ -> "Internal Error: failed call " <> mtypeR
       in return (toSAMPResponseError rmsg M.empty M.empty)
 
 
@@ -291,7 +292,7 @@ sendSync conn receiver msg expVal = do
 getTag :: Int -> MessageTag
 getTag t =
   let tval = fromJust (toRString (show t))
-  in toMessageTag ("tag-" ++ tval)
+  in toMessageTag ("tag-" <> tval)
 
 
 sendAsync ::

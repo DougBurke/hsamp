@@ -6,7 +6,7 @@
 
 {-|
 Module      :  Network.SAMP.Standard.Types
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -107,6 +107,7 @@ import Data.Hashable (Hashable)
 import Data.List (intercalate, isPrefixOf)
 import Data.List.Split (splitOn, splitOneOf)
 import Data.Maybe (fromJust)
+import Data.Semigroup (Semigroup, (<>))
 import Data.String (IsString(..))
 
 import GHC.Generics (Generic)
@@ -252,8 +253,8 @@ instance Enum RChar where
         bound | fromEnum y >= fromEnum x = maxBound
               | otherwise                = minBound
 
-    enumFromTo (RC s) (RC e) = toRS (takeWhile (<=e)
-                                     (dropWhile (<s) validRChars))
+    enumFromTo (RC s) (RC e) = map RC (takeWhile (<=e)
+                                       (dropWhile (<s) validRChars))
 
     -- rely on the default implementation for enumFromThenTo
 
@@ -302,8 +303,22 @@ TODO:
 
 -}
 
-type RString = [RChar]
+-- Switched from an alias to a newtype to try and avoid IsString
+-- complications in ghc 8.0.
 
+data RString = RS { _fromRString :: [RChar] }
+             deriving (Eq, Ord)
+
+instance Show RString where
+  show (RS s) = show s
+
+instance Semigroup RString where
+  (RS a) <> (RS b) = RS (a <> b)
+  
+instance Monoid RString where
+  mempty = emptyRString
+  mappend = (<>)
+  
 {-|
 The conversion provided by this instance is unsafe:
 'error' is called for those strings that contain invalid
@@ -328,19 +343,19 @@ instance XmlRpcType RString where
 
 -- | The empty string.
 emptyRString :: RString
-emptyRString = []
+emptyRString = RS []
 
 -- | Create a 'RString' from a normal 'String'.
 toRString :: String -> Maybe RString
-toRString = mapM toRChar
+toRString s = RS `liftM` mapM toRChar s
 
 -- | See 'toRString'.
 toRStringE :: (Monad m) => String -> Err m RString
-toRStringE = mapM toRCharE
+toRStringE s = RS `liftM` mapM toRCharE s
 
 -- | Extract the contents of the 'RString'.
 fromRString :: RString -> String
-fromRString = map fromRChar
+fromRString = map fromRChar . _fromRString
 
 {-|
 Create a random 'RString' (useful for message ids).
@@ -359,10 +374,10 @@ randomRString ::
     -- ^ the number of characters (if <= 0 then an empty string is returned)
     -> g -- ^ the generator to use
     -> (RString, g)
-randomRString n gen | n <= 0     = ([], gen)
+randomRString n gen | n <= 0    = (emptyRString, gen)
                     | otherwise = go n gen []
     where
-      go 0 gen' ans = (ans, gen')
+      go 0 gen' ans = (RS ans, gen')
       go m gen' acc = let (nc,gen'') = randomR (RC (chr 0x20), RC (chr 0x7e)) gen'
                       in go (m-1) gen'' (nc:acc)
 
@@ -376,10 +391,10 @@ randomAlphaNumRString ::
     -- ^ the number of characters (if <= 0 then an empty string is returned)
     -> g -- ^ the generator to use
     -> (RString, g)
-randomAlphaNumRString n gen | n <= 0     = ([], gen)
-                    | otherwise = go n gen []
+randomAlphaNumRString n gen | n <= 0    = (emptyRString, gen)
+                            | otherwise = go n gen []
     where
-      go 0 gen' ans = (ans, gen')
+      go 0 gen' ans = (RS ans, gen')
       -- throw out invalid characters (since the alpha-num characters
       -- aren't in a consecutive range)
       go m gen' acc = let (nc,gen'') = randomR (RC (chr 0x20), RC (chr 0x7e)) gen'
@@ -388,9 +403,9 @@ randomAlphaNumRString n gen | n <= 0     = ([], gen)
                          else go m gen'' acc
 
 -- helper function
-rconv :: (Read a) => RString -> Maybe a
+rconv :: (Read a) => [RChar] -> Maybe a
 rconv [] = Nothing
-rconv cs = let vs = fromRString cs
+rconv cs = let vs = map fromRChar cs
            in if all isDigit vs then Just (read vs) else Nothing
 
 {-|
@@ -399,10 +414,13 @@ rconv cs = let vs = fromRString cs
 >    <SAMP int> ::= [ <sign> ] <digits>
 -}
 asIntegral :: (Read a, Integral a) => RString -> Maybe a
-asIntegral [] = Nothing
-asIntegral s@(x:xs) | x == RC '-'  = fmap negate (rconv xs)
-                    | x == RC '+'  = rconv xs
-                    | otherwise    = rconv s
+asIntegral = asIntegral' . _fromRString
+
+asIntegral' :: (Read a, Integral a) => [RChar] -> Maybe a
+asIntegral' [] = Nothing
+asIntegral' s@(x:xs) | x == RC '-'  = fmap negate (rconv xs)
+                     | x == RC '+'  = rconv xs
+                     | otherwise    = rconv s
 
 {-|
 Convert an 'RString' to a 'Floating' value using the rule:
@@ -411,16 +429,21 @@ Convert an 'RString' to a 'Floating' value using the rule:
 -}
 
 asFloating :: (Read a, Floating a) => RString -> Maybe a
-asFloating [] = Nothing
-asFloating s@(x:xs) | x == RC '-'  = fmap negate (conv xs)
-                    | x == RC '+'  = conv xs
-                    | otherwise    = conv s
+asFloating = asFloating' . fromRString
+
+asFloating' :: (Read a, Floating a) => String -> Maybe a
+asFloating' [] = Nothing
+asFloating' s@(x:xs) | x == '-'  = fmap negate (conv xs)
+                     | x == '+'  = conv xs
+                     | otherwise = conv s
     where
-      iconv :: RString -> Maybe Integer
-      iconv = rconv
+      -- see also rconv; how about using maybeRead or readMaybe or ..
+      iconv :: String -> Maybe Integer
+      iconv [] = Nothing
+      iconv is = if all isDigit is then Just (read is) else Nothing
 
       -- this seems as if I'm complicating it a bit
-      conv :: (Read a, Floating a) => RString -> Maybe a
+      conv :: (Read a, Floating a) => String -> Maybe a
       conv [] = Nothing
       conv vs = do
            let sv = splitOneOf "eE" vs
@@ -435,11 +458,11 @@ asFloating s@(x:xs) | x == RC '-'  = fmap negate (conv xs)
                                        if null r2 then "0" else r2)
                     _ -> Nothing
            e <- case es of
-                  RC '+':ess -> iconv ess
-                  RC '-':ess -> fmap negate (iconv ess)
+                  '+':ess -> iconv ess
+                  '-':ess -> fmap negate (iconv ess)
                   _ -> iconv es
 
-           return $ read (fromRString (lm ++ "." ++ rm)) ** fromIntegral e
+           return $ read (lm <> "." <> rm) ** fromIntegral e
 
 {-
 We could just check whether the string is == "0" for False,
@@ -808,13 +831,13 @@ instance XmlRpcType SAMPValue where
     toValue (SAMPMap xs) = ValueStruct [(fromRString n, toValue v) |
                                         (n,v) <- M.toList xs]
 
-    fromValue (ValueString s) = liftM SAMPString (toRStringE s)
-    fromValue (ValueArray xs) = liftM SAMPList (mapM fromValue xs)
+    fromValue (ValueString s) = fmap SAMPString (toRStringE s)
+    fromValue (ValueArray xs) = fmap SAMPList (mapM fromValue xs)
     fromValue (ValueStruct xs) =
-      liftM (SAMPMap . M.fromList) (mapM toSAMPMapElement xs)
+      fmap (SAMPMap . M.fromList) (mapM toSAMPMapElement xs)
     
     -- convert as strings
-    fromValue (ValueUnwrapped s) = liftM SAMPString (toRStringE s)
+    fromValue (ValueUnwrapped s) = fmap SAMPString (toRStringE s)
     
     fromValue x = throwError ("Unable to convert to SAMP Value from " ++
                               show x)

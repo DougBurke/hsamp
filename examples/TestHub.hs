@@ -64,6 +64,7 @@ import Control.Monad.Trans.State.Strict (execStateT)
 import Data.Char (chr)
 import Data.List (isPrefixOf, partition, sort)
 import Data.Maybe (fromJust, isJust)
+import Data.Semigroup ((<>))
 import Data.Time.Clock (diffUTCTime, getCurrentTime)
 
 -- import Data.Version (showVersion)
@@ -937,7 +938,7 @@ pingTests cl rsp (id1, pc1) (id2, pc2) (_, pc3) = do
       pings = [1..nPings]
       toTag = toMessageTag
       showR = fromJust . toRString . show
-      tags c = map (\i -> toTag ("abc" ++ showR c ++ "-" ++ showR i)) pings
+      tags c = map (\i -> toTag ("abc" <> showR c <> "-" <> showR i)) pings
       
       t1 = tags 1
       t2 = tags 2

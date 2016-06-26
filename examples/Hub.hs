@@ -147,6 +147,7 @@ import Data.Either (partitionEithers)
 import Data.Function (on)
 import Data.List (intercalate, sortBy)
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, mapMaybe)
+import Data.Semigroup ((<>))
 import Data.Time.Clock (UTCTime, getCurrentTime)
     
 -- import Data.Version (showVersion)
@@ -383,7 +384,7 @@ newMessageId hi secret (tag, sender, mrsp) = do
         (s, ngen) = makeSecret (hiRandomGen ohub)
 
         rstr = fromJust (toRString (show onum))
-        mid = toMessageId ("mid" ++ rstr ++ ":" ++ s)
+        mid = toMessageId ("mid" <> rstr <> ":" <> s)
               
         nflight = M.insert mid ifd oflight
         nrec = orec { cdInFlight = nflight
@@ -995,7 +996,7 @@ sendToAll2 cTime hi tag msg ohub sender =
               nnum = succ onum
               
               rstr = fromJust (toRString (show onum))
-              mid = toMessageId ("mid" ++ rstr ++ ":" ++ s)
+              mid = toMessageId ("mid" <> rstr <> ":" <> s)
   
               nflight = M.insert mid ifd oflight
               ncd = ocd { cdInFlight = nflight
@@ -1111,7 +1112,7 @@ hubProcessMessage ::
     -> IO SAMPResponse
 hubProcessMessage hi msg = do
   let funcs = hiHandlers (hiReader hi)
-      emsg = "Internal error: hub is not subscribed to " ++ fromMTypeRS mtype
+      emsg = "Internal error: hub is not subscribed to " <> fromMTypeRS mtype
       mtype = getSAMPMessageType msg
       otherArgs = getSAMPMessageExtra msg
   case lookup mtype funcs of
@@ -1152,8 +1153,8 @@ hubSentQueryByMeta hi msg = do
       -- but that should only be due to a bug in this code
       conv str = case toRString str of
                    Just r -> Left r
-                   _ -> Left ("Error processing key or value parameters " ++
-                              "of " ++ fromMTypeRS mtype)
+                   _ -> Left ("Error processing key or value parameters of "
+                              <> fromMTypeRS mtype)
                         
       evals = case toRString (show params) of
                 Just pstr -> M.singleton "samp.debugtxt" (toSValue pstr)

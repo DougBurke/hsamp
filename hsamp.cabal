@@ -1,5 +1,5 @@
 name:         hsamp
-version:      0.2
+version:      0.3
 stability:    experimental
 synopsis:     Send and receive messages using the Simple Application Message Protocol (SAMP).
 category:     Astronomy
@@ -91,6 +91,14 @@ library
  ghc-options:
    -Wall
 
+ -- see https://ghc.haskell.org/trac/ghc/wiki/Migration/8.0#base-4.9.0.0
+ --   note: dropping 'fail == 4.9.*' dependency
+ --
+ if impl(ghc >= 8.0)
+   ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
+ else
+   build-depends: semigroups == 0.18.*
+   
  hs-source-dirs:   src/
  exposed-modules:
     Network.SAMP.Standard
@@ -254,6 +262,11 @@ executable hsamp-hub
       wai,
       wai-extra
 
+    if impl(ghc >= 8.0)
+      ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
+    else
+      build-depends: semigroups == 0.18.*
+
     if flag(xmlhack)
       build-depends: 
         base-compat,
@@ -315,6 +328,11 @@ executable hsamp-testhub
       -- unordered-containers,
       -- wai,
       -- wai-extra
+
+    if impl(ghc >= 8.0)
+      ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
+    else
+      build-depends: semigroups == 0.18.*
 
   else
     buildable:  False
