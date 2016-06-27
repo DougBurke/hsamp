@@ -669,7 +669,7 @@ changeHubWithCallableClientE ::
        --   code to ensure the new state is evaluated).
     -> IO (Either String SAMPMethodResponse)
 changeHubWithCallableClientE hi secret act = 
-  changeHubWithClientE hi secret $ \ohub client -> do
+  changeHubWithClientE hi secret $ \ohub client ->
     if isJust (cdCallback client)
       then act ohub client
       else let emsg = "Client " ++ show (cdName client) ++ " " ++
@@ -2240,6 +2240,17 @@ unregister hi secret = do
   return ("unregister", rsp)
 
 
+addSender ::
+  HubInfoState
+  -> ClientData
+  -> ClientSecret
+  -> HubInfoState
+addSender ohub nsender secret =
+  let oclientmap = hiClients ohub
+      nclientmap = M.insert secret nsender oclientmap
+  in ohub { hiClients = nclientmap }
+
+     
 declareMetadata ::
     HubInfo
     -> ClientSecret
@@ -2248,10 +2259,8 @@ declareMetadata ::
 declareMetadata hi secret mdata = do
   rsp <- changeHubWithClient hi secret $ \ohub sender ->
     let nsender = sender { cdMetadata = mdata }
-        oclientmap = hiClients ohub
-        nclientmap = M.insert secret nsender oclientmap
-        nhub = ohub { hiClients = nclientmap }
-                 
+        nhub = addSender ohub nsender secret
+
         hubName = toClientName (hiName (hiReader hi))
         params = M.fromList [ ("id", toSValue (cdName sender))
                             , ("metadata", SAMPMap mdata)]
@@ -2261,7 +2270,7 @@ declareMetadata hi secret mdata = do
         sact = do
           dbg ("Registering new metadata for client " ++
                show (cdName sender))
-          mdata `seq` nsender `seq` nclientmap `seq` nhub `seq` return ()
+          mdata `seq` nsender `seq` nhub `seq` return ()
           broadcastMType hi hubName msg
           -- forkCall (broadcastMType hi hubName msg)
 
@@ -2280,14 +2289,12 @@ setXmlrpcCallback hi secret urlR = do
 
       act ohub sender =
         let nsender = sender { cdCallback = Just url }
-            oclientmap = hiClients ohub
-            nclientmap = M.insert secret nsender oclientmap
-            nhub = ohub { hiClients = nclientmap }
-                 
+            nhub = addSender ohub nsender secret
+            
             sact = do
               dbg ("Registering Callback for client " ++
                    show (cdName sender) ++ " : " ++ url)
-              nsender `seq` nclientmap `seq` nhub `seq` return ()
+              nsender `seq` nhub `seq` return ()
            
         in (nhub, emptyResponse, sact)
         
