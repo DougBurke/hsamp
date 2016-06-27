@@ -346,6 +346,26 @@ writeLockFile name url secret = do
 makeSecret :: RandomGen g => g -> (RString, g)
 makeSecret = randomAlphaNumRString 16
 
+insertNewMessage ::
+  RandomGen g
+  => ClientData
+  -> InFlightData
+  -> g
+  -> (MessageId, ClientData, g)
+insertNewMessage ocd ifd ogen =
+  let (s, ngen) = makeSecret ogen
+      onum = cdNextInFlight ocd
+      oflight = cdInFlight ocd
+      rstr = fromJust (toRString (show onum))
+      mid = toMessageId ("mid" <> rstr <> ":" <> s)
+      nnum = succ onum
+      nflight = M.insert mid ifd oflight
+      ncd = ocd { cdInFlight = nflight
+                , cdNextInFlight = nnum }
+
+  in (mid, ncd, ngen)
+
+
 -- | Create a new message identifier, including updating the
 --   hub with the information about it.
 --
@@ -366,9 +386,6 @@ newMessageId hi secret (tag, sender, mrsp) = do
   cTime <- getCurrentTime
   changeHubWithClientE hi secret $ \ohub orec -> 
     let oclientmap = hiClients ohub
-        oflight = cdInFlight orec
-        onum = cdNextInFlight orec
-        nnum = succ onum
 
         ifd = IFD { ifdSecret = cdSecret sender
                     -- if get to here the sender must have a callback
@@ -381,14 +398,8 @@ newMessageId hi secret (tag, sender, mrsp) = do
         -- rather OTT here, given that the likelihood of
         -- collision is small. However, it may make manual
         -- tracing of message flow a bit easier.
-        (s, ngen) = makeSecret (hiRandomGen ohub)
+        (mid, nrec, ngen) = insertNewMessage orec ifd (hiRandomGen ohub)
 
-        rstr = fromJust (toRString (show onum))
-        mid = toMessageId ("mid" <> rstr <> ":" <> s)
-              
-        nflight = M.insert mid ifd oflight
-        nrec = orec { cdInFlight = nflight
-                    , cdNextInFlight = nnum }
         nclMap = M.adjust (const nrec) secret oclientmap
         nhub = ohub { hiClients = nclMap
                     , hiRandomGen = ngen }
@@ -396,8 +407,7 @@ newMessageId hi secret (tag, sender, mrsp) = do
         sact = do
           dbgIO ("Inserted messageId=" ++ show mid ++ " for receiver=" ++
                  show (cdName orec))
-          nclMap `seq` nhub `seq` nflight `seq` ifd `seq`
-            mid `seq` nnum `seq` return ()
+          ngen `seq` ifd `seq` mid `seq` nclMap `seq` nhub `seq` return ()
 
     in (nhub, mid, sact)
             
@@ -988,26 +998,14 @@ sendToAll2 cTime hi tag msg ohub sender =
       update oacc@(ogen, orvals, oacts) ocd =
         if isClientSubscribed sendName mtype ocd
         then
-          let (s, ngen) = makeSecret ogen
-  
-              oflight = cdInFlight ocd
-              onum = cdNextInFlight ocd
-              
-              nnum = succ onum
-              
-              rstr = fromJust (toRString (show onum))
-              mid = toMessageId ("mid" <> rstr <> ":" <> s)
-  
-              nflight = M.insert mid ifd oflight
-              ncd = ocd { cdInFlight = nflight
-                        , cdNextInFlight = nnum }
-  
+          let (mid, ncd, ngen) = insertNewMessage ocd  ifd ogen
+
               act = do
-                mid `seq` nnum `seq` nflight `seq` ncd `seq` return ()
+                ngen `seq` mid `seq` ncd `seq` return ()
                 dbgIO ("Inserted messageId=" ++ show mid ++
                        " for receiver=" ++ show (cdName ocd))
                 forkCall (clientReceiveCall sendName ncd mid msg)
-  
+
               nrvals = (fromClientName (cdName ocd), toSValue mid) : orvals
               nacts = oacts >> act
               
