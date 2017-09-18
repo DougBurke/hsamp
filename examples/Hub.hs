@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015, 2016
+Copyright   :  (c) Douglas Burke 2015, 2016, 2017
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -117,8 +117,6 @@ import qualified HubCall as HC
 import qualified Network as N
 import qualified Network.XmlRpc.Internals as XI
 
--- ghc 7.10.2/3 says that this import is redundant, but if
--- it is commented out then fdWrite and closeFd are not defined
 import qualified System.Posix.IO as P
 
 import System.Directory (removeFile)
@@ -202,7 +200,6 @@ import System.Log.Logger (Priority(DEBUG, INFO, NOTICE, WARNING),
                           debugM, infoM, noticeM, warningM,
                           setLevel, updateGlobalLogger)
 import System.Log.FastLogger (fromLogStr)
-import System.Posix.IO (createFile)
     
 import Web.Scotty (ActionM
                   , body, header, middleware, get, post

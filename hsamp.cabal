@@ -112,7 +112,8 @@ executable testclient
   hs-source-dirs:  examples
   main-is:         TestClient.hs
   other-modules:   Paths_hsamp
-
+                   Utils
+                   
   ghc-options:
      -Wall
 
@@ -314,7 +315,7 @@ executable hsamp-testhub
       hsamp,
       hslogger,
       -- http-types,
-      MonadRandom == 0.4.*,
+      MonadRandom >= 0.4 && < 0.6,
       mtl,
       network,
       -- network-uri,
