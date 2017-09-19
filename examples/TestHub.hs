@@ -155,6 +155,15 @@ import TestUtils (HubStore(..), HubTest, PingCounter
                  , getCounter, increaseCounter, newPingCounter)
 import Utils (getAddress, getSocket, waitMillis, waitForProcessing)
 
+-- Parameterize the maximum message size when calling
+-- testBigMessages, since the JSAMP value causes some
+-- huge slowdown (I think in creating or deconstructing
+-- the XML; at least I hope it is that).
+--
+nBIG :: Int
+nBIG = 3
+-- nBIG = 5   -- JSAMP value
+
 -- | Store the responses to a client, labelled by the message
 --   tag.
 --
@@ -1307,7 +1316,7 @@ sendMessages ogen cl1 (cl2, rmap2) (cl4, rmap4) = do
   -- processed "quickly". I am not 100% sure of the logic
   -- here; I think it's saying that if we get here and a
   -- lot of the calls have been processed then it
-  -- means that the overhad of making the calls is too large.
+  -- means that the overhead of making the calls is too large.
   --
   check <- atomicallyIO (countResponse rmap2)
   when (check > necho `div` 2)
@@ -1466,9 +1475,7 @@ testClients gen si = do
 
   gen3 <- callAndWaitTests gen2 cl1 cl2
 
-  -- TODO: use a max of 3 for testing for now as larger values take too long
-  -- testBigMessages cl2 clId1 5
-  testBigMessages cl2 clId1 3
+  testBigMessages cl2 clId1 nBIG
 
   -- test the timeout; this is not required behavior so only warn
   -- if it fails
