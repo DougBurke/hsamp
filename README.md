@@ -1,5 +1,8 @@
 
-Can we access SAMP via Haskell?
+This is currently a vanity project, but I'd like to turn it into
+something useful, if I had time ...
+
+# Can we access SAMP via Haskell?
 
 http://www.ivoa.net/Documents/REC/App/SAMP-20090421.html
 
@@ -7,8 +10,21 @@ http://software.astrogrid.org/doc/p/jsamp/1.0/
 
 http://hackage.haskell.org/packages/archive/haxr/3000.2.1/doc/html/Network-XmlRpc-Client.html
 
-NOTE:
+Need to update to the latest SAMP standard!
 
+# Building
+
+It can be built with `cabal` or `stack`. I currently don't guarantee that
+the "old" stack versions will work; they are kept around in case they are
+useful - e.g.
+
+```
+% STACK_YAML=stack-ghc-8.0.yaml stack build
+```
+
+# A quick run through
+
+```
 % cabal new-repl
 In order, the following will be built (use -v for more details):
 hsamp-0.3
@@ -72,9 +88,11 @@ hsamp> :t rsp
 rsp :: [(ClientName, SAMPValue)]
 hsamp> rsp
 [("cl1",SAMPMap (fromList [])),("hub",SAMPMap (fromList []))]
+```
 
 # Doing it old school
 
+```
 *Network.XmlRpc.Client> let url = "http://127.0.0.1:55071/xmlrpc"
 *Network.XmlRpc.Client> let secret = "8fe977378fa002e6"
 *Network.XmlRpc.Client> let regClient :: String -> IO [(String, String)] ; regClient = remote url "samp.hub.register"
@@ -83,12 +101,17 @@ regClient :: String -> IO [(String, String)]
 *Network.XmlRpc.Client> ans <- regClient secret
 *Network.XmlRpc.Client> ans
 [("samp.hub-id","hub"),("samp.self-id","c1"),("samp.private-key","k:2_pplstclcoslgqbiu")]
+```
 
-so is the work we do in Network.SAMP.Standard.Client really necessary? Well, yes, since all
-it really does is wrap this up.
+so is the work we do in Network.SAMP.Standard.Client really necessary?
+Well, yes, since all it really does is wrap this up.
 
-TODO/THINK ABOUT:
+# TODO/THINK ABOUT
 
+  - Where is the slow down coming from in the test code; it involves the
+    serialization of the message to or from XML (I think) but where
+    exactly and whose "fault" is it (mine, some library code, ...)?
+    
   - move server code from examples (snooper/sender) to Network.SAMP.Standard.Server.Snap
     and add in *.HappStack/*.WAI versions. Hmm, maybe not WAI since the interface
     can abstract around the HTTP server, so perhaps *.WARP.
@@ -103,3 +126,10 @@ TODO/THINK ABOUT:
     Call) are only used when a server is actually set up? I don't think this is
     actually useful, just conceptually interesting for me
 
+# Copyright
+
+SPDX short identifier: BSD-3-Clause
+
+This software is released under the 3-clause BSD License, which can be
+found in the LICENSE file. See also
+https://opensource.org/licenses/BSD-3-Clause
