@@ -54,6 +54,7 @@ import Control.Concurrent.STM.TVar (TVar, modifyTVar', newTVarIO, readTVar,
                                     writeTVar)
 
 import Control.Monad (forM_, replicateM, unless, when, void)
+import Control.Monad.Error.Class (MonadError)
 import Control.Monad.Except (catchError, throwError, runExceptT)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad.Random (MonadRandom(..), Rand, runRand, uniform)
@@ -1078,6 +1079,21 @@ subsTest cl clId1 clId2 = do
   called <- lift (callAllE cl ytag msg)
   assert "Call All of unsubscribed message" [] called
   
+assertResponse ::
+  MonadError String m
+  => String
+  -> SAMPMessage
+  -- ^ Expected message contents
+  -> SAMPResponse
+  -> m ()
+assertResponse label msg rsp = do
+  assertTrue (label ++ " response okay") (isSAMPSuccess rsp)
+
+  let params = getSAMPMessageParams msg
+  case getSAMPResponseResult rsp of
+    Just res -> assertSAMPMap (label ++ " response") params res
+    _ -> throwError (label ++ " internal error: no result!")
+
 
 -- Validate results from client 2
 validateClient2 ::
@@ -1096,12 +1112,7 @@ validateClient2 findId clId1 rmap2 msgs tags msgIds2 =
     rsps <- atomicallyIO (removeResponse rmap2 clId1 msgTag)
     case rsps of
       [rsp] -> do
-        assertTrue (head2 ++ " response okay") (isSAMPSuccess rsp)
-
-        let params = getSAMPMessageParams msg
-        case getSAMPResponseResult rsp of
-          Just res -> assertSAMPMap (head2 ++ " response") params res
-          _ -> throwError (head2 ++ " internal error: no result!")
+        assertResponse head2 msg rsp
 
         case findId rsp of
           Just msgKey -> assert (head2 ++ " msgId is correct") msgId msgKey
@@ -1394,12 +1405,7 @@ callAndWaitTests ogen cl1 cl2 = do
     rsp <- lift (callAndWaitE cl2 clId1 msg Nothing)
 
     let head2 = "callAndWait client 2 calling id=" ++ show clId1
-    assertTrue (head2 ++ " response okay") (isSAMPSuccess rsp)
-    
-    let params = getSAMPMessageParams msg
-    case getSAMPResponseResult rsp of
-      Just res -> assertSAMPMap (head2 ++ " response") params res
-      _ -> throwError (head2 ++ " internal error: no result!")
+    assertResponse head2 msg rsp
 
     -- should a test be made of the extra parameters?
 
