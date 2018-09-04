@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016, 2018
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -47,7 +47,7 @@ import System.IO (hPutStrLn, stderr)
 import System.IO.Error (isUserError, ioeGetErrorString)
 
 import Control.Concurrent (ThreadId, killThread, myThreadId)
-import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, writeTVar)
+import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, readTVarIO, writeTVar)
 import Control.Monad.STM (atomically)
 
 -- import Control.Monad (when)
@@ -236,7 +236,7 @@ getFromMap clmap n = M.findWithDefault (show n) n clmap
 
 getDisplayName :: ClientMapVar -> ClientName -> IO String
 getDisplayName clvar clid = do
-    clmap <- atomically (readTVar clvar)
+    clmap <- readTVarIO clvar
     return (getFromMap clmap clid)
 
 -- Remove the client from the map, returning its display name

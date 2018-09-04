@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016, 2018
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -44,7 +44,7 @@ import qualified Network as N
 import Control.Concurrent (ThreadId, forkIO, myThreadId)
 import Control.Concurrent.Async (mapConcurrently)
 import Control.Concurrent.STM.TChan (TChan, newTChanIO, readTChan, writeTChan)
-import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, writeTVar)
+import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, readTVarIO, writeTVar)
 import Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO, putTMVar
                                     , readTMVar)
 import Control.Monad (forM_, void, when)
@@ -263,7 +263,7 @@ processMessage conn (cmode, mtype, params) = do
             Just _ -> putStrLn "Received all calls"
             _ -> do
               putStrLn "Timed out waiting for calls"
-              rclients <- atomically (readTVar cv)
+              rclients <- readTVarIO cv
               case rclients of
                 [] -> return ()
                 [cl] -> fail ("The following client failed to respond: " ++

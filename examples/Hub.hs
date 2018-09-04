@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015, 2016, 2017
+Copyright   :  (c) Douglas Burke 2015, 2016, 2017, 2018
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -130,7 +130,7 @@ import System.Random (RandomGen, StdGen, getStdGen, setStdGen)
 
 import Control.Arrow (first)
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, writeTVar)
+import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, readTVarIO, writeTVar)
 import Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO, putTMVar,
                                      takeTMVar)
 import Control.Monad.IO.Class (MonadIO)
@@ -507,7 +507,7 @@ broadcastShutDown hi = do
   noticeIO "\n"
   noticeIO "Hub is shutting down."
   let name = toClientName (hiName (hiReader hi))
-  hub <- atomically (readTVar (hiState hi))
+  hub <- readTVarIO (hiState hi)
   forM_ (M.elems (hiClients hub))
         (broadcastRemovedClient hi . cdName)
   broadcastMType hi name
@@ -524,15 +524,13 @@ withHub ::
     HubInfo
     -> (HubInfoState -> IO a)
     -> IO a
-withHub hi act = atomically (readTVar (hiState hi)) >>= act
+withHub hi act = readTVarIO (hiState hi) >>= act
 
 withHubP ::
     HubInfo
     -> (HubInfoState -> a)
     -> IO a
-withHubP hi act = do
-  hub <- atomically (readTVar (hiState hi))
-  return (act hub)
+withHubP hi act = act <$> readTVarIO (hiState hi)
 
 
 {-
@@ -2010,7 +2008,7 @@ dumpHub :: HubInfo -> IO ()
 dumpHub hi = do
   let hir = hiReader hi
       mvar = hiState hi
-  his <- atomically (readTVar mvar)
+  his <- readTVarIO mvar
   dbgIO ("Hub: " ++ fromRString (hiName hir))
   dbgIO ("  next client: " ++ show (hiNextClient his))
   dbgIO "  clients:"
