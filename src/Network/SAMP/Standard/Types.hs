@@ -989,21 +989,21 @@ toSM = M.fromList
 instance SAMPType SAMPResponse where
 
     toSValue (SROkay vals other) =
-      SAMPMap (toSM ([ (sStatus, sOkVal)
-                     , (sResult, SAMPMap vals)])
+      SAMPMap (toSM [ (sStatus, sOkVal)
+                    , (sResult, SAMPMap vals)]
                `M.union` other)
       
     toSValue (SRWarning vals (emsg, evals) other) =
-      SAMPMap (toSM ([ (sStatus, sWarnVal)
-                     , (sResult, SAMPMap vals)
-                     , (sError, SAMPMap err)])
+      SAMPMap (toSM [ (sStatus, sWarnVal)
+                    , (sResult, SAMPMap vals)
+                    , (sError, SAMPMap err)]
                `M.union` other)
       where
         err = M.insert sErrorTxt (SAMPString emsg) evals
               
     toSValue (SRError (emsg, evals) other) =
-      SAMPMap (toSM ([ (sStatus, sErrVal)
-                     , (sError, SAMPMap err)])
+      SAMPMap (toSM [ (sStatus, sErrVal)
+                    , (sError, SAMPMap err)]
                `M.union` other)
       where
         err = M.insert sErrorTxt (SAMPString emsg) evals
@@ -1208,9 +1208,9 @@ sparams = "samp.params"
 
 instance SAMPType SAMPMessage where
     toSValue sm =
-      SAMPMap (toSM ([ (smtype, toSValue (_smType sm))
-                     , (sparams, SAMPMap (_smParams sm))
-                     ]) `M.union` _smExtra sm)
+      SAMPMap (toSM [ (smtype, toSValue (_smType sm))
+                    , (sparams, SAMPMap (_smParams sm))
+                    ] `M.union` _smExtra sm)
                         
     fromSValue (SAMPMap xs) = do
       (mt, xs2) <- grabKeyE smtype xs
