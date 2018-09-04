@@ -6,7 +6,7 @@
 
 {-|
 Module      :  Network.SAMP.Standard.Types
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016, 2018
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -304,10 +304,11 @@ TODO:
 -}
 
 -- Switched from an alias to a newtype to try and avoid IsString
--- complications in ghc 8.0.
+-- complications in ghc 8.0. Or did I change it to data? Thanks
+-- to hlint going back to newtype.
 
-data RString = RS { _fromRString :: [RChar] }
-             deriving (Eq, Ord)
+newtype RString = RS { _fromRString :: [RChar] }
+                deriving (Eq, Ord)
 
 instance Show RString where
   show (RS s) = show s
