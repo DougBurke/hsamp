@@ -3,7 +3,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015, 2016
+Copyright   :  (c) Douglas Burke 2015, 2016, 2018
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -306,7 +306,7 @@ makeClients si nclient = do
 --   The phantom type is used to distinguish between the different
 --   type of counters.
 --
-data Counter a = Ctr { _unCtr :: TVar Int }
+newtype Counter a = Ctr { _unCtr :: TVar Int }
 
 data EvalCounterType
 data PingCounterType
