@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 
 {-|
 ------------------------------------------------------------------------
@@ -142,7 +143,7 @@ getConnection xs = (Sync, xs)
 getMType :: [String] -> Either String (MType, [String])
 getMType [] = Left "Missing required mtype argument"
 getMType (name:xs) = 
-    handleError Left $ fmap (flip (,) xs) (toMTypeE name)
+    handleError Left $ fmap (, xs) (toMTypeE name)
 
 splitKV :: String -> Either String SAMPMapElement
 splitKV arg = do

@@ -1,4 +1,5 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 
 {-|
 ------------------------------------------------------------------------
@@ -1626,7 +1627,7 @@ respondToClient = respond
 -- A helper function whilst converting code; this is meant to be
 -- a stop-gap function, to be removed at a later date
 respond :: String -> IO SAMPMethodResponse -> IO (String, SAMPMethodResponse)
-respond lbl act = (\a -> (lbl, a)) <$> act
+respond lbl act = (lbl, ) <$> act
 
                   
 -- An empty response

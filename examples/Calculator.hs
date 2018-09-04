@@ -1,8 +1,9 @@
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015, 2016
+Copyright   :  (c) Douglas Burke 2015, 2016, 2018
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -344,7 +345,7 @@ runCalcStorm genStr ogen si nclient nquery = do
   let (conns, evalCounters, stores, tids) = unzip4 clinfos
       clNames = map scId conns
       
-      osendMap = M.fromList (map (\n -> (n,0)) clNames)
+      osendMap = M.fromList (map (, 0) clNames)
 
       -- create the random messages, for each client
       storminfo = zip conns stores

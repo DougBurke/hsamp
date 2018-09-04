@@ -1,9 +1,10 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE TupleSections #-}
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015, 2016
+Copyright   :  (c) Douglas Burke 2015, 2016, 2018
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -250,7 +251,7 @@ errorKey = "test.error"
 
 
 defaultSubs :: [(MType, SAMPValue)]
-defaultSubs = map (\k -> (k, emptyMap)) [echoMTYPE, pingMTYPE, failMTYPE]
+defaultSubs = map (, emptyMap) [echoMTYPE, pingMTYPE, failMTYPE]
 
 -- Every legal character except for 0x0d, since there are issues when
 -- transmitting this via XML (taken from Mark's comments in HubTester).
@@ -679,9 +680,7 @@ reportUnexpected clName label mstr msg = do
   let (mtype, keys, extra) = extract msg
   putStrLn ("Error: client " ++ show clName ++ " " ++
             label ++ "=" ++ show mtype)
-  case mstr of
-    Just str -> putStrLn str
-    _ -> return ()
+  forM_ mstr putStrLn
   putStrLn "  keys:"
   forM_ keys dumpKV
   unless (null extra) (putStrLn "  extra:" >> forM_ extra dumpKV)
