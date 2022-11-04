@@ -67,6 +67,7 @@ import qualified Data.Map as M
 
 import Control.Monad (void)
 import Control.Monad.Except (throwError)
+import Control.Monad.Fail (MonadFail)
 import Control.Monad.Trans (liftIO)
 
 import Network.SAMP.Standard.Types (SAMPValue(..), SAMPType(..),
@@ -333,7 +334,7 @@ clientMethodMap ci ns cs r =
     ]
 
 -- run an action that returns nothing
-rE :: (Monad m) => Err m () -> m ()
+rE :: (Monad m, MonadFail m) => Err m () -> m ()
 rE = handleError (const (return ())) 
 
 {-|

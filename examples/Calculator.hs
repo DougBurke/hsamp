@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -29,6 +30,7 @@ module Calculator (
   runCalcStorm
   ) where
 
+import qualified Control.Monad.Fail as Fail
 import qualified Data.Map.Strict as M
 
 import Control.Concurrent (ThreadId, forkIO, killThread)
@@ -105,6 +107,13 @@ import TestUtils (HubTest
                  , mapConcurrentlyE
                  , putLn)
 import Utils (getAddress, getSocket, waitForProcessing)
+
+-- MonadFail conversions have meant I have to do something like
+-- this now (quick-conversions-r-us, guaranteed not to have read
+-- the documentation).
+--
+instance Fail.MonadFail (Either String) where
+  fail = Left
 
 type CalcStore = Store MessageTag Int
 

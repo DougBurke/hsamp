@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -39,6 +40,7 @@ TODO:
 module Main (main) where
 
 import qualified Control.Exception as CE
+import qualified Control.Monad.Fail as Fail
 import qualified Data.Map as M
 import qualified Network as N
 
@@ -107,6 +109,13 @@ import System.Timeout (timeout)
     
 import Utils (PrintChannel, createClient, displayKV, doE, getAddress
              , getSocket, startPrintChannel, syncPrint)
+
+-- MonadFail conversions have meant I have to do something like
+-- this now (quick-conversions-r-us, guaranteed not to have read
+-- the documentation).
+--
+instance Fail.MonadFail (Either String) where
+  fail = Left
 
 -- convert seconds to milliseconds, error-ing out if the converted
 -- value would cause overflow.

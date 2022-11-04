@@ -1,3 +1,4 @@
+{-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE TupleSections #-}
 
@@ -104,6 +105,7 @@ TODO:
 module Main (main) where
 
 import qualified Control.Exception as CE
+import qualified Control.Monad.Fail as Fail
 
 import qualified Data.Aeson as J
 import qualified Data.ByteString.Char8 as B
@@ -210,6 +212,18 @@ import Web.Scotty (ActionM
 import Utils (getSocket)
 
 -- import Paths_hsamp (version)
+
+-- MonadFail conversions have meant I have to do something like
+-- this now (quick-conversions-r-us, guaranteed not to have read
+-- the documentation).
+--
+instance Fail.MonadFail (Either RString) where
+  fail _ = Left "failed"  -- do not try to message to RString for now
+
+instance Fail.MonadFail (Either String) where
+  fail = Left
+
+
 
 -- the name of the SAMP logging instance
 cLogger :: String

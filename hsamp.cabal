@@ -88,6 +88,7 @@ library
    wai,
    wai-extra
 
+
  ghc-options:
    -Wall
 
@@ -191,7 +192,7 @@ executable hsamp-sender
       mtl,            
       network,
       random,
-      stm == 2.4.*,
+      stm >= 2.4 && < 2.6,
       time,
       transformers
                   
@@ -216,7 +217,7 @@ executable hsamp-snooper
       hslogger,
       mtl,
       network,
-      stm == 2.4.*,
+      stm >= 2.4 && < 2.6,
       transformers
 
   else
@@ -254,7 +255,7 @@ executable hsamp-hub
       network-uri,
       random,
       scotty,
-      stm == 2.4.*,
+      stm >= 2.4 && < 2.6,
       text,
       time,
       transformers,
@@ -321,7 +322,7 @@ executable hsamp-testhub
       -- network-uri,
       random,
       -- scotty,
-      stm == 2.4.*,
+      stm >= 2.4 && < 2.6,
       -- text,
       time,
       transformers

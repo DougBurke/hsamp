@@ -101,6 +101,7 @@ import qualified Network.Socket as NS
 
 import Control.Monad.Except (MonadError, throwError)
 import Control.Monad (liftM, ap)
+import Control.Monad.Fail (MonadFail)
 
 import Data.Char (chr, isAlphaNum, isDigit, ord)
 import Data.Hashable (Hashable)
@@ -141,10 +142,11 @@ maybeToM _ (Just x) = return x
 maybeToM err Nothing = throwError err
 
 -- | Runs the SAMP computation and returns the result.
--- Any error is converted to a user exception. This is
+-- Any error is converted to an exception (created by error). This is
 -- a specialised form of 'handleError'.
+--
 runE :: Err IO a -> IO a
-runE = handleError fail
+runE = handleError error
 
 -- | Information about the hub.
 data SAMPInfo = SI {
@@ -1276,7 +1278,7 @@ parseSAMPCall c = parseCall c >>= toSMC
 
 -- | Parses a SAMP method response.
 parseSAMPResponse ::
-    (Show e, MonadError e m)
+    (Show e, MonadError e m, MonadFail m)
     => String -- ^ XmlRpc input
     -> Err m SAMPMethodResponse
 parseSAMPResponse c = parseResponse c >>= toSMR
