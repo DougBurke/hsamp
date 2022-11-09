@@ -4,7 +4,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015, 2016, 2018
+Copyright   :  (c) Douglas Burke 2015, 2016, 2018, 2022
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -139,8 +139,6 @@ import System.Exit (exitFailure, exitSuccess)
 import System.IO (hPutStrLn, stderr)
 import System.Log.Logger
 import System.Random (RandomGen, StdGen, newStdGen)
-
-import Text.Read (readEither)
 
 -- import Paths_hsamp (version)
 
@@ -366,12 +364,9 @@ main = do
   gen <- case args of
     [] -> newStdGen
     [gen1, gen2] -> do
-      let gstr = gen1 ++ " " ++ gen2
-      case readEither gstr of
-        Right g -> return g
-        Left emsg -> do
-          putStrLn ("Unable to parse " ++ gstr ++ ": " ++ emsg)
-          usage >> newStdGen -- ugh
+      putStrLn "Support for restoring the random generator has been removed"
+      putStrLn ("  - dropping '" <> gen1 <> " " <> gen2 <> "'")
+      newStdGen
           
     _ -> usage >> newStdGen -- ugh
 

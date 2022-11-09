@@ -6,7 +6,7 @@
 
 {-|
 Module      :  Network.SAMP.Standard.Types
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016, 2018
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016, 2018, 2022
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -92,8 +92,8 @@ module Network.SAMP.Standard.Types (
        ) where
 
 import qualified Data.Aeson as J
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as L
-import qualified Data.HashMap.Strict as HM
 import qualified Data.Map as M
 import qualified Data.Text as T
     
@@ -737,7 +737,7 @@ than force Value, but need to look at to see if it is worth it.
 
 -- | Convert a (String, Value) tuple into (RString, SAMPValue)
 toSAMPMapElement ::
-    (Monad m)
+    (Monad m, MonadFail m)
     => (String, Value)
     -> Err m SAMPMapElement
 toSAMPMapElement (n,v) = (,) `liftM` toRStringE n `ap` fromValue v
@@ -851,11 +851,11 @@ instance XmlRpcType SAMPValue where
 
 instance J.ToJSON SAMPValue where
     toJSON (SAMPString s) = J.String (T.pack (fromRString s))
-    toJSON (SAMPList xs)  = J.toJSON (map J.toJSON xs)
-    toJSON (SAMPMap ms)  = J.Object (HM.fromList (map conv kvs))
+    toJSON (SAMPList xs) = J.toJSON (map J.toJSON xs) 
+    toJSON (SAMPMap ms) = J.Object (KM.fromList (map conv kvs))
         where
           kvs = M.toList ms
-          conv (k, vs) = (T.pack (fromRString k), J.toJSON vs)
+          conv (k, vs) = (fromString (fromRString k), J.toJSON vs)
                             
 -- TODO: improve this
 
@@ -1249,7 +1249,10 @@ data SAMPMethodResponse =
 
 -- need to convert these to the XmlRpc equivalents
 
-toSMC :: (Monad m) => MethodCall -> Err m SAMPMethodCall
+toSMC ::
+  (Monad m, MonadFail m)
+  => MethodCall
+  -> Err m SAMPMethodCall
 toSMC (MethodCall n vs) = do
   -- TODO: maybe just use toMTypeE here, so that the invalid characters
   --       are displayed?
@@ -1259,7 +1262,10 @@ toSMC (MethodCall n vs) = do
 fromSMC :: SAMPMethodCall -> MethodCall
 fromSMC (SAMPMethodCall n vs) = MethodCall (fromMType n) (map toValue vs)
 
-toSMR :: (Monad m) => MethodResponse -> Err m SAMPMethodResponse
+toSMR ::
+  (Monad m, MonadFail m)
+  => MethodResponse
+  -> Err m SAMPMethodResponse
 toSMR (Return vs) = SAMPReturn `liftM` fromValue vs
 toSMR (Fault _ msg) = return (SAMPFault msg)
 
@@ -1271,7 +1277,7 @@ fromSMR (SAMPFault msg) = Fault 1 msg
 
 -- | Parses a SAMP method call from the XmlRpc input.
 parseSAMPCall ::
-    (Show e, MonadError e m)
+    (Show e, MonadError e m, MonadFail m)
     => String -- ^ XmlRpc input
     -> Err m SAMPMethodCall
 parseSAMPCall c = parseCall c >>= toSMC

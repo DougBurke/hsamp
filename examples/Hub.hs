@@ -4,7 +4,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015, 2016, 2017, 2018
+Copyright   :  (c) Douglas Burke 2015, 2016, 2017, 2018, 2022
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -117,7 +117,7 @@ import qualified Data.Text.Lazy as LT
 -- Hack for ds9 7.3.2 support
 import qualified HubCall as HC
     
-import qualified Network as N
+import qualified Network.Socket as N
 import qualified Network.XmlRpc.Internals as XI
 
 import qualified System.Posix.IO as P
@@ -494,14 +494,14 @@ runHub = do
            -- mean it isn't worth sending the shutdown signal); for
            -- now try in all cases
            broadcastShutDown hi
-           N.sClose socket
+           N.close socket
            noticeIO ("Removing lockfile: " ++ lockfile)
            removeFile lockfile
            CE.throwIO e
     createHub socket hi secret `CE.catch` cleanup
 
     -- is it possible to get here once the hub is running?
-    N.sClose socket
+    N.close socket
     removeFile lockfile
 
 -- This currently will wait for a response from a client to the
@@ -1054,7 +1054,7 @@ sendToAll2 cTime hi tag msg ohub sender =
 
 ignoreError :: String -> CE.SomeException -> IO ()
 ignoreError lbl e = do
-  hPutStrLn stderr ("*** Error " ++ show lbl)
+  hPutStrLn stderr ("*** Error '" ++ lbl ++ "'")
   hPutStrLn stderr ("*** " ++ show e)
 
 
