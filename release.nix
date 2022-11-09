@@ -18,6 +18,14 @@ let
       # formatting =
       #   hself.callHackage "formatting" "7.1.2" {};
       # formatting = hself.formatting_7_1_2;
+
+      # looks like readable needs some help circa Nov 2022
+      # but how can we get nix to pick up the revised version
+      # and not the old 0.3.1 version... Looks like need to
+      # update all-cabal-hashes, but where is it?
+      #
+      readable =
+         hself.callHackage "readable" "0.3.1" {};
       
     };
   };
