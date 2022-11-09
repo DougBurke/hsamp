@@ -31,6 +31,7 @@ let
       # pkgs.haskellPackages.haskell-language-server
       pkgs.haskellPackages.hlint
       pkgs.niv
+      pkgs.git
     ];
     # withHoogle = true;
   };
