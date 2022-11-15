@@ -1,4 +1,3 @@
-syntax: glob
 *~
 
 *.hi
@@ -13,5 +12,3 @@ dist/
 dist-newstyle/
 .stack-work/
 
-syntax: regexp
-(.*/)?\#[^/]*\#$

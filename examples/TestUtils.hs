@@ -3,7 +3,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015, 2016, 2018
+Copyright   :  (c) Douglas Burke 2015, 2016, 2018, 2022
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -77,7 +77,7 @@ import Control.Concurrent.Async (mapConcurrently)
 import Control.Concurrent.STM.TVar (TVar, modifyTVar', newTVarIO, readTVar,
                                     writeTVar)
 
-import Control.Monad (forM_, liftM, unless, void, when)
+import Control.Monad (forM_, unless, void, when)
 import Control.Monad.Except (ExceptT, catchError, throwError)
 import Control.Monad.Error.Class (MonadError)
 import Control.Monad.IO.Class (MonadIO)
@@ -230,7 +230,7 @@ closeClients cls = do
 --   it is not as efficient as it could be, but speed is not
 --   an issue here.
 makeClient :: SAMPInfo -> HubTest IO SAMPConnection
-makeClient si = head `liftM` makeClients si 1
+makeClient si = head `fmap` makeClients si 1
 
 
 -- | Run the actions concurrently and wait for their
@@ -421,7 +421,7 @@ assertNoKey ::
   (MonadError String m, Eq a, Show a)
   => String -> a -> [(a, b)] -> m ()
 assertNoKey lbl k kvs =
-  unless (not (any ((== k) . fst) kvs))
+  when (any ((== k) . fst) kvs)
     (throwError (lbl ++ ": key should not be found: " ++ show k))
   
 

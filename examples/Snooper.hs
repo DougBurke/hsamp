@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016, 2018
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016, 2018, 2022
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -86,7 +86,7 @@ import Network.SAMP.Standard (RString
                              , simpleClientServer)
 import Network.SAMP.Standard.Server.Scotty (runServer)
 
-import qualified Network as N
+import qualified Network.Socket as N
 import Network.Socket (Socket)
 
 import Utils (PrintChannel, createClient, displayKV
@@ -115,7 +115,7 @@ setupSnoop = do
     sock <- getSocket
 
     -- is this excessive?
-    let closeSock = N.sClose sock
+    let closeSock = N.close sock
 
         hdlr :: String -> IO ()
         hdlr emsg = closeSock

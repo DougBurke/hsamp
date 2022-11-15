@@ -2,7 +2,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015
+Copyright   :  (c) Douglas Burke 2015, 2022
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -55,7 +55,10 @@ call url method args = do
   -- liftIO (putStrLn ("--> sending: " ++ L.unpack reqConv))
   handleResponse respParse
 
-handleResponse :: Monad m => XI.MethodResponse -> m XI.Value
+handleResponse ::
+  MonadFail m
+  => XI.MethodResponse
+  -> m XI.Value
 handleResponse (XI.Return v) = return v
 handleResponse (XI.Fault code str) = fail ("Error " ++ show code ++ ": " ++ str)
 
@@ -128,7 +131,11 @@ request uri auth len = HC.buildRequest $ do
                             in ( if null u then Nothing else Just u
                                , if null pw then Nothing else Just (tail pw))
 
-maybeFail :: Monad m => String -> Maybe a -> m a
+maybeFail ::
+  MonadFail m
+  => String
+  -> Maybe a
+  -> m a
 maybeFail msg = maybe (fail msg) return
                 
 -- end of code from haxr
