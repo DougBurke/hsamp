@@ -1390,7 +1390,7 @@ callAndWaitTests ::
 callAndWaitTests ogen cl1 cl2 = do
   let clId1 = scId cl1
 
-      waitTimes = map (\i -> 100 * i) echos
+      waitTimes = map (100 *) echos
       makeMsgs = mapM (makeMsg False) waitTimes
 
       (msgs2, ngen) = runRand makeMsgs ogen

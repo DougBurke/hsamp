@@ -2,7 +2,7 @@
 
 {-|
 Module      :  Network.SAMP.Standard.Client
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2022
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -54,7 +54,7 @@ import qualified Control.Exception as CE
 import qualified Data.Map as M
 import qualified Data.Traversable as T
 
-import Control.Monad (ap, forM, liftM, forM, void)
+import Control.Monad (ap, forM, forM, void)
 import Control.Monad.Except (throwError, runExceptT)
 import Control.Monad.Trans (liftIO)
 
@@ -212,7 +212,7 @@ getClientInfoE si ks =
   let sKey = getSAMPInfoHubSecret si
       url = getSAMPInfoHubURL si
   in SAMPConnection
-         `liftM` return sKey 
+         `fmap` return sKey 
          `ap` return url
          `ap` (toClientSecret <$> slookup sPrivateKey ks)
          `ap` slookup sHubId ks
@@ -390,7 +390,7 @@ getSubscribedClientsE cl mtype
             conv = CA.first toClientName
 
             act = callHubE cl "samp.hub.getSubscribedClients" [toSValue mtype]
-        in (map conv . M.toList) `liftM` (act >>= fromSValue)
+        in (map conv . M.toList) `fmap` (act >>= fromSValue)
 
 -- | Send a message to a given client of the hub and do not
 -- wait for a response.

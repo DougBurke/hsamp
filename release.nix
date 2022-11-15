@@ -24,8 +24,8 @@ let
       # and not the old 0.3.1 version... Looks like need to
       # update all-cabal-hashes, but where is it?
       #
-      readable =
-         hself.callHackage "readable" "0.3.1" {};
+      #readable =
+      #   hself.callHackage "readable" "0.3.1" {};
       
     };
   };

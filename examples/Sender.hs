@@ -248,7 +248,7 @@ processMessage conn (cmode, mtype, params) = do
         Notify -> do
           putStrLn "Notifications sent to:" 
           tgts <- runE (notifyAllE conn msg
-                        >>= mapM (\n -> fmap ((,) n) (getClientNameE conn n)))
+                        >>= mapM (\n -> fmap (n,) (getClientNameE conn n)))
           forM_ tgts (\t -> putStrLn ("    " ++ showTarget t))
 
         ASync  -> do

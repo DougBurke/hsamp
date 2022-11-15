@@ -2,7 +2,6 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 {-|
 Module      :  Network.SAMP.Standard.Types
@@ -100,7 +99,7 @@ import qualified Data.Text as T
 import qualified Network.Socket as NS
 
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad (liftM, ap)
+import Control.Monad (ap)
 import Control.Monad.Fail (MonadFail)
 
 import Data.Char (chr, isAlphaNum, isDigit, ord)
@@ -350,11 +349,11 @@ emptyRString = RS []
 
 -- | Create a 'RString' from a normal 'String'.
 toRString :: String -> Maybe RString
-toRString s = RS `liftM` mapM toRChar s
+toRString s = RS `fmap` mapM toRChar s
 
 -- | See 'toRString'.
 toRStringE :: (Monad m) => String -> Err m RString
-toRStringE s = RS `liftM` mapM toRCharE s
+toRStringE s = RS `fmap` mapM toRCharE s
 
 -- | Extract the contents of the 'RString'.
 fromRString :: RString -> String
@@ -737,10 +736,10 @@ than force Value, but need to look at to see if it is worth it.
 
 -- | Convert a (String, Value) tuple into (RString, SAMPValue)
 toSAMPMapElement ::
-    (Monad m, MonadFail m)
+    MonadFail m
     => (String, Value)
     -> Err m SAMPMapElement
-toSAMPMapElement (n,v) = (,) `liftM` toRStringE n `ap` fromValue v
+toSAMPMapElement (n,v) = (,) `fmap` toRStringE n `ap` fromValue v
 
               
 -- | Get a value from the contents of a SAMP Map (given as a list
@@ -1250,23 +1249,23 @@ data SAMPMethodResponse =
 -- need to convert these to the XmlRpc equivalents
 
 toSMC ::
-  (Monad m, MonadFail m)
+  MonadFail m
   => MethodCall
   -> Err m SAMPMethodCall
 toSMC (MethodCall n vs) = do
   -- TODO: maybe just use toMTypeE here, so that the invalid characters
   --       are displayed?
   ns <- maybeToM ("Unable to convert SAMP method name: " ++ n) (toMType n)
-  SAMPMethodCall ns `liftM` mapM fromValue vs
+  SAMPMethodCall ns `fmap` mapM fromValue vs
 
 fromSMC :: SAMPMethodCall -> MethodCall
 fromSMC (SAMPMethodCall n vs) = MethodCall (fromMType n) (map toValue vs)
 
 toSMR ::
-  (Monad m, MonadFail m)
+  MonadFail m
   => MethodResponse
   -> Err m SAMPMethodResponse
-toSMR (Return vs) = SAMPReturn `liftM` fromValue vs
+toSMR (Return vs) = SAMPReturn `fmap` fromValue vs
 toSMR (Fault _ msg) = return (SAMPFault msg)
 
 -- | The integer fault value is not specified in the SAMP document, so use a
