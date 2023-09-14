@@ -3,7 +3,7 @@
 
 {-|
 Module      :  Network.SAMP.Standard.Server
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2022
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -334,7 +334,7 @@ clientMethodMap ci ns cs r =
     ]
 
 -- run an action that returns nothing
-rE :: (Monad m, MonadFail m) => Err m () -> m ()
+rE :: MonadFail m => Err m () -> m ()
 rE = handleError (const (return ())) 
 
 {-|

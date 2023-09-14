@@ -13,9 +13,10 @@ module Utils
         waitMillis, waitForProcessing
        ) where
 
+import qualified Control.Exception as E
 import qualified Data.ByteString.Char8 as B
 import qualified Data.Map as M
-import qualified Network as N
+import qualified Network.Socket as N
 
 import Control.Concurrent.Chan
 import Control.Concurrent (ThreadId, forkIO, threadDelay)
@@ -98,9 +99,26 @@ getKeyStr kvs key =
         _ -> Nothing
 
 -- | Return a socket with a randomly-chosen port for use by the server.
-
+--
+--   Shold we do this within a brackerOnError?
+--
+--   Based on network-2.6.0.0 listenOn
+--
 getSocket :: IO Socket
-getSocket = N.listenOn (N.PortNumber (fromIntegral (0::Int)))
+getSocket = do
+  let hints = N.defaultHints { N.addrFlags = flags, N.addrSocketType = N.Stream }
+      flags = [N.AI_NUMERICHOST, N.AI_NUMERICSERV]
+
+  addrs <- N.getAddrInfo (Just hints) (Just "127.0.0.1") Nothing
+  let addr = head addrs
+      host = N.tupleToHostAddress (127, 0, 0, 1)  -- is  this OTT?
+      
+  E.bracketOnError (N.openSocket addr) N.close $ \sock -> do
+    N.setSocketOption sock N.ReuseAddr 1
+    N.bind sock (N.SockAddrInet N.defaultPort host)
+    N.listen sock N.maxListenQueue
+    pure sock
+  
 
 getAddress :: Socket -> IO String
 getAddress = fmap hostName . socketPort

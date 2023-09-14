@@ -4,7 +4,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016, 2018
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016, 2018, 2022
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -42,7 +42,7 @@ module Main (main) where
 import qualified Control.Exception as CE
 import qualified Control.Monad.Fail as Fail
 import qualified Data.Map as M
-import qualified Network as N
+import qualified Network.Socket as N
 
 import Control.Concurrent (ThreadId, forkIO, myThreadId)
 import Control.Concurrent.Async (mapConcurrently)
@@ -248,7 +248,7 @@ processMessage conn (cmode, mtype, params) = do
         Notify -> do
           putStrLn "Notifications sent to:" 
           tgts <- runE (notifyAllE conn msg
-                        >>= mapM (\n -> fmap ((,) n) (getClientNameE conn n)))
+                        >>= mapM (\n -> fmap (n,) (getClientNameE conn n)))
           forM_ tgts (\t -> putStrLn ("    " ++ showTarget t))
 
         ASync  -> do
@@ -267,7 +267,7 @@ processMessage conn (cmode, mtype, params) = do
           -- do we need to do this? should this be done within a resource
           -- "handler" (to make sure the socket is closed on error)?
           dbg "Closing socket"
-          N.sClose sock
+          N.close sock
 
           case flag of
             Just _ -> putStrLn "Received all calls"

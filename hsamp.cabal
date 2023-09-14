@@ -1,5 +1,7 @@
+cabal-version:  2.2
+
 name:         hsamp
-version:      0.3
+version:      0.4
 stability:    experimental
 synopsis:     Send and receive messages using the Simple Application Message Protocol (SAMP).
 category:     Astronomy
@@ -22,22 +24,20 @@ description:
   was primarily written as a learning experience, so expect rough
   edges.
 
-license:      BSD3
+license:      BSD-3-Clause
 license-file: LICENSE
 author:       Douglas Burke
 maintainer:   dburke.gw@gmail.com
 
--- homepage:       https://bitbucket.org/doug_burke/hsamp/wiki/Home
-homepage:       https://bitbucket.org/doug_burke/hsamp/
-bug-reports:    https://bitbucket.org/doug_burke/hsamp/issues
+homepage:       https://github.com/DougBurke/hsamp/
+bug-reports:    https://github.com/DougBurke/hsamp/ussies/
 
-tested-with:    GHC==7.10.2
+tested-with:    GHC==9.0.2
 build-type:     Simple
-cabal-version:  >= 1.8
 
 source-repository head
-  type:     mercurial
-  location: https://bitbucket.org/doug_burke/hsamp/
+  type:     git
+  location: https://github.com/DougBurke/hsamp/
 
 flag  threaded
   description: Use the threaded RTS
@@ -52,21 +52,15 @@ flag  examples
   default: True
 
 flag  xmlhack
-  description: Adjust the XML returned by the hub (e.g. for ds9 7.3.2). This is only used if examples is True.
+  description: Adjust the XML returned by the hub (e.g. for ds9 up to 8.5). This is only used if examples is True.
   default: False
 --  default: True
 
--- Just trying to get to build on ghc 7.10.2, so limited constraints.
--- I am not looking to support older versions of ghc at this
--- time, since I am not able to test on those (and with the recent
--- changes to the base library involving AMP/BBP it is awkward
--- to write code that covers a large range of ghc versions when you
--- are not testing on them all).
---
 library
+ default-language: Haskell2010
  build-depends:
-   aeson,
-   base >= 4.3.0,
+   aeson >= 2.0 && < 2.2,
+   base >= 4.9 && < 4.18,
    bytestring,
    containers >= 0.5 && < 0.7,            
    data-default-class,
@@ -77,7 +71,7 @@ library
    http-conduit,
    http-types,
    mtl >= 2.2.1,
-   network >= 2.6,
+   network >= 2.7,
    network-uri >= 2.6,
    random,
    scotty >= 0.7,
@@ -95,10 +89,10 @@ library
  -- see https://ghc.haskell.org/trac/ghc/wiki/Migration/8.0#base-4.9.0.0
  --   note: dropping 'fail == 4.9.*' dependency
  --
- if impl(ghc >= 8.0)
-   ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
+ if impl(ghc >= 8.8)
+   ghc-options: -Wcompat -Wnoncanonical-monad-instances
  else
-   build-depends: semigroups == 0.18.*
+   ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
    
  hs-source-dirs:   src/
  exposed-modules:
@@ -110,6 +104,7 @@ library
     Network.SAMP.Standard.Types
 
 executable testclient
+  default-language: Haskell2010
   hs-source-dirs:  examples
   main-is:         TestClient.hs
   other-modules:   Paths_hsamp
@@ -136,6 +131,7 @@ executable testclient
     buildable:  False
 
 executable hsamp-basicclient
+  default-language: Haskell2010
   hs-source-dirs:  examples
   main-is:         BasicClient.hs
   other-modules:   Paths_hsamp
@@ -155,6 +151,7 @@ executable hsamp-basicclient
     buildable:  False
 
 executable hsamp-errorclient
+  default-language: Haskell2010
   hs-source-dirs:  examples
   main-is:         ErrorClient.hs
   other-modules:   Paths_hsamp
@@ -173,6 +170,7 @@ executable hsamp-errorclient
     buildable:  False
 
 executable hsamp-sender
+  default-language: Haskell2010
   hs-source-dirs:  examples
   main-is:         Sender.hs
   other-modules:   Paths_hsamp
@@ -200,6 +198,7 @@ executable hsamp-sender
     buildable:  False
 
 executable hsamp-snooper
+  default-language: Haskell2010
   hs-source-dirs:  examples
   main-is:         Snooper.hs
   other-modules:   Paths_hsamp
@@ -224,6 +223,7 @@ executable hsamp-snooper
     buildable:  False
 
 executable hsamp-hub
+  default-language: Haskell2010
   hs-source-dirs:  examples
   main-is:         Hub.hs
   other-modules:   Paths_hsamp
@@ -264,10 +264,10 @@ executable hsamp-hub
       wai,
       wai-extra
 
-    if impl(ghc >= 8.0)
-      ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
+    if impl(ghc >= 8.8)
+      ghc-options: -Wcompat -Wnoncanonical-monad-instances
     else
-      build-depends: semigroups == 0.18.*
+      ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
 
     if flag(xmlhack)
       build-depends: 
@@ -288,6 +288,7 @@ executable hsamp-hub
 
 
 executable hsamp-testhub
+  default-language: Haskell2010
   hs-source-dirs:  examples
   main-is:         TestHub.hs
   other-modules:   Calculator
@@ -316,7 +317,7 @@ executable hsamp-testhub
       hsamp,
       hslogger,
       -- http-types,
-      MonadRandom >= 0.4 && < 0.6,
+      MonadRandom >= 0.4 && < 0.7,
       mtl,
       network,
       -- network-uri,
@@ -331,10 +332,10 @@ executable hsamp-testhub
       -- wai,
       -- wai-extra
 
-    if impl(ghc >= 8.0)
-      ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
+    if impl(ghc >= 8.8)
+      ghc-options: -Wcompat -Wnoncanonical-monad-instances
     else
-      build-depends: semigroups == 0.18.*
+      ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
 
   else
     buildable:  False

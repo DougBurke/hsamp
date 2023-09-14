@@ -2,11 +2,10 @@
 {-# LANGUAGE FlexibleContexts #-}
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
-{-# LANGUAGE TypeSynonymInstances #-}
 
 {-|
 Module      :  Network.SAMP.Standard.Types
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016, 2018
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2016, 2018, 2022
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -92,15 +91,15 @@ module Network.SAMP.Standard.Types (
        ) where
 
 import qualified Data.Aeson as J
+import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as L
-import qualified Data.HashMap.Strict as HM
 import qualified Data.Map as M
 import qualified Data.Text as T
     
 import qualified Network.Socket as NS
 
 import Control.Monad.Except (MonadError, throwError)
-import Control.Monad (liftM, ap)
+import Control.Monad (ap)
 import Control.Monad.Fail (MonadFail)
 
 import Data.Char (chr, isAlphaNum, isDigit, ord)
@@ -350,11 +349,11 @@ emptyRString = RS []
 
 -- | Create a 'RString' from a normal 'String'.
 toRString :: String -> Maybe RString
-toRString s = RS `liftM` mapM toRChar s
+toRString s = RS `fmap` mapM toRChar s
 
 -- | See 'toRString'.
 toRStringE :: (Monad m) => String -> Err m RString
-toRStringE s = RS `liftM` mapM toRCharE s
+toRStringE s = RS `fmap` mapM toRCharE s
 
 -- | Extract the contents of the 'RString'.
 fromRString :: RString -> String
@@ -737,10 +736,10 @@ than force Value, but need to look at to see if it is worth it.
 
 -- | Convert a (String, Value) tuple into (RString, SAMPValue)
 toSAMPMapElement ::
-    (Monad m)
+    MonadFail m
     => (String, Value)
     -> Err m SAMPMapElement
-toSAMPMapElement (n,v) = (,) `liftM` toRStringE n `ap` fromValue v
+toSAMPMapElement (n,v) = (,) `fmap` toRStringE n `ap` fromValue v
 
               
 -- | Get a value from the contents of a SAMP Map (given as a list
@@ -851,11 +850,11 @@ instance XmlRpcType SAMPValue where
 
 instance J.ToJSON SAMPValue where
     toJSON (SAMPString s) = J.String (T.pack (fromRString s))
-    toJSON (SAMPList xs)  = J.toJSON (map J.toJSON xs)
-    toJSON (SAMPMap ms)  = J.Object (HM.fromList (map conv kvs))
+    toJSON (SAMPList xs) = J.toJSON (map J.toJSON xs) 
+    toJSON (SAMPMap ms) = J.Object (KM.fromList (map conv kvs))
         where
           kvs = M.toList ms
-          conv (k, vs) = (T.pack (fromRString k), J.toJSON vs)
+          conv (k, vs) = (fromString (fromRString k), J.toJSON vs)
                             
 -- TODO: improve this
 
@@ -1249,18 +1248,24 @@ data SAMPMethodResponse =
 
 -- need to convert these to the XmlRpc equivalents
 
-toSMC :: (Monad m) => MethodCall -> Err m SAMPMethodCall
+toSMC ::
+  MonadFail m
+  => MethodCall
+  -> Err m SAMPMethodCall
 toSMC (MethodCall n vs) = do
   -- TODO: maybe just use toMTypeE here, so that the invalid characters
   --       are displayed?
   ns <- maybeToM ("Unable to convert SAMP method name: " ++ n) (toMType n)
-  SAMPMethodCall ns `liftM` mapM fromValue vs
+  SAMPMethodCall ns `fmap` mapM fromValue vs
 
 fromSMC :: SAMPMethodCall -> MethodCall
 fromSMC (SAMPMethodCall n vs) = MethodCall (fromMType n) (map toValue vs)
 
-toSMR :: (Monad m) => MethodResponse -> Err m SAMPMethodResponse
-toSMR (Return vs) = SAMPReturn `liftM` fromValue vs
+toSMR ::
+  MonadFail m
+  => MethodResponse
+  -> Err m SAMPMethodResponse
+toSMR (Return vs) = SAMPReturn `fmap` fromValue vs
 toSMR (Fault _ msg) = return (SAMPFault msg)
 
 -- | The integer fault value is not specified in the SAMP document, so use a
@@ -1271,7 +1276,7 @@ fromSMR (SAMPFault msg) = Fault 1 msg
 
 -- | Parses a SAMP method call from the XmlRpc input.
 parseSAMPCall ::
-    (Show e, MonadError e m)
+    (Show e, MonadError e m, MonadFail m)
     => String -- ^ XmlRpc input
     -> Err m SAMPMethodCall
 parseSAMPCall c = parseCall c >>= toSMC
