@@ -29,16 +29,15 @@ license-file: LICENSE
 author:       Douglas Burke
 maintainer:   dburke.gw@gmail.com
 
--- homepage:       https://bitbucket.org/doug_burke/hsamp/wiki/Home
-homepage:       https://bitbucket.org/doug_burke/hsamp/
-bug-reports:    https://bitbucket.org/doug_burke/hsamp/issues
+homepage:       https://github.com/DougBurke/hsamp/
+bug-reports:    https://github.com/DougBurke/hsamp/ussies/
 
 tested-with:    GHC==9.0.2
 build-type:     Simple
 
 source-repository head
-  type:     mercurial
-  location: https://bitbucket.org/doug_burke/hsamp/
+  type:     git
+  location: https://github.com/DougBurke/hsamp/
 
 flag  threaded
   description: Use the threaded RTS
@@ -53,7 +52,7 @@ flag  examples
   default: True
 
 flag  xmlhack
-  description: Adjust the XML returned by the hub (e.g. for ds9 7.3.2). This is only used if examples is True.
+  description: Adjust the XML returned by the hub (e.g. for ds9 up to 8.5). This is only used if examples is True.
   default: False
 --  default: True
 
@@ -265,7 +264,10 @@ executable hsamp-hub
       wai,
       wai-extra
 
-    ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
+    if impl(ghc >= 8.8)
+      ghc-options: -Wcompat -Wnoncanonical-monad-instances
+    else
+      ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
 
     if flag(xmlhack)
       build-depends: 
@@ -330,7 +332,10 @@ executable hsamp-testhub
       -- wai,
       -- wai-extra
 
-    ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
+    if impl(ghc >= 8.8)
+      ghc-options: -Wcompat -Wnoncanonical-monad-instances
+    else
+      ghc-options: -Wcompat -Wnoncanonical-monad-instances -Wnoncanonical-monadfail-instances
 
   else
     buildable:  False
