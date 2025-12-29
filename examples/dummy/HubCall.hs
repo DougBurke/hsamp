@@ -17,16 +17,20 @@ module HubCall (call, fromSAMPMethodResponse) where
 
 import qualified Data.ByteString.Lazy.Char8 as L
 
+import qualified GHC.Stack as S
+
 import qualified Network.XmlRpc.Client as XC
 import qualified Network.XmlRpc.Internals as XI
 
 import Network.SAMP.Standard (SAMPMethodResponse
                              , renderSAMPResponse)
     
-call :: String
-     -> String
-     -> [XI.Value]
-     -> XI.Err IO XI.Value
+call ::
+  S.HasCallStack
+  => String
+  -> String
+  -> [XI.Value]
+  -> XI.Err IO XI.Value
 call = XC.call
 
 -- | This is the default conversion to XML format for a SAMP

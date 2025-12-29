@@ -95,7 +95,9 @@ import qualified Data.Aeson.KeyMap as KM
 import qualified Data.ByteString.Lazy.Char8 as L
 import qualified Data.Map as M
 import qualified Data.Text as T
-    
+
+import qualified GHC.Stack as S
+
 import qualified Network.Socket as NS
 
 import Control.Monad.Except (MonadError, throwError)
@@ -107,7 +109,6 @@ import Data.Hashable (Hashable)
 import Data.List (intercalate, isPrefixOf)
 import Data.List.Split (splitOn, splitOneOf)
 import Data.Maybe (fromJust)
-import Data.Semigroup (Semigroup, (<>))
 import Data.String (IsString(..))
 
 import GHC.Generics (Generic)
@@ -1276,14 +1277,14 @@ fromSMR (SAMPFault msg) = Fault 1 msg
 
 -- | Parses a SAMP method call from the XmlRpc input.
 parseSAMPCall ::
-    (Show e, MonadError e m, MonadFail m)
+    (Show e, MonadError e m, MonadFail m, S.HasCallStack)
     => String -- ^ XmlRpc input
     -> Err m SAMPMethodCall
 parseSAMPCall c = parseCall c >>= toSMC
 
 -- | Parses a SAMP method response.
 parseSAMPResponse ::
-    (Show e, MonadError e m, MonadFail m)
+    (Show e, MonadError e m, MonadFail m, S.HasCallStack)
     => String -- ^ XmlRpc input
     -> Err m SAMPMethodResponse
 parseSAMPResponse c = parseResponse c >>= toSMR

@@ -39,10 +39,6 @@ source-repository head
   type:     git
   location: https://github.com/DougBurke/hsamp/
 
-flag  threaded
-  description: Use the threaded RTS
-  default: False
-
 flag  testclient
   description: Build the test client (the examples are probably better)
   default: False
@@ -59,10 +55,10 @@ flag  xmlhack
 library
  default-language: Haskell2010
  build-depends:
-   aeson >= 2.0 && < 2.2,
-   base >= 4.9 && < 4.18,
+   aeson >= 2.0 && < 2.3,
+   base >= 4.9 && < 4.22,
    bytestring,
-   containers >= 0.5 && < 0.7,            
+   containers >= 0.5 && < 0.8,            
    data-default-class,
    fast-logger,
    hashable,
@@ -70,11 +66,11 @@ library
    hslogger,
    http-conduit,
    http-types,
-   mtl >= 2.2.1,
-   network >= 2.7,
+   mtl >= 2.2.1 && < 2.4,
+   network >= 2.7 && < 3.3,
    network-uri >= 2.6,
    random,
-   scotty >= 0.7,
+   scotty >= 0.7 && < 0.23,
    split,
    strict,
    text,
@@ -205,7 +201,7 @@ executable hsamp-snooper
                    Utils
 
   ghc-options:
-     -Wall
+     -Wall -threaded
 
   if flag(examples)
     build-depends:
@@ -229,10 +225,10 @@ executable hsamp-hub
   other-modules:   Paths_hsamp
                    Utils
 
-  if flag(threaded)
-    ghc-options:  -Wall -threaded
-  else
-    ghc-options:  -Wall
+  -- It looks like we now require the thread runtime (or one of the
+  -- requirements is built to require it).
+  --
+  ghc-options:  -Wall -threaded
 
   if flag(examples)
     build-depends:
@@ -296,10 +292,10 @@ executable hsamp-testhub
                    TestUtils
                    Utils
 
-  if flag(threaded)
-    ghc-options:  -Wall -threaded
-  else
-    ghc-options:  -Wall
+  -- It looks like we now require the thread runtime (or one of the
+  -- requirements is built to require it).
+  --
+  ghc-options:  -Wall -threaded
 
   if flag(examples)
     build-depends:

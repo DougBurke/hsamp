@@ -4,7 +4,7 @@
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015, 2016, 2017, 2018, 2022
+Copyright   :  (c) Douglas Burke 2015 - 2018, 2022, 2024
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -114,6 +114,8 @@ import qualified Data.HashMap.Strict as HM
 import qualified Data.Map.Strict as M
 import qualified Data.Text.Lazy as LT
 
+import qualified GHC.Stack as S
+
 -- Hack for ds9 7.3.2 support
 import qualified HubCall as HC
     
@@ -148,7 +150,6 @@ import Data.Either (partitionEithers)
 import Data.Function (on)
 import Data.List (intercalate, sortBy)
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, mapMaybe)
-import Data.Semigroup ((<>))
 import Data.Time.Clock (UTCTime, getCurrentTime)
     
 -- import Data.Version (showVersion)
@@ -200,7 +201,7 @@ import Network.Wai.Middleware.RequestLogger (Destination(..), destination,
                                              mkRequestLogger)
 
 import System.Log.Logger (Priority(DEBUG, INFO, NOTICE, WARNING),
-                          debugM, infoM, noticeM, warningM,
+                          debugM, infoM, noticeM, warningM, errorM,
                           setLevel, updateGlobalLogger)
 import System.Log.FastLogger (fromLogStr)
     
@@ -241,12 +242,13 @@ notice :: String -> ActionM ()
 notice = liftIO . noticeIO
 -}
 
-dbgIO, infoIO, noticeIO, warnIO :: String -> IO ()
+dbgIO, infoIO, noticeIO, warnIO, errorIO :: String -> IO ()
 dbgIO = debugM cLogger . ("DBG " ++)
 infoIO = infoM cLogger . ("INFO " ++)
 noticeIO = noticeM cLogger . ("NOTICE " ++)
 warnIO = warningM cLogger . ("WARNING " ++)
-           
+errorIO = errorM cLogger . ("ERROR " ++)
+
 main :: IO ()
 main = do
     args <- getArgs
@@ -498,6 +500,7 @@ runHub = do
            noticeIO ("Removing lockfile: " ++ lockfile)
            removeFile lockfile
            CE.throwIO e
+
     createHub socket hi secret `CE.catch` cleanup
 
     -- is it possible to get here once the hub is running?
@@ -716,10 +719,11 @@ withCallableClient hi secret act =
 --
 
 notifyClient ::
-    RString
-    -> SAMPMessage
-    -> ClientData
-    -> IO SAMPMethodResponse
+  S.HasCallStack
+  => RString
+  -> SAMPMessage
+  -> ClientData
+  -> IO SAMPMethodResponse
 notifyClient sendName msg receiver = do
   let mtype = getSAMPMessageType msg
       recName = cdName receiver
@@ -1052,27 +1056,37 @@ sendToAll2 cTime hi tag msg ohub sender =
   in (nhub, SAMPReturn (SAMPMap (M.fromList hvals)), hacts)
 
 
-ignoreError :: String -> CE.SomeException -> IO ()
+-- Use the logging infrastructure to try and avoid conflicting screen
+-- output.
+ignoreError :: S.HasCallStack => String -> CE.SomeException -> IO ()
 ignoreError lbl e = do
-  hPutStrLn stderr ("*** Error '" ++ lbl ++ "'")
-  hPutStrLn stderr ("*** " ++ show e)
+  errorIO ("'" ++ lbl ++ "'")
+  errorIO ("exception: " ++ show e)
+  errorIO ("call stack: " ++ S.prettyCallStack S.callStack)
 
 
-ignoreNotifyError :: ClientName -> String -> MType -> CE.SomeException -> IO ()
+ignoreNotifyError ::
+  S.HasCallStack
+  => ClientName
+  -> String
+  -> MType
+  -> CE.SomeException
+  -> IO ()
 ignoreNotifyError name fname mtype =
   let emsg = "notifying client " ++ show name ++
-             (if null fname then "" else " " ++ fname ++ " ") ++
+             (if null fname then "" else " " ++ fname) ++
              " about " ++ show mtype
   in ignoreError emsg
   
     
 sendReceiveResponse ::
-    String
-    -> ClientSecret
-    -> ClientName
-    -> MessageTag
-    -> SAMPResponse
-    -> IO ()
+  S.HasCallStack
+  => String
+  -> ClientSecret
+  -> ClientName
+  -> MessageTag
+  -> SAMPResponse
+  -> IO ()
 sendReceiveResponse url secret name tag replyData = do
   let arglist = [ toSValue secret
                 , toSValue name
@@ -1093,13 +1107,14 @@ sendReceiveResponse url secret name tag replyData = do
 --   to.
 --
 sendToHub ::
-    HubInfo
-    -> MessageTag
-    -> ClientData
-    -- ^ The client sending the message (it is possible that this client
-    --   has since disconnected).
-    -> SAMPMessage
-    -> IO ()
+  S.HasCallStack
+  => HubInfo
+  -> MessageTag
+  -> ClientData
+  -- ^ The client sending the message (it is possible that this client
+  --   has since disconnected).
+  -> SAMPMessage
+  -> IO ()
 sendToHub hi mtag sender msg = do
   let mtype = getSAMPMessageType msg
       sendName = cdName sender
@@ -1115,9 +1130,10 @@ sendToHub hi mtag sender msg = do
 -- | The hub has been sent a message it is subscribed to.
 --
 hubProcessMessage ::
-    HubInfo
-    -> SAMPMessage
-    -> IO SAMPResponse
+  S.HasCallStack
+  => HubInfo
+  -> SAMPMessage
+  -> IO SAMPResponse
 hubProcessMessage hi msg = do
   let funcs = hiHandlers (hiReader hi)
       emsg = "Internal error: hub is not subscribed to " <> fromMTypeRS mtype
@@ -1134,7 +1150,7 @@ emptyResponse = SAMPReturn (SAMPString "")
 
                 
 -- | Process the samp.app.ping message sent to the hub
-hubSentPing :: HubHandlerFunc
+hubSentPing :: S.HasCallStack => HubHandlerFunc
 hubSentPing _ msg = do
   let args = getSAMPMessageParams msg
       extra = getSAMPMessageExtra msg
@@ -1145,7 +1161,7 @@ hubSentPing _ msg = do
 
 
 -- | Process the [x-]samp.query.by-meta message sent to the hub.
-hubSentQueryByMeta :: HubHandlerFunc                 
+hubSentQueryByMeta :: S.HasCallStack => HubHandlerFunc                 
 hubSentQueryByMeta hi msg = do
   let params = getSAMPMessageParams msg
       mtype = getSAMPMessageType msg
@@ -1211,12 +1227,13 @@ sleep t | t <= 0    = return ()
 -- TODO: need to clean up sendToCW/sendToC
 
 sendToCW ::
-    HubInfo
-    -> ClientData
-    -> Int
-    -> SAMPMessage
-    -> ClientData
-    -> IO SAMPMethodResponse
+  S.HasCallStack
+  => HubInfo
+  -> ClientData
+  -> Int
+  -> SAMPMessage
+  -> ClientData
+  -> IO SAMPMethodResponse
 sendToCW hi sender waitTime msg receiver = do
   rspvar <- newEmptyTMVarIO
   let arg = (dummyTag, sender, Just rspvar)
@@ -1257,12 +1274,13 @@ sendToCW hi sender waitTime msg receiver = do
 
 
 sendToC ::
-    HubInfo
-    -> ClientData
-    -> MessageTag
-    -> SAMPMessage
-    -> ClientData
-    -> IO SAMPMethodResponse
+  S.HasCallStack
+  => HubInfo
+  -> ClientData
+  -> MessageTag
+  -> SAMPMessage
+  -> ClientData
+  -> IO SAMPMethodResponse
 sendToC hi sender tag msg receiver = do
     let rSecret = cdSecret receiver
         recName = cdName receiver
@@ -1289,12 +1307,13 @@ sendToC hi sender tag msg receiver = do
 -- TODO: need to cope with the receiver being the hub?
 --
 callAndWait ::
-    HubInfo
-    -> ClientSecret   -- ^ the client sending the message
-    -> ClientName     -- ^ the client to send the message to
-    -> Int            -- ^ the timeout (in seconds)
-    -> SAMPMessage    -- ^ the message to send
-    -> IO (String, SAMPMethodResponse)
+  S.HasCallStack
+  => HubInfo
+  -> ClientSecret   -- ^ the client sending the message
+  -> ClientName     -- ^ the client to send the message to
+  -> Int            -- ^ the timeout (in seconds)
+  -> SAMPMessage    -- ^ the message to send
+  -> IO (String, SAMPMethodResponse)
 callAndWait hi secret recName waitTime msg = do
 
   -- NOTE: for callAndWait the client does not need to be callable!
@@ -1328,11 +1347,12 @@ callAndWait hi secret recName waitTime msg = do
 --   TODO: error out if the client sending the message is not callable.
 --
 reply ::
-    HubInfo
-    -> ClientSecret   -- ^ the client sending the message
-    -> MessageId
-    -> SAMPResponse    -- ^ response to the message
-    -> IO (String, SAMPMethodResponse)
+  S.HasCallStack
+  => HubInfo
+  -> ClientSecret   -- ^ the client sending the message
+  -> MessageId
+  -> SAMPResponse    -- ^ response to the message
+  -> IO (String, SAMPMethodResponse)
 reply hi secret msgId replyData = do
 
   rsp <- withClient hi secret $ \hub _ -> do
@@ -1380,10 +1400,11 @@ reply hi secret msgId replyData = do
 --
 --   TODO: a lot of repeated code with sendToHub
 replyToOrigin ::
-    ClientName       -- ^ name of the client making the response
-    -> InFlightData
-    -> SAMPResponse
-    -> IO ()
+  S.HasCallStack
+  => ClientName       -- ^ name of the client making the response
+  -> InFlightData
+  -> SAMPResponse
+  -> IO ()
 replyToOrigin clName ifd replyData = do
   let url = ifdUrl ifd
       secret = ifdSecret ifd
@@ -1404,15 +1425,16 @@ replyToOrigin clName ifd replyData = do
 --         name/secret/url (and if not callable it's a nop)
 --
 notifyRecipient ::
-    RString
-    -- ^ the name of the client sending the notification
-    -> SAMPMessage
-    -- ^ the message to notify recipient about
-    -> ClientData
-    -- ^ the recipient; if it is not callable then this does nothing.
-    -> IO ()
-    -- ^ any error from the call is logged (debug level)
-    --   but otherwise ignored
+  S.HasCallStack
+  => RString
+  -- ^ the name of the client sending the notification
+  -> SAMPMessage
+  -- ^ the message to notify recipient about
+  -> ClientData
+  -- ^ the recipient; if it is not callable then this does nothing.
+  -> IO ()
+  -- ^ any error from the call is logged (debug level)
+  --   but otherwise ignored
 notifyRecipient sendName msg receiver = do
     let recName = cdName receiver
         recSecret = cdSecret receiver
@@ -1420,6 +1442,10 @@ notifyRecipient sendName msg receiver = do
                     
         arglist = [toSValue recSecret, SAMPString sendName, toSValue msg]
         nargs = map XI.toValue arglist
+
+        -- SO, sending this to DS9 causes a problem
+        -- need to monitor the ds9 responses
+        
         act url = void (HC.call url "samp.client.receiveNotification" nargs)
         hdl url e = dbgIO ("Error in sending " ++ show mtype ++ " to " ++
                            url ++ " - " ++ e)
@@ -1452,13 +1478,14 @@ notifyRecipient sendName msg receiver = do
 --   created).
 --
 clientReceiveCall ::
-    ClientName  -- ^ the name of the client sending the message
-    -> ClientData -- ^ the client to send the message to
-    -> MessageId -- ^ Send this to the client
-    -> SAMPMessage -- ^ the message to send
-    -> IO ()
-       -- ^ any error from the call is logged (debug level)
-       --   but otherwise ignored
+  S.HasCallStack
+  => ClientName  -- ^ the name of the client sending the message
+  -> ClientData -- ^ the client to send the message to
+  -> MessageId -- ^ Send this to the client
+  -> SAMPMessage -- ^ the message to send
+  -> IO ()
+  -- ^ any error from the call is logged (debug level)
+  --   but otherwise ignored
 clientReceiveCall sendName receiver msgId msg = 
     let rSecret = cdSecret receiver
         rName = cdName receiver
@@ -1528,8 +1555,9 @@ createHub socket hi secret = do
           dbg "Processing a post call..."
           reqType <- header cType
           dbg ("  Content-Type: " ++ show reqType)
+          cLen <- header cLength
           if reqType == Just "text/xml"
-            then callFromClient hi secret
+            then callFromClient hi secret cLen
             else invalidCT
 
         get "/logo.png" $ do
@@ -1585,11 +1613,23 @@ cLength = "Content-Length"
 TODO: re-work this code
 -}
 
-callFromClient :: HubInfo -> HubSecret -> ActionM ()
-callFromClient hi secret = do
+callFromClient ::
+  S.HasCallStack
+  => HubInfo
+  -> HubSecret
+  -> Maybe LT.Text
+  -> ActionM ()
+callFromClient hi secret cLenTxt = do
+  let bLen = read (LT.unpack (fromJust cLenTxt))
+  
   b <- body
   let str = L.unpack b
       act = parseSAMPCall str
+
+  -- warn str
+  unless (length str == bLen) $ warn ("LENGTHS: " ++ show bLen ++ " " ++
+                                      show (length str))
+      
   mmethod <- liftIO (handleError (return . Left) (Right <$> act))
   case mmethod of
     Right method -> handleSAMP hi secret method
@@ -1601,10 +1641,11 @@ callFromClient hi secret = do
 
         
 handleSAMP ::
-    HubInfo
-    -> HubSecret
-    -> SAMPMethodCall
-    -> ActionM ()
+  S.HasCallStack
+  => HubInfo
+  -> HubSecret
+  -> SAMPMethodCall
+  -> ActionM ()
 handleSAMP hi secret (SAMPMethodCall name args) = do
   liftIO (dumpHub hi)
   let mname = fromMType name
@@ -1626,7 +1667,7 @@ handleSAMP hi secret (SAMPMethodCall name args) = do
 -- Content-Length headers are included in the response. This is
 -- probably handled by haxr's server code, but I am not using that here.
 
-respondXmlRpc :: String -> SAMPMethodResponse -> ActionM ()
+respondXmlRpc :: S.HasCallStack => String -> SAMPMethodResponse -> ActionM ()
 respondXmlRpc lbl srsp = do
   let rsp = HC.fromSAMPMethodResponse srsp
   dbg ("Response [" ++ lbl ++ "] " ++ L.unpack rsp)
@@ -1635,7 +1676,7 @@ respondXmlRpc lbl srsp = do
   raw rsp
 
 
-respondToClient :: String -> IO SAMPMethodResponse -> IO (String, SAMPMethodResponse)
+respondToClient :: S.HasCallStack => String -> IO SAMPMethodResponse -> IO (String, SAMPMethodResponse)
 respondToClient = respond
                   
 -- A helper function whilst converting code; this is meant to be
@@ -1645,7 +1686,7 @@ respond lbl act = (lbl, ) <$> act
 
                   
 -- An empty response
-respondOkay :: HubFunc
+respondOkay :: S.HasCallStack => HubFunc
 respondOkay _ _ _ = return ("okay", emptyResponse)
 
 
@@ -1655,19 +1696,19 @@ respondOkay _ _ _ = return ("okay", emptyResponse)
 -- is used should return an XML-RPC fault.
 --
 -- TODO: clean up the naming
-respondError :: String -> IO (String, SAMPMethodResponse)
+respondError :: S.HasCallStack => String -> IO (String, SAMPMethodResponse)
 respondError = respond "error" . return . rawError
 
-rawError :: String -> SAMPMethodResponse
+rawError :: S.HasCallStack => String -> SAMPMethodResponse
 rawError = SAMPFault
 
-reportError :: String -> IO SAMPMethodResponse
+reportError :: S.HasCallStack => String -> IO SAMPMethodResponse
 reportError emsg = do
     dbg emsg
     return (rawError emsg)
 
            
-handleRegister :: HubFunc
+handleRegister :: S.HasCallStack => HubFunc
 handleRegister _ _ [] = respondError "Missing hub secret"
 handleRegister hi secret (SAMPString s:_)
     | fromHubSecret secret == s = register hi
@@ -1675,24 +1716,24 @@ handleRegister hi secret (SAMPString s:_)
 handleRegister _ _ _ = respondError "Invalid hub secret"
 
 
-handleUnregister :: HubFunc
+handleUnregister :: S.HasCallStack => HubFunc
 handleUnregister hi _ (SAMPString s:_) = unregister hi (toClientSecret s)
 handleUnregister _ _ _ = respondError "Invalid arguments"
 
 
-handleDeclareMetadata :: HubFunc
+handleDeclareMetadata :: S.HasCallStack => HubFunc
 handleDeclareMetadata hi _ (SAMPString s : SAMPMap lvs : _) =
     declareMetadata hi (toClientSecret s) lvs
 handleDeclareMetadata _ _ _ = respondError "Invalid arguments"
 
 
-handleSetXmlrpcCallback :: HubFunc
+handleSetXmlrpcCallback :: S.HasCallStack => HubFunc
 handleSetXmlrpcCallback hi _ (SAMPString s : SAMPString url : _) =
     setXmlrpcCallback hi (toClientSecret s) url
 handleSetXmlrpcCallback _ _ _ = respondError "Invalid arguments"
 
 
-handleDeclareSubscriptions :: HubFunc
+handleDeclareSubscriptions :: S.HasCallStack => HubFunc
 handleDeclareSubscriptions hi _ (SAMPString s : SAMPMap kvs : _) =
     case sampToSubMap kvs of
       Right subs -> declareSubscriptions hi (toClientSecret s) subs
@@ -1720,7 +1761,7 @@ sampToSubMap ms =
                                                    
 handleGetRegisteredClients :: HubFunc
 handleGetRegisteredClients hi _ (SAMPString s : _) =
-    respondToClient "get/reg clents" (getRegisteredClients hi (toClientSecret s))
+    respondToClient "get/reg clients" (getRegisteredClients hi (toClientSecret s))
 handleGetRegisteredClients _ _ _ = respondError "Invalid arguments"
 
 
@@ -2144,10 +2185,11 @@ addClientToHub hi = do
 -- TODO: do I need to include "other arguments" here?
 
 broadcastMType ::
-    HubInfo
-    -> ClientName  -- ^ the client that sent the message
-    -> SAMPMessage -- ^ the message
-    -> IO ()
+  S.HasCallStack
+  => HubInfo
+  -> ClientName  -- ^ the client that sent the message
+  -> SAMPMessage -- ^ the message
+  -> IO ()
 broadcastMType hi name msg =
   withHub hi $ \hub -> do
     let sendName = fromClientName name
@@ -2170,7 +2212,8 @@ broadcastMType hi name msg =
 -- appears to be unlikely).
 --
 broadcastNewClient ::
-  HubInfo
+  S.HasCallStack
+  => HubInfo
   -> ClientName  -- ^ the client that has just registered
   -> IO ()
 broadcastNewClient hi name =
@@ -2181,7 +2224,8 @@ broadcastNewClient hi name =
            
 
 broadcastRemovedClient ::
-  HubInfo
+  S.HasCallStack
+  => HubInfo
   -> ClientName  -- ^ the client that has just been removed
   -> IO ()
 broadcastRemovedClient hi name =
@@ -2208,8 +2252,9 @@ but worry about that later.
 -}
 
 register ::
-    HubInfo
-    -> IO (String, SAMPMethodResponse)
+  S.HasCallStack
+  => HubInfo
+  -> IO (String, SAMPMethodResponse)
 register hi = do
   let hubName = hiName (hiReader hi)
   (clName, clKey) <- addClientToHub hi
@@ -2226,9 +2271,10 @@ register hi = do
 
 
 unregister ::
-    HubInfo
-    -> ClientSecret
-    -> IO (String, SAMPMethodResponse)
+  S.HasCallStack
+  => HubInfo
+  -> ClientSecret
+  -> IO (String, SAMPMethodResponse)
 unregister hi secret = do
   rsp <- changeHubWithClient hi secret $ \ohub sender ->
     let oclientmap = hiClients ohub
@@ -2262,10 +2308,11 @@ addSender ohub nsender secret =
 
      
 declareMetadata ::
-    HubInfo
-    -> ClientSecret
-    -> SAMPMapValue
-    -> IO (String, SAMPMethodResponse)
+  S.HasCallStack
+  => HubInfo
+  -> ClientSecret
+  -> SAMPMapValue
+  -> IO (String, SAMPMethodResponse)
 declareMetadata hi secret mdata = do
   rsp <- changeHubWithClient hi secret $ \ohub sender ->
     let nsender = sender { cdMetadata = mdata }
@@ -2290,10 +2337,11 @@ declareMetadata hi secret mdata = do
 
 
 setXmlrpcCallback ::
-    HubInfo
-    -> ClientSecret
-    -> RString        -- ^ the URL for the callback   
-    -> IO (String, SAMPMethodResponse)
+  S.HasCallStack
+  => HubInfo
+  -> ClientSecret
+  -> RString        -- ^ the URL for the callback   
+  -> IO (String, SAMPMethodResponse)
 setXmlrpcCallback hi secret urlR = do
   let url = fromRString urlR
 
@@ -2317,10 +2365,11 @@ setXmlrpcCallback hi secret urlR = do
 
 
 declareSubscriptions ::
-    HubInfo
-    -> ClientSecret
-    -> SubscriptionMap
-    -> IO (String, SAMPMethodResponse)
+  S.HasCallStack
+  => HubInfo
+  -> ClientSecret
+  -> SubscriptionMap
+  -> IO (String, SAMPMethodResponse)
 declareSubscriptions hi secret subs = do
   rsp <- changeHubWithCallableClient hi secret $ \ohub sender ->
     let nsender = sender { cdSubscribed = subs }
@@ -2350,9 +2399,10 @@ declareSubscriptions hi secret subs = do
     
 
 getRegisteredClients ::
-    HubInfo
-    -> ClientSecret
-    -> IO SAMPMethodResponse
+  S.HasCallStack
+  => HubInfo
+  -> ClientSecret
+  -> IO SAMPMethodResponse
 getRegisteredClients hi secret =
     withClient hi secret $ \hub sender -> do
       let clMap = hiClients hub
@@ -2369,10 +2419,11 @@ getRegisteredClients hi secret =
 
 
 getSubscribedClients ::
-    HubInfo
-    -> ClientSecret
-    -> MType         -- ^ does not include a wildcard
-    -> IO SAMPMethodResponse
+  S.HasCallStack
+  => HubInfo
+  -> ClientSecret
+  -> MType         -- ^ does not include a wildcard
+  -> IO SAMPMethodResponse
 getSubscribedClients hi secret msg =
     withClient hi secret $ \hub sender -> do
       let clMap = hiClients hub
@@ -2413,15 +2464,16 @@ getSubscribedClients hi secret msg =
 
 
 extractData ::
-    HubInfo
-    -> ClientName
-    -> ClientSecret
-    -> (HubInfoReader -> a)
-    -> (ClientData -> a)
-    -> (a -> IO SAMPMethodResponse)
-       -- ^ this is applied to the first match form the hub or list of
-       --   clients
-    -> IO SAMPMethodResponse
+  S.HasCallStack
+  => HubInfo
+  -> ClientName
+  -> ClientSecret
+  -> (HubInfoReader -> a)
+  -> (ClientData -> a)
+  -> (a -> IO SAMPMethodResponse)
+  -- ^ this is applied to the first match form the hub or list of
+  --   clients
+  -> IO SAMPMethodResponse
 extractData hi name secret hubQuery clQuery act =
     let doit hub _ = do
           let clientmap = hiClients hub
@@ -2440,10 +2492,11 @@ extractData hi name secret hubQuery clQuery act =
 
        
 getMetadata ::
-    HubInfo
-    -> ClientSecret
-    -> ClientName    -- ^ the client whose metadata is being requested
-    -> IO SAMPMethodResponse
+  S.HasCallStack
+  => HubInfo
+  -> ClientSecret
+  -> ClientName    -- ^ the client whose metadata is being requested
+  -> IO SAMPMethodResponse
 getMetadata hi secret clName =
     let act query = do
           dbgIO ("Found a match for client: " ++ show clName)
@@ -2452,10 +2505,11 @@ getMetadata hi secret clName =
 
        
 getSubscriptions ::
-    HubInfo
-    -> ClientSecret
-    -> ClientName    -- ^ the client whose subscriptions is being requested
-    -> IO SAMPMethodResponse
+  S.HasCallStack
+  => HubInfo
+  -> ClientSecret
+  -> ClientName    -- ^ the client whose subscriptions is being requested
+  -> IO SAMPMethodResponse
 getSubscriptions hi secret clName = 
     let act query = let svals = fromSubMap query
                         conv (k, kvs) = (fromMTypeRS k, SAMPMap kvs)
