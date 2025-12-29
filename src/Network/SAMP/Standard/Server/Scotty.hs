@@ -2,7 +2,7 @@
 
 {-|
 Module      :  Network.SAMP.Standard.Server.Scotty
-Copyright   :  (c) Douglas Burke 2011, 2013, 2015
+Copyright   :  (c) Douglas Burke 2011, 2013, 2015, 2023
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -28,6 +28,7 @@ import qualified Data.ByteString.Lazy.Char8 as L
 import Control.Concurrent.MVar (MVar, putMVar)
 import Control.Monad.Trans (liftIO)
 
+-- can we replace the use of def here with an appropriate function?
 import Data.Default.Class (def)
 
 import Network.HTTP.Types (status400)
@@ -95,8 +96,10 @@ _server socket processCall mmvar = do
   case mmvar of
     Just mvar -> putMVar mvar ()
     _ -> return ()
-    
-  scottySocket def socket $ do
+
+  -- can change to defaultOptions with scotty 0.20
+  let opts = def { verbose = 0 }
+  scottySocket opts socket $ do
     -- middleware logStdoutDev
     middleware mware
 

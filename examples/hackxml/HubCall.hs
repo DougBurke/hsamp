@@ -33,7 +33,8 @@ import qualified Network.URI as NU
 import qualified Text.Read.Compat as TRC
 import qualified OpenSSL as SSL
 
--- import Control.Monad.Trans (liftIO)
+import Control.Monad.Trans (liftIO)
+
 import Data.Int (Int64)    
 import Data.Maybe (fromMaybe)
     
@@ -42,25 +43,41 @@ This is a re-implementation of haxr's XC.call routine, since I have
 to edit the XML serialization for ds9.
 -}
 
-call :: String
-     -> String
-     -> [XI.Value]
-     -> XI.Err IO XI.Value
-call url method args = do
+call ::
+  (String -> IO ())
+  -- ^ debug logger
+  -> String
+  -> String
+  -> [XI.Value]
+  -> XI.Err IO XI.Value
+call dbg url method args = do
   let req = XI.renderCall (XI.MethodCall method args)
       reqConv = replaceEmptyStruct req 
       -- reqConv = req  -- is ds9 7.4 okay?
+
+      -- put = liftIO . putStrLn
+      dbgIO = liftIO . dbg
+
+  dbgIO ("# HC.call of " <> method <> " to " <> url)
+  dbgIO (L.unpack reqConv)
   respRaw <- XI.ioErrorToErr (post' url reqConv)
+
+  dbgIO ("# Returned (" <> method <> " " <> url <> ")")
+  dbgIO (L.unpack respRaw)
+
   respParse <- XI.parseResponse (L.unpack respRaw)
-  -- liftIO (putStrLn ("--> sending: " ++ L.unpack reqConv))
-  handleResponse respParse
+  answer <- handleResponse respParse
+  dbgIO ("# Parsed (" <> method <> " " <> url <> "): " <> show answer)
+  pure answer
+  
 
 handleResponse ::
   MonadFail m
   => XI.MethodResponse
   -> m XI.Value
-handleResponse (XI.Return v) = return v
+handleResponse (XI.Return v) = pure v
 handleResponse (XI.Fault code str) = fail ("Error " ++ show code ++ ": " ++ str)
+
 
 post' :: String -> L.ByteString -> IO U.ByteString
 post' url content = do
@@ -87,16 +104,14 @@ post_ uri auth content = SSL.withOpenSSL $ do
     body' <- HC.inputStreamBody <$> Streams.fromLazyByteString content
 
     _ <- HC.sendRequest c req body'
-
-    s <- HC.receiveResponse c $ \resp i -> 
-        case HC.getStatusCode resp of
-          200 -> readLazyByteString i
-          -- 200 -> putStrLn "*** processing response" >> readLazyByteString i
-          _   -> fail (show (HC.getStatusCode resp) ++ " " ++ B.unpack (HC.getStatusMessage resp))
+    s <- HC.receiveResponse c $ \resp i ->
+                                  let status = HC.getStatusCode resp
+                                  in if status == 200
+                                     then readLazyByteString i
+                                     else fail (show status ++ " " ++ B.unpack (HC.getStatusMessage resp))
 
     HC.closeConnection c
-
-    return s
+    pure s
 
 readLazyByteString :: Streams.InputStream B.ByteString -> IO U.ByteString
 readLazyByteString i = L.fromChunks <$> go
@@ -110,7 +125,7 @@ readLazyByteString i = L.fromChunks <$> go
 
 userAgent :: B.ByteString
 userAgent = "Haskell XmlRpcClient/0.1 modified for hsamp"
-            
+
 -- | Create an XML-RPC compliant HTTP request.
 request :: NU.URI -> NU.URIAuth -> Int64 -> IO HC.Request
 request uri auth len = HC.buildRequest $ do

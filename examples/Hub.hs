@@ -1,10 +1,11 @@
 {-# LANGUAGE FlexibleInstances #-}
 {-# LANGUAGE OverloadedStrings #-}
+{-# LANGUAGE ScopedTypeVariables #-}
 {-# LANGUAGE TupleSections #-}
 
 {-|
 ------------------------------------------------------------------------
-Copyright   :  (c) Douglas Burke 2015, 2016, 2017, 2018, 2022
+Copyright   :  (c) Douglas Burke 2015, 2016, 2017, 2018, 2022, 2023
 License     :  BSD3
 
 Maintainer  :  dburke.gw@gmail.com
@@ -133,9 +134,12 @@ import System.Random (RandomGen, StdGen, getStdGen, setStdGen)
 
 import Control.Arrow (first)
 import Control.Concurrent (forkIO, threadDelay)
-import Control.Concurrent.STM.TVar (TVar, newTVarIO, readTVar, readTVarIO, writeTVar)
-import Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO, putTMVar,
-                                     takeTMVar)
+import Control.Concurrent.STM.TVar (TVar
+                                   , newTVarIO
+                                   , readTVarIO
+                                   , stateTVar)
+import Control.Concurrent.STM.TMVar (TMVar, newEmptyTMVarIO, putTMVar
+                                    , takeTMVar)
 import Control.Monad.IO.Class (MonadIO)
 import Control.Monad (forM_, guard, unless, void, when)
 import Control.Monad.STM (atomically)
@@ -150,7 +154,8 @@ import Data.List (intercalate, sortBy)
 import Data.Maybe (catMaybes, fromJust, fromMaybe, isJust, mapMaybe)
 import Data.Semigroup ((<>))
 import Data.Time.Clock (UTCTime, getCurrentTime)
-    
+import Data.Tuple (swap)
+
 -- import Data.Version (showVersion)
 
 import Network.SAMP.Standard (MType, RString
@@ -558,17 +563,9 @@ offloading as much as possible to the action to run afterwards
 changeHub ::
     HubInfo
     -> (HubInfoState -> (HubInfoState, a))
-       -- ^ The action is performed with a @modifyTVar'@ call.
-       --   The return value is the new hub state.
+       -- ^ State transition returning a value.
     -> IO a
-changeHub hi act =
-  let go = do
-        let tvar = hiState hi
-        ostate <- readTVar tvar
-        let (nstate, ans) = act ostate
-        writeTVar tvar nstate
-        return ans
-  in atomically go
+changeHub hi act = atomically $ stateTVar (hiState hi) (swap . act)
 
 -- | Run an action with a copy of the Hub's state. See
 --   'changeHubWithClient' for an alternative.
@@ -658,11 +655,7 @@ changeHubWithClientE hi secret act = do
           _ -> let emsg = "Invalid client secret"
                in (ohub, (Left emsg, return ()))
 
-      go = do
-        ostate <- readTVar tvar
-        let (nstate, ans) = doit ostate
-        writeTVar tvar nstate
-        return ans
+      go = stateTVar tvar (swap . doit)
 
   (rsp, sact) <- atomically go
   sact
@@ -718,14 +711,16 @@ withCallableClient hi secret act =
 notifyClient ::
     RString
     -> SAMPMessage
+    -> (ClientSecret -> IO ())
+    -- ^ tell the hub the client has gone
     -> ClientData
     -> IO SAMPMethodResponse
-notifyClient sendName msg receiver = do
+notifyClient sendName msg gone receiver = do
   let mtype = getSAMPMessageType msg
       recName = cdName receiver
   info ("Sending " ++ fromMType mtype ++ " from " ++
         fromRString sendName ++ " to " ++ show recName)
-  forkCall (notifyRecipient sendName msg receiver)
+  forkCall (notifyRecipient sendName msg gone receiver)
   return emptyResponse
 
 -- The receiver is the hub, so do not need to send a message,
@@ -781,7 +776,9 @@ findClientToNotify hi recName msg hub sender =
         mreceivers = filter find receivers
 
         hubMatch = mHubMatch && hiName hir == fromClientName recName
-    
+
+        gone = void . unregister hi
+        
         noReceiver = 
           let emsg = "The receiver is not callable or not subscribed to " ++
                      fromMType mtype
@@ -790,7 +787,7 @@ findClientToNotify hi recName msg hub sender =
     in if hubMatch
        then notifyHub sendName msg
        else case mreceivers of
-               (receiver:_) -> notifyClient sendName msg receiver
+               (receiver:_) -> notifyClient sendName msg gone receiver
                [] -> noReceiver
 
 
@@ -827,8 +824,10 @@ notifyAll hi secret msg = do
       let sendName = fromClientName (cdName sender)
           hir = hiReader hi
           (hubMatch, receivers) = findClientsToNotify hir hub msg sender
+
+          gone = void . unregister hi
                                   
-      forM_ receivers (notifyClient sendName msg)
+      forM_ receivers (notifyClient sendName msg gone)
       when hubMatch (void (notifyHub sendName msg))
                    
       let rNames = map (toSValue . cdName) receivers
@@ -1003,6 +1002,8 @@ sendToAll2 cTime hi tag msg ohub sender =
 
       oClMap = hiClients ohub
 
+      gone = void . unregister hi
+
       -- Update the client, if necessary
       --
       update oacc@(ogen, orvals, oacts) ocd =
@@ -1014,7 +1015,7 @@ sendToAll2 cTime hi tag msg ohub sender =
                 ngen `seq` mid `seq` ncd `seq` return ()
                 dbgIO ("Inserted messageId=" ++ show mid ++
                        " for receiver=" ++ show (cdName ocd))
-                forkCall (clientReceiveCall sendName ncd mid msg)
+                forkCall (clientReceiveCall sendName ncd mid msg gone)
 
               nrvals = (fromClientName (cdName ocd), toSValue mid) : orvals
               nacts = oacts >> act
@@ -1058,12 +1059,45 @@ ignoreError lbl e = do
   hPutStrLn stderr ("*** " ++ show e)
 
 
-ignoreNotifyError :: ClientName -> String -> MType -> CE.SomeException -> IO ()
-ignoreNotifyError name fname mtype =
+{-
+We unregister the client if there has been a problem, but
+we want to distinguish between
+
+- the client has gone away or is unresponsive
+
+from
+
+- the response is not as expected but the client is still
+  running (e.g. I see this with ds9 8.5)
+
+So, we check the exception and assume that if it's an IOException
+then it is probably serious (e.g. the socket no-longer exists),
+and if it's not then we can just try ignoring it.
+
+An alternative would be to track the number of problems a client
+has and once it hits a number then we remove it (and clear the
+count when we get a valid connection).
+
+-}
+
+ignoreNotifyError ::
+  IO ()  -- the unregister command
+  -> ClientName
+  -> String
+  -> MType
+  -> CE.SomeException
+  -> IO ()
+ignoreNotifyError gone name fname mtype exc = do
   let emsg = "notifying client " ++ show name ++
-             (if null fname then "" else " " ++ fname ++ " ") ++
+             (if null fname then "" else " " ++ fname) ++
              " about " ++ show mtype
-  in ignoreError emsg
+
+  case CE.fromException exc of
+    Just (_ :: IOError) -> putStrLn ("# closing client " <> show name)
+                           >> gone
+    _ -> pure ()
+
+  ignoreError emsg exc
   
     
 sendReceiveResponse ::
@@ -1080,7 +1114,7 @@ sendReceiveResponse url secret name tag replyData = do
                 , toSValue replyData ]
       nargs = map XI.toValue arglist
 
-      act = void (HC.call url "samp.client.receiveResponse" nargs)
+      act = void (HC.call dbgIO url "samp.client.receiveResponse" nargs)
       hdl e = dbgIO ("Error in sending reply to the original client at " ++
                      url ++ " - " ++ e)
 
@@ -1223,6 +1257,8 @@ sendToCW hi sender waitTime msg receiver = do
       rSecret = cdSecret receiver
       recName = cdName receiver
       mtype = getSAMPMessageType msg
+
+      gone = void . unregister hi
       
   emid <- newMessageId hi rSecret arg
   case emid of
@@ -1235,7 +1271,7 @@ sendToCW hi sender waitTime msg receiver = do
       -- Note: the timer starts at receipt of the message
       --       to the client, not from when the 
       --       samp.client.receiveCall is made
-      cid <- forkIO (clientReceiveCall sendName receiver mid msg)
+      cid <- forkIO (clientReceiveCall sendName receiver mid msg gone)
 
       let tVal = toDuration waitTime
           errorRsp = rawError ("Timeout: call took longer than " ++
@@ -1268,13 +1304,15 @@ sendToC hi sender tag msg receiver = do
         recName = cdName receiver
         sendName = cdName sender
         mtype = getSAMPMessageType msg
+
+        gone = void . unregister hi
         
     emid <- newMessageId hi rSecret (tag,sender,Nothing)
     case emid of
       Right mid -> do
         info ("Sending " ++ fromMType mtype ++ " from " ++
               show sendName ++ " to " ++ show recName)
-        forkCall (clientReceiveCall sendName receiver mid msg)
+        forkCall (clientReceiveCall sendName receiver mid msg gone)
         return (SAMPReturn (toSValue mid))
   
       Left _ -> do
@@ -1408,19 +1446,21 @@ notifyRecipient ::
     -- ^ the name of the client sending the notification
     -> SAMPMessage
     -- ^ the message to notify recipient about
+    -> (ClientSecret -> IO ())
+    -- ^ error handler (unregisters the recipient)
     -> ClientData
     -- ^ the recipient; if it is not callable then this does nothing.
     -> IO ()
     -- ^ any error from the call is logged (debug level)
     --   but otherwise ignored
-notifyRecipient sendName msg receiver = do
+notifyRecipient sendName msg gone receiver = do
     let recName = cdName receiver
         recSecret = cdSecret receiver
         mtype = getSAMPMessageType msg
                     
         arglist = [toSValue recSecret, SAMPString sendName, toSValue msg]
         nargs = map XI.toValue arglist
-        act url = void (HC.call url "samp.client.receiveNotification" nargs)
+        act url = void (HC.call dbgIO url "samp.client.receiveNotification" nargs)
         hdl url e = dbgIO ("Error in sending " ++ show mtype ++ " to " ++
                            url ++ " - " ++ e)
 
@@ -1435,7 +1475,7 @@ notifyRecipient sendName msg receiver = do
         dbgIO ("Sending notify of " ++ fromMType mtype ++ " to client " ++
                name)
         handleError (hdl url) (act url)
-                        `CE.catch` ignoreNotifyError recName fname mtype
+                        `CE.catch` ignoreNotifyError (gone recSecret) recName fname mtype
 
       Nothing -> return ()
 
@@ -1456,10 +1496,12 @@ clientReceiveCall ::
     -> ClientData -- ^ the client to send the message to
     -> MessageId -- ^ Send this to the client
     -> SAMPMessage -- ^ the message to send
+    -> (ClientSecret -> IO ())
+    -- ^ unregister client in case of an error
     -> IO ()
-       -- ^ any error from the call is logged (debug level)
-       --   but otherwise ignored
-clientReceiveCall sendName receiver msgId msg = 
+    -- ^ any error from the call is logged (debug level)
+    --   but otherwise ignored
+clientReceiveCall sendName receiver msgId msg gone = 
     let rSecret = cdSecret receiver
         rName = cdName receiver
         mtype = getSAMPMessageType msg
@@ -1473,7 +1515,7 @@ clientReceiveCall sendName receiver msgId msg =
         hdl url e = dbgIO ("Error in sending " ++ show mtype ++ " to " ++
                            url ++ " - " ++ e)
 
-        act url = void (HC.call url "samp.client.receiveCall" nargs)
+        act url = void (HC.call dbgIO url "samp.client.receiveCall" nargs)
 
     in case cdCallback receiver of
          Just url -> do
@@ -1482,7 +1524,7 @@ clientReceiveCall sendName receiver msgId msg =
            dbgIO ("Sending call of " ++ fromMType mtype ++ " to client " ++
                   name)
            handleError (hdl url) (act url)
-                           `CE.catch` ignoreNotifyError rName fname mtype
+                           `CE.catch` ignoreNotifyError (gone rSecret) rName fname mtype
 
          _ -> return ()
 
@@ -2056,7 +2098,7 @@ newHubInfo huburl gen secret = do
       hmdata1 = M.fromList [ ("samp.name", appName)
                            , ("samp.description.text", appDesc)
                            , ("author.name", appAuthor)
-                           , ("author.mail", appEmail)
+                           , ("author.email", appEmail)
                            , ("author.affiliation", appAffil)
                            ]
       hmdata = case miconurl of
@@ -2155,7 +2197,9 @@ broadcastMType hi name msg =
         clients = findOtherSubscribedClients (hiClients hub) name mtype
         hir = hiReader hi
 
-    forM_ clients (forkCall . notifyRecipient sendName msg)
+        gone = void . unregister hi
+        
+    forM_ clients (forkCall . notifyRecipient sendName msg gone)
         
     -- TODO: do I need to fix hub handling of the message or is this okay?
     --       
@@ -2340,7 +2384,7 @@ declareSubscriptions hi secret subs = do
         sact = do
           dbg ("Registering new subscriptions for client " ++
                show (cdName sender))
-          subs `seq` nsender `seq` nclientmap `seq` nhub `seq` return ()
+          subs `seq` nsender `seq` nclientmap `seq` nhub `seq` pure ()
           broadcastMType hi hubName msg
           -- forkCall (broadcastMType hi hubName msg)
                           
@@ -2419,7 +2463,7 @@ extractData ::
     -> (HubInfoReader -> a)
     -> (ClientData -> a)
     -> (a -> IO SAMPMethodResponse)
-       -- ^ this is applied to the first match form the hub or list of
+       -- ^ this is applied to the first match from the hub or list of
        --   clients
     -> IO SAMPMethodResponse
 extractData hi name secret hubQuery clQuery act =
